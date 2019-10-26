@@ -1,11 +1,13 @@
 {
-  "name": "whatsapp-desktop",
+  "name": "combo-desktop",
   "version": "1.0.7",
   "description": "",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
+    "fb-start": "electron . --facebook",
     "tray": "electron . --tray",
+    "fb-tray": "electron . --facebook --tray",
     "pack": "electron-builder --dir",
     "dist": "electron-builder"
   },

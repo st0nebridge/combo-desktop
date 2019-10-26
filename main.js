@@ -3,9 +3,37 @@ const electronLocalshortcut = require('electron-localshortcut');
 
 const path = require('path');
 
-const iconGreen = path.join(__dirname, 'icon.ico');
-const iconTray = path.join(__dirname, 'white.ico');
-const iconNotif = path.join(__dirname, 'white_notif.ico');
+const configs = {
+    facebook: {
+        title: 'Messenger',
+        path: 'https://www.messenger.com/login',
+        icon: path.join(path.join(path.join(__dirname, 'icons'), 'facebook'), 'icon.ico'),
+        tray: {
+            main: path.join(path.join(path.join(__dirname, 'icons'), 'facebook'), 'white.ico'),
+            notification: path.join(path.join(path.join(__dirname, 'icons'), 'facebook'), 'white_notif.ico')
+        },
+        webPreferences: {
+            nodeIntegration: false,
+            useContentSize: true,
+            partition: "persist:main",
+            webSecurity: false
+        }
+    },
+    whatsapp: {
+        title: 'WhatsApp',
+        path: 'https://web.whatsapp.com/',
+        icon: path.join(path.join(path.join(__dirname, 'icons'), 'whatsapp'), 'icon.ico'),
+        tray: {
+            main: path.join(path.join(path.join(__dirname, 'icons'), 'whatsapp'), 'white.ico'),
+            notification: path.join(path.join(path.join(__dirname, 'icons'), 'whatsapp'), 'white_notif.ico')
+        },
+        webPreferences: {
+            nodeIntegration: true,
+            partition: "persist:main",
+            webSecurity: false
+        }
+    }
+};
 
 let win;
 let notifyTimer;
@@ -14,25 +42,32 @@ let iconIsNotify = false;
 let cl_args = process.argv;
 let start_min = false;
 
+var service = 'whatsapp';
+
 for(let ix = 1; ix < cl_args.length; ix++)
 {
-    if (cl_args[ix].toLowerCase() === "--tray")
+    let key = cl_args[ix].toLowerCase();
+
+    if (key === "--tray")
         start_min = true;
+
+    if (key === "--facebook")
+        service = 'facebook';
 }
+
+const iconApp = configs[service].icon;
+const iconTray = configs[service].tray.main;
+const iconNotif = configs[service].tray.notification;
 
 function start() {
     win = new BrowserWindow({
         width: 950,
         height: 600,
-        icon: iconGreen,
-        title: 'WhatsApp',
+        icon: iconApp,
+        title: configs[service].title,
         visible: true,
         show: !start_min,
-        webPreferences: {
-            nodeIntegration: true,
-            partition: "persist:main",
-            webSecurity: false
-        },
+        webPreferences: configs[service].webPreferences,
         autoHideMenuBar: true
     });
 
@@ -46,7 +81,7 @@ function start() {
     });
 
     win.webContents.setUserAgent(win.webContents.getUserAgent().replace(/(Electron|Chrome)\/([0-9\.]+)\ /g, ""));
-    win.loadURL('https://web.whatsapp.com/', {userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.110 Safari/537.36'});
+    win.loadURL(configs[service].path, {userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.110 Safari/537.36'});
 
     win.webContents.on('did-finish-load', function () {
         win.webContents.executeJavaScript(`
@@ -93,7 +128,7 @@ function start() {
     });
 
     win.on('page-title-updated', function (e, title) {
-        if (title !== 'WhatsApp') {
+        if (title !== configs[service].title) {
             icon.setImage(iconNotif);
             if (notifyTimer) {
                 clearInterval(notifyTimer);
@@ -131,7 +166,7 @@ function start() {
 
     const menu = Menu.buildFromTemplate([
         {
-            label: 'WhatsApp',
+            label: configs[service].title,
             click: function () {
                 win.show();
             }
@@ -145,7 +180,7 @@ function start() {
     ]);
 
     const icon = new Tray(iconTray);
-    icon.setToolTip('WhatsApp');
+    icon.setToolTip(configs[service].title);
     icon.setContextMenu(menu);
     icon.on('double-click', function () {
         win.show();
