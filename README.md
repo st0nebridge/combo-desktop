@@ -1,6 +1,6 @@
 combo-desktop
 ========================
-Combo Desktop app with Notification Area Icon for WhatsApp and Facebook Messenger
+WhatsApp/Facebook Messenger Desktop app for Windows with Notification Area Icon
 
 Electron window loads web.whatsapp.com/messenger.com and blinks with tray icon when a new messages arrives.
 
