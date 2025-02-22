@@ -1,7 +1,8 @@
-const { app, BrowserWindow, dialog, session } = require('electron');
+const { app, BrowserWindow, dialog, session, Tray, Menu, nativeImage, nativeTheme, ipcMain } = require('electron');
 const electronLocalshortcut = require('electron-localshortcut');
 const log = require('electron-log');
 const Store = require('electron-store');
+const path = require('path');
 
 // Import provider registry
 const providerRegistry = require('./providers/provider.registry');
@@ -20,6 +21,10 @@ class AppManager {
     constructor() {
         this.window = null;
         this.provider = null;
+        this.tray = null;
+        this.notificationTimer = null;
+        this.isNotificationActive = false;
+        this.currentNotificationState = false;
     }
 
     validateProvider() {
@@ -39,6 +44,49 @@ class AppManager {
             dialog.showErrorBox('Provider Required', message);
             log.error(message);
             app.exit(1);
+        }
+    }
+
+    // Helper to invert icon colors for light mode
+    invertIconIfNeeded(iconPath) {
+        if (nativeTheme.shouldUseDarkColors) {
+            return nativeImage.createFromPath(iconPath);
+        }
+        
+        const image = nativeImage.createFromPath(iconPath);
+        // Invert the image colors
+        return image.invert();
+    }
+
+    // Update tray icon based on notification state
+    updateTrayIcon(notificationState = false) {
+        if (!this.tray || !this.provider) return;
+
+        const iconInfo = this.provider.getTrayIconPath(notificationState);
+        const icon = this.invertIconIfNeeded(iconInfo.path);
+        this.tray.setImage(icon);
+    }
+
+    // Handle notification state changes
+    handleNotificationStateChange(isActive) {
+        if (this.isNotificationActive === isActive) return;
+        
+        this.isNotificationActive = isActive;
+        if (isActive) {
+            // Start blinking
+            const interval = this.provider.getNotificationInterval();
+            this.notificationTimer = setInterval(() => {
+                this.currentNotificationState = !this.currentNotificationState;
+                this.updateTrayIcon(this.currentNotificationState);
+            }, interval);
+        } else {
+            // Stop blinking
+            if (this.notificationTimer) {
+                clearInterval(this.notificationTimer);
+                this.notificationTimer = null;
+            }
+            this.currentNotificationState = false;
+            this.updateTrayIcon(false);
         }
     }
 
@@ -65,17 +113,25 @@ class AppManager {
                 }
             });
 
-            log.info('Browser window created.');
-
             // Create and initialize the provider using the registry
             this.provider = providerRegistry.createProvider(this.window, process.argv.slice(1));
-            
             log.info(`Initializing ${this.provider.getName()} provider...`);
-            this.provider.initialize();
 
-            // Load the appropriate URL
-            const serviceUrl = this.provider instanceof require('./providers/facebook.provider') ? 'https://www.messenger.com/login' : 'https://web.whatsapp.com/';
-            this.window.loadURL(serviceUrl);
+            // Update window icon with provider's icon
+            this.window.setIcon(this.provider.getAppIconPath());
+
+            // Create tray icon
+            this.createTray();
+
+            // Set up IPC handlers for notifications
+            ipcMain.on('notification-state-changed', (event, isActive) => {
+                this.handleNotificationStateChange(isActive);
+            });
+
+            // Handle theme changes
+            nativeTheme.on('updated', () => {
+                this.updateTrayIcon(this.currentNotificationState);
+            });
 
             // Set up window event handlers
             this.window.on('closed', () => {
@@ -84,6 +140,15 @@ class AppManager {
 
             this.setupWindowEvents();
             this.setupShortcuts();
+
+            // Initialize the provider
+            this.provider.initialize();
+
+            log.info('Browser window created.');
+
+            // Load the appropriate URL
+            const serviceUrl = this.provider instanceof require('./providers/facebook.provider') ? 'https://www.messenger.com/login' : 'https://web.whatsapp.com/';
+            this.window.loadURL(serviceUrl);
         } catch (error) {
             dialog.showErrorBox('Error', error.message);
             log.error(error.message);
@@ -103,6 +168,35 @@ class AppManager {
     setupShortcuts() {
         electronLocalshortcut.register(this.window, 'Esc', () => {
             this.window.hide();
+        });
+    }
+
+    createTray() {
+        const iconInfo = this.provider.getTrayIconPath();
+        const icon = this.invertIconIfNeeded(iconInfo.path);
+        this.tray = new Tray(icon);
+        
+        const contextMenu = Menu.buildFromTemplate([
+            {
+                label: `Show ${this.provider.getName()}`,
+                click: () => {
+                    this.window.show();
+                }
+            },
+            {
+                label: 'Quit',
+                click: () => {
+                    app.isQuiting = true;
+                    app.quit();
+                }
+            }
+        ]);
+
+        this.tray.setToolTip(`Combo Desktop - ${this.provider.getName()}`);
+        this.tray.setContextMenu(contextMenu);
+        
+        this.tray.on('click', () => {
+            this.window.isVisible() ? this.window.hide() : this.window.show();
         });
     }
 }
