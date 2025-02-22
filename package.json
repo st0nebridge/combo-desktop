@@ -1,21 +1,44 @@
 {
   "name": "combo-desktop",
-  "version": "1.0.7",
-  "description": "",
-  "main": "main.js",
+  "version": "1.1.4",
+  "description": "Desktop application for WhatsApp and Facebook Messenger",
+  "main": "src/main.js",
   "scripts": {
     "start": "electron .",
-    "fb-start": "electron . --facebook",
-    "tray": "electron . --tray",
-    "fb-tray": "electron . --facebook --tray",
+    "whatsapp": "electron . --whatsapp",
+    "facebook": "electron . --facebook",
+    "whatsapp-tray": "electron . --whatsapp --tray",
+    "facebook-tray": "electron . --facebook --tray",
+    "lint": "eslint src/",
+    "test": "jest",
     "pack": "electron-builder --dir",
-    "dist": "electron-builder"
+    "dist": "electron-builder",
+    "postinstall": "electron-builder install-app-deps"
   },
   "devDependencies": {
-    "electron": "^5.0.6",
-    "electron-builder": "^21.2.0"
+    "electron": "^29.1.1",
+    "electron-builder": "^24.12.0",
+    "eslint": "^8.57.0",
+    "eslint-config-airbnb-base": "^15.0.0",
+    "eslint-plugin-import": "^2.29.1",
+    "jest": "^29.7.0",
+    "typescript": "^5.3.3",
+    "@types/node": "^20.11.20"
   },
   "dependencies": {
-    "electron-localshortcut": "^3.1.0"
+    "electron-localshortcut": "^3.2.1",
+    "electron-log": "^5.1.0",
+    "electron-store": "^8.1.0"
+  },
+  "build": {
+    "appId": "com.st0nebridge.combo-desktop",
+    "productName": "Combo Desktop",
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.ico"
+    }
   }
 }

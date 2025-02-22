@@ -1,48 +1,100 @@
-combo-desktop
-========================
-Combo Desktop app with Notification Area Icon for WhatsApp and Facebook Messenger
+# Combo Desktop
 
-Electron window loads web.whatsapp.com/messenger.com and blinks with tray icon when a new messages arrives.
+A desktop application that combines WhatsApp and Facebook Messenger into a single, convenient desktop experience.
 
-- Minimize the main window to the tray by closing it or by pressing ESC
-- Start minimized using **--tray** argument
-- Quit app use tray icon context menu
+## Features
 
-_* requires [NPM](https://www.w3schools.com/nodejs/nodejs_npm.asp) / [Yarn](/yarnpkg.com) *_
+- WhatsApp Web integration
+- Facebook Messenger integration
+- System tray support
+- Desktop notifications
+- Keyboard shortcuts
+- Cross-platform support
 
-init
-------------------------
-`npm i`
+## Installation
 
-or
+1. Clone the repository:
+```bash
+git clone https://github.com/st0nebridge/combo-desktop.git
+cd combo-desktop
+```
 
-`yarn install`
+2. Install dependencies:
+```bash
+yarn install
+```
 
-run
-------------------------
-`npm start`
+3. Start the application:
+```bash
+# Start with WhatsApp (default)
+yarn start
 
-or
+# Start with Facebook Messenger
+yarn fb-start
 
-`yarn start` (WhatsApp)
+# Start minimized to tray
+yarn tray
 
-`yarn fb-start` (Facebook Messenger)
+# Start Facebook Messenger minimized to tray
+yarn fb-tray
+```
 
-or
+## Development
 
-`yarn tray` (minimized to tray - WhatsApp)
+### Prerequisites
 
-`yarn fb-tray` (minimized to tray - Messenger)
+- Node.js (v16 or higher)
+- Yarn package manager
+- Git
 
-build
-------------------------
-`electron-builder ./`
+### Setup Development Environment
 
-or
+1. Install development dependencies:
+```bash
+yarn install
+```
 
-`yarn dist`
+2. Run in development mode:
+```bash
+yarn dev
+```
 
-arguments
-------------------------
-- **--tray** - will start electron in the tray
-- **--facebook** - will start app for Facebook Messenger instead of default WhatsApp
+### Building
+
+To create a production build:
+
+```bash
+# For your current platform
+yarn dist
+
+# For a specific platform
+yarn dist --win
+yarn dist --mac
+yarn dist --linux
+```
+
+### Testing
+
+```bash
+# Run tests
+yarn test
+
+# Run linter
+yarn lint
+```
+
+## Keyboard Shortcuts
+
+- `Esc`: Hide window to tray
+
+## Contributing
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add some amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
