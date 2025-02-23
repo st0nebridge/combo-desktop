@@ -4,8 +4,13 @@ const path = require('path');
 const BaseProvider = require('./base.provider');
 
 class FacebookProvider extends BaseProvider {
+    constructor(window) {
+        super(window);
+        this.name = 'facebook';
+    }
+
     getName() {
-        return 'Facebook Messenger';
+        return 'facebook';
     }
 
     getCommandArg() {
@@ -13,7 +18,7 @@ class FacebookProvider extends BaseProvider {
     }
 
     getBaseIconPath() {
-        return path.join(__dirname, '..', '..', 'assets', 'icons', 'facebook');
+        return 'facebook';
     }
 
     // Optional: Override default notification interval
@@ -31,12 +36,17 @@ class FacebookProvider extends BaseProvider {
         
         // Monitor for notifications
         this.window.webContents.on('page-title-updated', (event, title) => {
-            if (title.match(/\([0-9]+\)/)) {
+            if (this.hasNotifications()) {
                 this.startNotification();
             } else {
                 this.stopNotification();
             }
         });
+    }
+
+    hasNotifications() {
+        const title = this.window.getTitle();
+        return title.includes('(') && title.includes(')');
     }
 
     injectCustomJS() {

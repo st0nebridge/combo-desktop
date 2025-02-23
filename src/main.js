@@ -1,17 +1,13 @@
 const { app, BrowserWindow, dialog, session, Tray, Menu, nativeImage, nativeTheme, ipcMain } = require('electron');
+const path = require('path');
 const electronLocalshortcut = require('electron-localshortcut');
 const log = require('electron-log');
-const Store = require('electron-store');
-const path = require('path');
 
 // Import provider registry
 const providerRegistry = require('./providers/provider.registry');
 
 // Configure logging
 log.initialize({ preload: true });
-
-// Initialize store
-const store = new Store();
 
 // Log available providers
 const availableProviders = providerRegistry.getAvailableProviders();
@@ -20,11 +16,32 @@ log.info('Available providers:', availableProviders);
 class AppManager {
     constructor() {
         this.window = null;
-        this.provider = null;
         this.tray = null;
+        this.provider = null;
         this.notificationTimer = null;
         this.isNotificationActive = false;
         this.currentNotificationState = false;
+        this.trayContextMenu = null;
+
+        // Initialize theme handling
+        nativeTheme.on('updated', () => {
+            console.log('Theme updated:', { 
+                isDark: nativeTheme.shouldUseDarkColors,
+                themeSource: nativeTheme.themeSource 
+            });
+            if (this.tray && this.provider) {
+                // Store current menu before destroying tray
+                const currentMenu = this.trayContextMenu;
+                this.tray.destroy();
+                this.tray = null;
+                this.createTray();
+                if (currentMenu) {
+                    this.tray.setContextMenu(currentMenu);
+                    this.trayContextMenu = currentMenu;
+                }
+                this.updateTrayIcon(this.currentNotificationState);
+            }
+        });
     }
 
     validateProvider() {
@@ -47,24 +64,13 @@ class AppManager {
         }
     }
 
-    // Helper to invert icon colors for light mode
-    invertIconIfNeeded(iconPath) {
-        if (nativeTheme.shouldUseDarkColors) {
-            return nativeImage.createFromPath(iconPath);
-        }
-        
-        const image = nativeImage.createFromPath(iconPath);
-        // Invert the image colors
-        return image.invert();
-    }
-
     // Update tray icon based on notification state
     updateTrayIcon(notificationState = false) {
         if (!this.tray || !this.provider) return;
-
-        const iconInfo = this.provider.getTrayIconPath(notificationState);
-        const icon = this.invertIconIfNeeded(iconInfo.path);
-        this.tray.setImage(icon);
+        
+        const trayIconInfo = this.provider.getTrayIcon(notificationState);
+        this.tray.setImage(trayIconInfo.image);
+        this.currentNotificationState = notificationState;
     }
 
     // Handle notification state changes
@@ -128,16 +134,6 @@ class AppManager {
                 this.handleNotificationStateChange(isActive);
             });
 
-            // Handle theme changes
-            nativeTheme.on('updated', () => {
-                this.updateTrayIcon(this.currentNotificationState);
-            });
-
-            // Set up window event handlers
-            this.window.on('closed', () => {
-                this.window = null;
-            });
-
             this.setupWindowEvents();
             this.setupShortcuts();
 
@@ -146,9 +142,8 @@ class AppManager {
 
             log.info('Browser window created.');
 
-            // Load the appropriate URL
-            const serviceUrl = this.provider instanceof require('./providers/facebook.provider') ? 'https://www.messenger.com/login' : 'https://web.whatsapp.com/';
-            this.window.loadURL(serviceUrl);
+            // Load the provider URL
+            this.window.loadURL(this.provider.getUrl());
         } catch (error) {
             dialog.showErrorBox('Error', error.message);
             log.error(error.message);
@@ -158,7 +153,7 @@ class AppManager {
 
     setupWindowEvents() {
         this.window.on('close', (event) => {
-            if (!app.isQuiting) {
+            if (!this.window.isQuitting) {
                 event.preventDefault();
                 this.window.hide();
             }
@@ -172,31 +167,40 @@ class AppManager {
     }
 
     createTray() {
-        const iconInfo = this.provider.getTrayIconPath();
-        const icon = this.invertIconIfNeeded(iconInfo.path);
-        this.tray = new Tray(icon);
+        if (this.tray) return;
+
+        // Get icon with notification state
+        const trayIconInfo = this.provider.getTrayIcon(this.currentNotificationState);
+        this.tray = new Tray(trayIconInfo.image);
         
+        // Create context menu
         const contextMenu = Menu.buildFromTemplate([
             {
-                label: `Show ${this.provider.getName()}`,
+                label: 'Show',
                 click: () => {
                     this.window.show();
+                    this.window.focus();
                 }
             },
             {
-                label: 'Quit',
+                label: 'Exit',
                 click: () => {
-                    app.isQuiting = true;
+                    this.window.isQuitting = true;
                     app.quit();
                 }
             }
         ]);
-
-        this.tray.setToolTip(`Combo Desktop - ${this.provider.getName()}`);
+        
         this.tray.setContextMenu(contextMenu);
+        this.trayContextMenu = contextMenu; // Store menu reference
         
         this.tray.on('click', () => {
-            this.window.isVisible() ? this.window.hide() : this.window.show();
+            if (this.window.isVisible()) {
+                this.window.hide();
+            } else {
+                this.window.show();
+                this.window.focus();
+            }
         });
     }
 }

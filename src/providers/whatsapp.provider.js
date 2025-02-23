@@ -6,10 +6,11 @@ const BaseProvider = require('./base.provider');
 class WhatsAppProvider extends BaseProvider {
     constructor(window) {
         super(window);
+        this.name = 'whatsapp';
     }
 
     getName() {
-        return 'WhatsApp';
+        return 'whatsapp';
     }
 
     getCommandArg() {
@@ -17,7 +18,7 @@ class WhatsAppProvider extends BaseProvider {
     }
 
     getBaseIconPath() {
-        return path.join(__dirname, '..', '..', 'assets', 'icons', 'whatsapp');
+        return 'whatsapp';
     }
 
     // Optional: Override default notification interval
@@ -36,7 +37,7 @@ class WhatsAppProvider extends BaseProvider {
         
         // Monitor for notifications
         this.window.webContents.on('page-title-updated', (event, title) => {
-            if (title.includes('(')) {
+            if (this.hasNotifications()) {
                 this.startNotification();
             } else {
                 this.stopNotification();
@@ -56,6 +57,12 @@ class WhatsAppProvider extends BaseProvider {
                 window.location.reload();
             }
         `);
+    }
+
+    // Check if the window title indicates notifications
+    hasNotifications() {
+        const title = this.window.getTitle();
+        return title.includes('(') && title.includes(')');
     }
 }
 

@@ -1,5 +1,6 @@
 const path = require('path');
 const { nativeTheme } = require('electron');
+const { getIconPath, getAppIconPath } = require('../utils/icons');
 
 class BaseProvider {
     constructor(window) {
@@ -46,22 +47,22 @@ class BaseProvider {
         throw new Error('getBaseIconPath() must be implemented by child class');
     }
 
-    // Get the tray icon path, considering system theme
-    getTrayIconPath(notification = false) {
-        const iconName = notification ? 'white_notif.ico' : 'white.ico';
-        const iconPath = path.join(this.getBaseIconPath(), iconName);
-        
-        // If system is in light mode, we'll need to invert the icon
-        // This will be handled by the main process
-        return {
-            path: iconPath,
-            invertForLight: true
-        };
+    /**
+     * Get the tray icon path for this provider
+     * @param {boolean} hasNotification - Whether there is a notification
+     * @returns {Object} Object containing icon path and theme info
+     */
+    getTrayIcon(hasNotification = false) {
+        const { getIconPath } = require('../utils/icons');
+        return getIconPath(this.getBaseIconPath(), hasNotification);
     }
 
-    // Get the main application icon path
+    /**
+     * Get the app icon path for this provider
+     * @returns {string} Path to the app icon
+     */
     getAppIconPath() {
-        return path.join(this.getBaseIconPath(), 'icon.ico');
+        return getAppIconPath(this.getName().toLowerCase());
     }
 
     // Start notification blinking
