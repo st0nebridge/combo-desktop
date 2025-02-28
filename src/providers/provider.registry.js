@@ -43,7 +43,10 @@ class ProviderRegistry {
         // Find the matching provider based on command line arguments
         for (const [arg, ProviderClass] of this.providers) {
             if (args.includes(arg)) {
-                return new ProviderClass(window);
+                const provider = new ProviderClass();
+                provider.window = window;
+                provider.webContents = window.webContents;
+                return provider;
             }
         }
 

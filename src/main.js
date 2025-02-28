@@ -1,5 +1,6 @@
 const { app, BrowserWindow, dialog, session, Tray, Menu, nativeImage, nativeTheme, ipcMain } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const electronLocalshortcut = require('electron-localshortcut');
 const log = require('electron-log');
 const profileCLI = require('./cli/profile-cli');
@@ -10,8 +11,16 @@ const providerRegistry = require('./providers/provider.registry');
 // Import profile manager
 const profileManager = require('./services/profile.manager');
 
+// Import user agent configuration
+const userAgentConfig = require('./config/user-agent.config');
+
 // Configure logging
-log.initialize({ preload: true });
+log.transports.console.level = 'debug';
+log.transports.file.level = 'debug';
+log.transports.file.format = '[{y}-{m}-{d} {h}:{i}:{s}.{ms}] [{level}] {text}';
+log.transports.console.format = '[{h}:{i}:{s}.{ms}] [{level}] {text}';
+log.catchErrors();
+log.info('Logging initialized');
 
 // Log available providers
 const availableProviders = providerRegistry.getAvailableProviders();
@@ -122,7 +131,8 @@ class AppManager {
             this.validateProvider();
 
             // Set modern Chrome user agent
-            const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.6167.184 Safari/537.36';
+            const userAgent = userAgentConfig.DEFAULT_USER_AGENT;
+            log.info('Using global user agent:', userAgent);
             
             // Update the user agent for all sessions
             session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
@@ -138,16 +148,22 @@ class AppManager {
                 
                 // Clear all cookies and cache for WhatsApp to ensure fresh session
                 whatsAppSession.clearStorageData().then(() => {
-                    console.log('Cleared WhatsApp session data');
+                    log.info('Cleared WhatsApp session data');
                 });
                 
-                // Set user agent for WhatsApp session
+                // Set user agent for WhatsApp session using centralized config
+                const whatsAppUserAgent = userAgentConfig.getUserAgentForProvider('WhatsApp');
+                const clientHintHeaders = userAgentConfig.CLIENT_HINT_HEADERS;
+                
+                log.info('Using WhatsApp-specific user agent:', whatsAppUserAgent);
+                log.info('Using client hint headers:', JSON.stringify(clientHintHeaders));
+                
                 whatsAppSession.webRequest.onBeforeSendHeaders((details, callback) => {
-                    details.requestHeaders['User-Agent'] = userAgent;
+                    details.requestHeaders['User-Agent'] = whatsAppUserAgent;
                     // Add additional headers that might help with compatibility
-                    details.requestHeaders['Sec-CH-UA'] = '"Chromium";v="121", "Google Chrome";v="121"';
-                    details.requestHeaders['Sec-CH-UA-Mobile'] = '?0';
-                    details.requestHeaders['Sec-CH-UA-Platform'] = '"Windows"';
+                    Object.keys(clientHintHeaders).forEach(key => {
+                        details.requestHeaders[key] = clientHintHeaders[key];
+                    });
                     callback({ requestHeaders: details.requestHeaders });
                 });
             }
@@ -166,6 +182,16 @@ class AppManager {
             // Create and initialize the provider using the registry
             this.provider = providerRegistry.createProvider(this.window, process.argv.slice(1));
             log.info(`Initializing ${this.provider.getName()} provider with profile ${this.currentProfile}...`);
+
+            // Set provider window and webContents
+            this.provider.window = this.window;
+            this.provider.webContents = this.window.webContents;
+            
+            // Setup event handlers for the window
+            this.setupWindowEvents();
+            
+            // Initialize the provider
+            this.provider.initialize(this.currentProfile);
 
             // Get or create profile
             let profile;
@@ -242,11 +268,67 @@ class AppManager {
             ipcMain.on('notification-state-changed', (event, isActive) => {
                 this.handleNotificationStateChange(isActive);
             });
+            
+            // Set up IPC handler for bypass method
+            ipcMain.on('bypass-method-effective', (event, method) => {
+                log.info('*************************************');
+                log.info(`EFFECTIVE BYPASS METHOD: ${method}`);
+                log.info('*************************************');
+            });
+
+            // Handle IPC events
+            ipcMain.on('notification-state-changed', (event, isActive) => {
+                console.log('Notification state changed:', isActive);
+                // Handle notification state change
+            });
+
+            // Handle bypass method reporting
+            ipcMain.on('bypass-method-effective', (event, method) => {
+                console.log('Effective bypass method:', method);
+                
+                try {
+                    // Log the effective bypass method
+                    const electron = require('electron');
+                    const logPath = path.join(electron.app.getPath('userData'), 'bypass-method.log');
+                    const logEntry = `${new Date().toISOString()} - Effective bypass method: ${method}\n`;
+                    
+                    fs.appendFile(logPath, logEntry, (err) => {
+                        if (err) {
+                            console.error('Failed to write to bypass method log:', err);
+                        } else {
+                            console.log('Bypass method logged to:', logPath);
+                        }
+                    });
+                } catch (error) {
+                    console.error('Error writing bypass method log:', error);
+                }
+            });
+
+            // Handle user agent requests
+            ipcMain.handle('get-user-agent', (event) => {
+                // Get the provider for the current window
+                const win = BrowserWindow.fromWebContents(event.sender);
+                if (!win) {
+                    console.error('Could not find window for WebContents');
+                    return null;
+                }
+                
+                // Get the provider for this window
+                const provider = win.provider;
+                if (!provider) {
+                    console.error('No provider associated with this window');
+                    return null;
+                }
+                
+                // Return the user agent information
+                return {
+                    userAgent: provider.options.userAgent,
+                    clientHintHeaders: provider.options.clientHintHeaders
+                };
+            });
 
             log.info('Browser window created.');
 
-            // Initialize the provider
-            this.provider.initialize();
         } catch (error) {
             dialog.showErrorBox('Error', error.message);
             log.error(error.message);
