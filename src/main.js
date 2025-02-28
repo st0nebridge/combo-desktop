@@ -2,9 +2,13 @@ const { app, BrowserWindow, dialog, session, Tray, Menu, nativeImage, nativeThem
 const path = require('path');
 const electronLocalshortcut = require('electron-localshortcut');
 const log = require('electron-log');
+const profileCLI = require('./cli/profile-cli');
 
 // Import provider registry
 const providerRegistry = require('./providers/provider.registry');
+
+// Import profile manager
+const profileManager = require('./services/profile.manager');
 
 // Configure logging
 log.initialize({ preload: true });
@@ -12,6 +16,15 @@ log.initialize({ preload: true });
 // Log available providers
 const availableProviders = providerRegistry.getAvailableProviders();
 log.info('Available providers:', availableProviders);
+
+// Handle profile CLI commands
+const profileCommandIndex = process.argv.indexOf('--profiles');
+if (profileCommandIndex !== -1) {
+    app.whenReady().then(() => {
+        profileCLI.handleCommand(process.argv.slice(profileCommandIndex + 1));
+    });
+    return;
+}
 
 class AppManager {
     constructor() {
@@ -22,6 +35,14 @@ class AppManager {
         this.isNotificationActive = false;
         this.currentNotificationState = false;
         this.trayContextMenu = null;
+        this.currentProfile = 'default';
+
+        // Parse command line arguments for profile
+        const args = process.argv.slice(1);
+        const profileIndex = args.indexOf('--profile');
+        if (profileIndex !== -1 && profileIndex + 1 < args.length) {
+            this.currentProfile = args[profileIndex + 1];
+        }
 
         // Initialize theme handling
         nativeTheme.on('updated', () => {
@@ -101,13 +122,35 @@ class AppManager {
             this.validateProvider();
 
             // Set modern Chrome user agent
-            const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
+            const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.6167.184 Safari/537.36';
             
             // Update the user agent for all sessions
             session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
                 details.requestHeaders['User-Agent'] = userAgent;
                 callback({ requestHeaders: details.requestHeaders });
             });
+
+            // For WhatsApp specifically, set up a more aggressive user agent override
+            if (process.argv.includes('--whatsapp')) {
+                // Get the partition name for WhatsApp
+                const whatsAppPartition = profileManager.getPartitionName('WhatsApp', this.currentProfile);
+                const whatsAppSession = session.fromPartition(whatsAppPartition);
+                
+                // Clear all cookies and cache for WhatsApp to ensure fresh session
+                whatsAppSession.clearStorageData().then(() => {
+                    console.log('Cleared WhatsApp session data');
+                });
+                
+                // Set user agent for WhatsApp session
+                whatsAppSession.webRequest.onBeforeSendHeaders((details, callback) => {
+                    details.requestHeaders['User-Agent'] = userAgent;
+                    // Add additional headers that might help with compatibility
+                    details.requestHeaders['Sec-CH-UA'] = '"Chromium";v="121", "Google Chrome";v="121"';
+                    details.requestHeaders['Sec-CH-UA-Mobile'] = '?0';
+                    details.requestHeaders['Sec-CH-UA-Platform'] = '"Windows"';
+                    callback({ requestHeaders: details.requestHeaders });
+                });
+            }
 
             this.window = new BrowserWindow({
                 width: 1000,
@@ -116,12 +159,78 @@ class AppManager {
                     nodeIntegration: false,
                     contextIsolation: true,
                     webSecurity: true,
+                    preload: path.join(__dirname, 'preload.js')
                 }
             });
 
             // Create and initialize the provider using the registry
             this.provider = providerRegistry.createProvider(this.window, process.argv.slice(1));
-            log.info(`Initializing ${this.provider.getName()} provider...`);
+            log.info(`Initializing ${this.provider.getName()} provider with profile ${this.currentProfile}...`);
+
+            // Get or create profile
+            let profile;
+            try {
+                profile = profileManager.getProfile(this.provider.getName(), this.currentProfile);
+                
+                // Handle non-default profiles that don't exist
+                if (!profile && this.currentProfile !== 'default') {
+                    const response = await dialog.showMessageBox({
+                        type: 'question',
+                        buttons: ['Cancel', 'Create Profile'],
+                        defaultId: 1,
+                        title: 'Create New Profile',
+                        message: `Profile '${this.currentProfile}' does not exist for ${this.provider.getName()}.`,
+                        detail: 'Would you like to create it?'
+                    });
+
+                    if (response.response === 0) {
+                        app.exit(0);
+                        return;
+                    }
+                }
+
+                // Create profile if it doesn't exist
+                if (!profile) {
+                    const partition = profileManager.createProfile(this.provider.getName(), this.currentProfile);
+                    log.info(`Created new profile: ${partition}`);
+                }
+            } catch (error) {
+                log.error('Error managing profile:', error);
+                throw error;
+            }
+
+            // Get web preferences from provider
+            const webPreferences = {
+                ...this.provider.getWebPreferences(),
+                partition: profileManager.getPartitionName(this.provider.getName(), this.currentProfile),
+                nodeIntegration: false,
+                contextIsolation: true,
+                webSecurity: true,
+                preload: path.join(__dirname, 'preload.js')
+            };
+
+            // In newer Electron versions, we can't modify web preferences after window creation
+            // We need to recreate the window with the new preferences
+            const bounds = this.window.getBounds();
+            this.window.close();
+            
+            // Create a new window with the updated preferences
+            this.window = new BrowserWindow({
+                width: bounds.width || 1000,
+                height: bounds.height || 800,
+                x: bounds.x,
+                y: bounds.y,
+                icon: this.provider.getAppIconPath(),
+                title: this.provider.getName(),
+                webPreferences
+            });
+            
+            // Re-setup window events and shortcuts
+            this.setupWindowEvents();
+            this.setupShortcuts();
+            
+            // Load the URL
+            this.window.loadURL(this.provider.getUrl());
 
             // Update window icon with provider's icon
             this.window.setIcon(this.provider.getAppIconPath());
@@ -134,16 +243,10 @@ class AppManager {
                 this.handleNotificationStateChange(isActive);
             });
 
-            this.setupWindowEvents();
-            this.setupShortcuts();
+            log.info('Browser window created.');
 
             // Initialize the provider
             this.provider.initialize();
-
-            log.info('Browser window created.');
-
-            // Load the provider URL
-            this.window.loadURL(this.provider.getUrl());
         } catch (error) {
             dialog.showErrorBox('Error', error.message);
             log.error(error.message);

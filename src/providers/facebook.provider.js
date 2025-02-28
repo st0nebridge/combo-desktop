@@ -6,11 +6,10 @@ const BaseProvider = require('./base.provider');
 class FacebookProvider extends BaseProvider {
     constructor(window) {
         super(window);
-        this.name = 'facebook';
     }
 
     getName() {
-        return 'facebook';
+        return 'Facebook';
     }
 
     getCommandArg() {

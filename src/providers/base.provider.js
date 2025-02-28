@@ -10,6 +10,7 @@ class BaseProvider {
         this.window = window;
         this.notificationInterval = null;
         this.hasNotification = false;
+        this._webPreferences = {};
     }
 
     // Abstract methods that must be implemented by child classes
@@ -85,6 +86,20 @@ class BaseProvider {
     // Optional: Custom JS injection
     injectCustomJS() {
         // Default implementation does nothing
+    }
+
+    // Get web preferences for the provider
+    getWebPreferences() {
+        return this._webPreferences;
+    }
+
+    // Set web preferences for the provider
+    setWebPreferences(preferences) {
+        if (preferences.partition) {
+            console.warn('Partition property in web preferences will be ignored. Use profiles instead.');
+            delete preferences.partition;
+        }
+        this._webPreferences = preferences;
     }
 }
 
