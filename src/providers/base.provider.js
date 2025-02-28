@@ -1,6 +1,4 @@
-const path = require('path');
-const { nativeTheme } = require('electron');
-const { getIconPath, getAppIconPath } = require('../utils/icons');
+const {  getAppIconPath } = require('../utils/icons');
 const log = require("electron-log");
 
 class BaseProvider {
@@ -9,7 +7,6 @@ class BaseProvider {
             throw new Error('BaseProvider is abstract and cannot be instantiated directly');
         }
         this.window = window;
-        this.notificationInterval = null;
         this.hasNotification = false;
         this._webPreferences = {};
     }
@@ -103,10 +100,14 @@ class BaseProvider {
         this._webPreferences = preferences;
     }
 
+    getStoragesNames() {
+        return ['cookies', 'localstorage', 'sessionstorage', 'websql', 'indexdb'];
+    }
+
     clearSessionData() {
         if (this.window && this.window.webContents) {
             this.window.webContents.session.clearStorageData({
-                storages: ['cookies', 'localstorage', 'sessionstorage', 'websql', 'indexdb']
+                storages: this.getStoragesNames()
             }, () => {
                 log.info('Session data cleared');
             });

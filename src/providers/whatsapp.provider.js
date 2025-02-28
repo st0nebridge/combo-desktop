@@ -14,15 +14,15 @@ class WhatsAppProvider extends BaseProvider {
     constructor(options = {}) {
         super(null);
         
-        // Set default options
-        this.options = Object.assign({
-            userAgent: userAgentConfig.getUserAgentForProvider('WhatsApp'),
-            clientHintHeaders: userAgentConfig.CLIENT_HINT_HEADERS
-        }, options);
-
-        // Log the user agent configuration
-        console.log('WhatsApp provider initialized with user agent:', this.options.userAgent);
-        console.log('WhatsApp provider initialized with client hint headers:', this.options.clientHintHeaders);
+        // // Set default options
+        // this.options = Object.assign({
+        //     userAgent: userAgentConfig.getUserAgentForProvider('WhatsApp'),
+        //     clientHintHeaders: userAgentConfig.CLIENT_HINT_HEADERS
+        // }, options);
+        //
+        // // Log the user agent configuration
+        // console.log('WhatsApp provider initialized with user agent:', this.options.userAgent);
+        // console.log('WhatsApp provider initialized with client hint headers:', this.options.clientHintHeaders);
 
         // Initialize the window
         this.window = null;
@@ -40,6 +40,7 @@ class WhatsAppProvider extends BaseProvider {
      */
     initialize(profileName = 'default') {
         log.info('Initializing WhatsApp provider with profile', profileName + '...');
+        this.window.loadURL(this.getUrl());
 
         // Store the profile name
         this.profile = profileName;
@@ -51,32 +52,34 @@ class WhatsAppProvider extends BaseProvider {
         }
         
         // Load the WhatsApp URL if window is available
-        if (this.window && this.window.webContents) {
-            this.loadWhatsApp();
-        } else {
-            console.error('Window or webContents not available for initialization');
-        }
+        // if (this.window && this.window.webContents) {
+        //     this.loadWhatsApp();
+        // } else {
+        //     console.error('Window or webContents not available for initialization');
+        // }
     }
     
-    /**
-     * Load WhatsApp URL
-     */
-    loadWhatsApp() {
-        const url = this.getUrl();
-        log.info('Loading WhatsApp URL:', url);
-        
-        // Load the URL
-        if (this.window && this.window.webContents) {
-            this.window.webContents.loadURL(url, {
-                userAgent: this.options.userAgent,
-                extraHeaders: Object.entries(this.options.clientHintHeaders)
-                    .map(([key, value]) => `${key}: ${value}`)
-                    .join('\n')
-            });
-        } else {
-            console.error('Window or webContents not available');
-        }
-    }
+    // /**
+    //  * Load WhatsApp URL
+    //  */
+    // loadWhatsApp() {
+    //     const url = this.getUrl();
+    //     log.info('Loading WhatsApp URL:', url);
+    //
+    //     // Load the URL
+    //     if (this.window && this.window.webContents) {
+    //         this.window.webContents.loadURL(url);
+    //
+    //         // this.window.webContents.loadURL(url, {
+    //         //     userAgent: this.options.userAgent,
+    //         //     extraHeaders: Object.entries(this.options.clientHintHeaders)
+    //         //         .map(([key, value]) => `${key}: ${value}`)
+    //         //         .join('\n')
+    //         // });
+    //     } else {
+    //         console.error('Window or webContents not available');
+    //     }
+    // }
 
     getName() {
         return 'WhatsApp';
@@ -168,7 +171,7 @@ class WhatsAppProvider extends BaseProvider {
             log.error('Error injecting custom JavaScript:', err);
         });
     }
-    
+
     // Check if the window title indicates notifications
     hasNotifications() {
         const title = this.window.getTitle();

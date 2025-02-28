@@ -1,6 +1,5 @@
-const { app, BrowserWindow, dialog, session, Tray, Menu, nativeImage, nativeTheme, ipcMain } = require('electron');
+const { app, BrowserWindow, dialog, session, Tray, Menu, nativeTheme, ipcMain } = require('electron');
 const path = require('path');
-const fs = require('fs');
 const electronLocalshortcut = require('electron-localshortcut');
 const log = require('electron-log');
 const profileCLI = require('./cli/profile-cli');
@@ -96,7 +95,9 @@ class AppManager {
 
     // Update tray icon based on notification state
     updateTrayIcon(notificationState = false) {
-        if (!this.tray || !this.provider) return;
+        if (!this.tray || !this.provider) {
+            return;
+        }
         
         const trayIconInfo = this.provider.getTrayIcon(notificationState);
         this.tray.setImage(trayIconInfo.image);
@@ -105,7 +106,9 @@ class AppManager {
 
     // Handle notification state changes
     handleNotificationStateChange(isActive) {
-        if (this.isNotificationActive === isActive) return;
+        if (this.isNotificationActive === isActive) {
+            return;
+        }
         
         this.isNotificationActive = isActive;
         if (isActive) {
@@ -129,6 +132,38 @@ class AppManager {
     async createWindow() {
         try {
             this.validateProvider();
+
+            // Get or create profile
+            let profile;
+            try {
+                profile = profileManager.getProfile(this.provider.getName(), this.currentProfile);
+
+                // Handle non-default profiles that don't exist
+                if (!profile && this.currentProfile !== 'default') {
+                    const response = await dialog.showMessageBox({
+                        type: 'question',
+                        buttons: ['Cancel', 'Create Profile'],
+                        defaultId: 1,
+                        title: 'Create New Profile',
+                        message: `Profile '${this.currentProfile}' does not exist for ${this.provider.getName()}.`,
+                        detail: 'Would you like to create it?'
+                    });
+
+                    if (response.response === 0) {
+                        app.exit(0);
+                        return;
+                    }
+                }
+
+                // Create profile if it doesn't exist
+                if (!profile) {
+                    const partition = profileManager.createProfile(this.provider.getName(), this.currentProfile);
+                    log.info(`Created new profile: ${partition}`);
+                }
+            } catch (error) {
+                log.error('Error managing profile:', error);
+                throw error;
+            }
 
             // Set modern Chrome user agent
             const userAgent = userAgentConfig.DEFAULT_USER_AGENT;
@@ -189,41 +224,9 @@ class AppManager {
             
             // Setup event handlers for the window
             this.setupWindowEvents();
-            
+
             // Initialize the provider
             this.provider.initialize(this.currentProfile);
-
-            // Get or create profile
-            let profile;
-            try {
-                profile = profileManager.getProfile(this.provider.getName(), this.currentProfile);
-                
-                // Handle non-default profiles that don't exist
-                if (!profile && this.currentProfile !== 'default') {
-                    const response = await dialog.showMessageBox({
-                        type: 'question',
-                        buttons: ['Cancel', 'Create Profile'],
-                        defaultId: 1,
-                        title: 'Create New Profile',
-                        message: `Profile '${this.currentProfile}' does not exist for ${this.provider.getName()}.`,
-                        detail: 'Would you like to create it?'
-                    });
-
-                    if (response.response === 0) {
-                        app.exit(0);
-                        return;
-                    }
-                }
-
-                // Create profile if it doesn't exist
-                if (!profile) {
-                    const partition = profileManager.createProfile(this.provider.getName(), this.currentProfile);
-                    log.info(`Created new profile: ${partition}`);
-                }
-            } catch (error) {
-                log.error('Error managing profile:', error);
-                throw error;
-            }
 
             // Get web preferences from provider
             const webPreferences = {
@@ -294,7 +297,9 @@ class AppManager {
     }
 
     createTray() {
-        if (this.tray) return;
+        if (this.tray) {
+            return;
+        }
 
         // Get icon with notification state
         const trayIconInfo = this.provider.getTrayIcon(this.currentNotificationState);

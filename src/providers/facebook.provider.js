@@ -1,6 +1,4 @@
 // Facebook provider functionality
-const { BrowserWindow } = require('electron');
-const path = require('path');
 const BaseProvider = require('./base.provider');
 
 class FacebookProvider extends BaseProvider {

@@ -37,7 +37,9 @@ class ProfileCLI {
 
     // Format data as a table with proper spacing
     formatAsTable(data) {
-        if (!data || data.length === 0) return '';
+        if (!data || data.length === 0) {
+            return '';
+        }
         
         // Get all column names
         const columns = Object.keys(data[0]);
@@ -121,8 +123,12 @@ class ProfileCLI {
             if (providerCompare !== 0) return providerCompare;
             
             // Always put default profiles first
-            if (a.Profile === 'default') return -1;
-            if (b.Profile === 'default') return 1;
+            if (a.Profile === 'default') {
+                return -1;
+            }
+            if (b.Profile === 'default') {
+                return 1;
+            }
             
             return a.Profile.localeCompare(b.Profile);
         });
