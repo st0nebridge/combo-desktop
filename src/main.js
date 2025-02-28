@@ -140,33 +140,33 @@ class AppManager {
                 callback({ requestHeaders: details.requestHeaders });
             });
 
-            // For WhatsApp specifically, set up a more aggressive user agent override
-            if (process.argv.includes('--whatsapp')) {
-                // Get the partition name for WhatsApp
-                const whatsAppPartition = profileManager.getPartitionName('WhatsApp', this.currentProfile);
-                const whatsAppSession = session.fromPartition(whatsAppPartition);
-                
-                // Clear all cookies and cache for WhatsApp to ensure fresh session
-                whatsAppSession.clearStorageData().then(() => {
-                    log.info('Cleared WhatsApp session data');
-                });
-                
-                // Set user agent for WhatsApp session using centralized config
-                const whatsAppUserAgent = userAgentConfig.getUserAgentForProvider('WhatsApp');
-                const clientHintHeaders = userAgentConfig.CLIENT_HINT_HEADERS;
-                
-                log.info('Using WhatsApp-specific user agent:', whatsAppUserAgent);
-                log.info('Using client hint headers:', JSON.stringify(clientHintHeaders));
-                
-                whatsAppSession.webRequest.onBeforeSendHeaders((details, callback) => {
-                    details.requestHeaders['User-Agent'] = whatsAppUserAgent;
-                    // Add additional headers that might help with compatibility
-                    Object.keys(clientHintHeaders).forEach(key => {
-                        details.requestHeaders[key] = clientHintHeaders[key];
-                    });
-                    callback({ requestHeaders: details.requestHeaders });
-                });
-            }
+            // // For WhatsApp specifically, set up a more aggressive user agent override
+            // if (process.argv.includes('--whatsapp')) {
+            //     // Get the partition name for WhatsApp
+            //     const whatsAppPartition = profileManager.getPartitionName('WhatsApp', this.currentProfile);
+            //     const whatsAppSession = session.fromPartition(whatsAppPartition);
+            //
+            //     // Clear all cookies and cache for WhatsApp to ensure fresh session
+            //     whatsAppSession.clearStorageData().then(() => {
+            //         log.info('Cleared WhatsApp session data');
+            //     });
+            //
+            //     // Set user agent for WhatsApp session using centralized config
+            //     const whatsAppUserAgent = userAgentConfig.getUserAgentForProvider('WhatsApp');
+            //     const clientHintHeaders = userAgentConfig.CLIENT_HINT_HEADERS;
+            //
+            //     log.info('Using WhatsApp-specific user agent:', whatsAppUserAgent);
+            //     log.info('Using client hint headers:', JSON.stringify(clientHintHeaders));
+            //
+            //     whatsAppSession.webRequest.onBeforeSendHeaders((details, callback) => {
+            //         details.requestHeaders['User-Agent'] = whatsAppUserAgent;
+            //         // Add additional headers that might help with compatibility
+            //         Object.keys(clientHintHeaders).forEach(key => {
+            //             details.requestHeaders[key] = clientHintHeaders[key];
+            //         });
+            //         callback({ requestHeaders: details.requestHeaders });
+            //     });
+            // }
 
             this.window = new BrowserWindow({
                 width: 1000,
@@ -267,64 +267,6 @@ class AppManager {
             // Set up IPC handlers for notifications
             ipcMain.on('notification-state-changed', (event, isActive) => {
                 this.handleNotificationStateChange(isActive);
-            });
-            
-            // Set up IPC handler for bypass method
-            ipcMain.on('bypass-method-effective', (event, method) => {
-                log.info('*************************************');
-                log.info(`EFFECTIVE BYPASS METHOD: ${method}`);
-                log.info('*************************************');
-            });
-
-            // Handle IPC events
-            ipcMain.on('notification-state-changed', (event, isActive) => {
-                console.log('Notification state changed:', isActive);
-                // Handle notification state change
-            });
-
-            // Handle bypass method reporting
-            ipcMain.on('bypass-method-effective', (event, method) => {
-                console.log('Effective bypass method:', method);
-                
-                try {
-                    // Log the effective bypass method
-                    const electron = require('electron');
-                    const logPath = path.join(electron.app.getPath('userData'), 'bypass-method.log');
-                    const logEntry = `${new Date().toISOString()} - Effective bypass method: ${method}\n`;
-                    
-                    fs.appendFile(logPath, logEntry, (err) => {
-                        if (err) {
-                            console.error('Failed to write to bypass method log:', err);
-                        } else {
-                            console.log('Bypass method logged to:', logPath);
-                        }
-                    });
-                } catch (error) {
-                    console.error('Error writing bypass method log:', error);
-                }
-            });
-
-            // Handle user agent requests
-            ipcMain.handle('get-user-agent', (event) => {
-                // Get the provider for the current window
-                const win = BrowserWindow.fromWebContents(event.sender);
-                if (!win) {
-                    console.error('Could not find window for WebContents');
-                    return null;
-                }
-                
-                // Get the provider for this window
-                const provider = win.provider;
-                if (!provider) {
-                    console.error('No provider associated with this window');
-                    return null;
-                }
-                
-                // Return the user agent information
-                return {
-                    userAgent: provider.options.userAgent,
-                    clientHintHeaders: provider.options.clientHintHeaders
-                };
             });
 
             log.info('Browser window created.');

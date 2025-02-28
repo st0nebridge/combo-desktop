@@ -1,6 +1,7 @@
 const path = require('path');
 const { nativeTheme } = require('electron');
 const { getIconPath, getAppIconPath } = require('../utils/icons');
+const log = require("electron-log");
 
 class BaseProvider {
     constructor(window) {
@@ -100,6 +101,18 @@ class BaseProvider {
             delete preferences.partition;
         }
         this._webPreferences = preferences;
+    }
+
+    clearSessionData() {
+        if (this.window && this.window.webContents) {
+            this.window.webContents.session.clearStorageData({
+                storages: ['cookies', 'localstorage', 'sessionstorage', 'websql', 'indexdb']
+            }, () => {
+                log.info('Session data cleared');
+            });
+        } else {
+            console.error('Window or webContents not available');
+        }
     }
 }
 

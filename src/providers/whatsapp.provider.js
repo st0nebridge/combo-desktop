@@ -1,7 +1,4 @@
 // WhatsApp provider functionality
-const { BrowserWindow, app } = require('electron');
-const path = require('path');
-const fs = require('fs');
 const log = require('electron-log');
 const BaseProvider = require('./base.provider');
 const userAgentConfig = require('../config/user-agent.config');
@@ -20,21 +17,13 @@ class WhatsAppProvider extends BaseProvider {
         // Set default options
         this.options = Object.assign({
             userAgent: userAgentConfig.getUserAgentForProvider('WhatsApp'),
-            clientHintHeaders: userAgentConfig.CLIENT_HINT_HEADERS,
-            bypassScriptPath: path.join(__dirname, '../injected/whatsapp-bypass.js')
+            clientHintHeaders: userAgentConfig.CLIENT_HINT_HEADERS
         }, options);
 
         // Log the user agent configuration
         console.log('WhatsApp provider initialized with user agent:', this.options.userAgent);
         console.log('WhatsApp provider initialized with client hint headers:', this.options.clientHintHeaders);
-        
-        // Set the bypass script path
-        this.bypassScriptPath = this.options.bypassScriptPath;
-        
-        // Log the bypass script path
-        console.log('WhatsApp provider initialized with bypass script path:', this.bypassScriptPath);
-        log.info('WhatsApp provider initialized with bypass script path:', this.bypassScriptPath);
-        
+
         // Initialize the window
         this.window = null;
         this.webContents = null;
@@ -51,8 +40,7 @@ class WhatsAppProvider extends BaseProvider {
      */
     initialize(profileName = 'default') {
         log.info('Initializing WhatsApp provider with profile', profileName + '...');
-        console.log('Initializing WhatsApp provider with profile', profileName + '...', this.bypassScriptPath);
-        
+
         // Store the profile name
         this.profile = profileName;
         
@@ -116,58 +104,6 @@ class WhatsAppProvider extends BaseProvider {
             console.error('Window or webContents not available for setting up event handlers');
             return;
         }
-        
-        console.log('Setting up WhatsApp event handlers');
-        
-        try {
-            // Set up event handlers for the window
-            this.window.webContents.on('did-finish-load', () => {
-                console.log('WhatsApp page finished loading');
-                this.injectBypassScript();
-                
-                // Check for bypass method after a delay
-                setTimeout(() => {
-                    this.checkBypassMethod();
-                }, 5000);
-            });
-            
-            // Check for bypass method periodically
-            const checkInterval = setInterval(() => {
-                if (!this.window || !this.window.webContents) {
-                    console.log('Window closed, clearing check interval');
-                    clearInterval(checkInterval);
-                    return;
-                }
-                this.checkBypassMethod();
-            }, 10000);
-            
-            // Clear interval when window is closed
-            this.window.on('closed', () => {
-                clearInterval(checkInterval);
-            });
-        } catch (error) {
-            console.error('Error setting up event handlers:', error);
-        }
-    }
-    
-    checkPageStatus() {
-        this.window.webContents.executeJavaScript(`
-            (function() {
-                const hasCompatibilityScreen = !!document.querySelector('.browser-version-warning, .landing-wrapper');
-                const hasWhatsAppScreen = !!document.querySelector('.app, #app, .web-app, .landing-main');
-                
-                return {
-                    hasCompatibilityScreen,
-                    hasWhatsAppScreen,
-                    url: window.location.href,
-                    title: document.title
-                };
-            })()
-        `).then(status => {
-            log.info('WhatsApp page status check:', status);
-        }).catch(err => {
-            log.error('Error checking WhatsApp page status:', err);
-        });
     }
 
     injectCustomJS() {
@@ -232,146 +168,11 @@ class WhatsAppProvider extends BaseProvider {
             log.error('Error injecting custom JavaScript:', err);
         });
     }
-
-    /**
-     * Checks for the bypass method element in the DOM
-     */
-    checkBypassMethod() {
-        if (!this.window || !this.window.webContents) {
-            console.error('Window or webContents not available');
-            return;
-        }
-        
-        try {
-            console.log('Checking for bypass method element...');
-            this.window.webContents.executeJavaScript(`
-                (function() {
-                    const bypassMethodElement = document.getElementById('whatsapp-bypass-method');
-                    if (bypassMethodElement) {
-                        return bypassMethodElement.getAttribute('data-method');
-                    }
-                    
-                    // Check localStorage as a fallback
-                    try {
-                        const storedMethod = localStorage.getItem('whatsapp-bypass-method');
-                        if (storedMethod) {
-                            return storedMethod;
-                        }
-                    } catch (e) {
-                        console.error('Error checking localStorage:', e);
-                    }
-                    
-                    return null;
-                })();
-            `)
-            .then(method => {
-                if (method) {
-                    console.log('*************************************');
-                    console.log(`DETECTED BYPASS METHOD: ${method}`);
-                    console.log('*************************************');
-                    
-                    try {
-                        // Create a bypass-method.log file using fs directly
-                        const electron = require('electron');
-                        const logPath = path.join(electron.app.getPath('userData'), 'bypass-method.log');
-                        const logEntry = `Effective bypass method: ${method}\nTimestamp: ${new Date().toISOString()}\n`;
-                        
-                        fs.writeFile(logPath, logEntry, (err) => {
-                            if (err) {
-                                console.error('Error writing bypass method log:', err);
-                            } else {
-                                console.log(`Bypass method logged to: ${logPath}`);
-                            }
-                        });
-                    } catch (error) {
-                        console.error('Error writing bypass method log:', error);
-                    }
-                }
-            })
-            .catch(error => {
-                console.error('Error checking bypass method:', error);
-            });
-        } catch (error) {
-            console.error('Error in checkBypassMethod:', error);
-        }
-    }
-
-    /**
-     * Injects the WhatsApp bypass script into the webview
-     */
-    injectBypassScript() {
-        if (!this.bypassScriptPath) {
-            console.error('WhatsApp bypass script path not set');
-            return;
-        }
-
-        console.log('Injecting WhatsApp bypass script:', this.bypassScriptPath);
-        
-        try {
-            const scriptContent = fs.readFileSync(this.bypassScriptPath, 'utf8');
-            
-            // Get the Chrome version from the user agent
-            const chromeVersionMatch = this.options.userAgent.match(/Chrome\/([0-9.]+)/);
-            const chromeVersion = chromeVersionMatch ? chromeVersionMatch[1] : userAgentConfig.DEFAULT_CHROME_VERSION;
-            
-            // Set user agent information in the window object before executing the bypass script
-            const userAgentSetupScript = `
-                window.whatsAppUserAgent = {
-                    userAgent: "${this.options.userAgent}",
-                    chromeVersion: "${chromeVersion}",
-                    clientHintHeaders: ${JSON.stringify(this.options.clientHintHeaders)}
-                };
-                console.log('[WhatsApp Provider] Set user agent information:', window.whatsAppUserAgent);
-            `;
-            
-            // Wrap the script content in a self-executing function and add debugging
-            const wrappedScript = `
-                console.log('[WhatsApp Provider] Starting bypass script injection');
-                ${userAgentSetupScript}
-                (function() {
-                    try {
-                        ${scriptContent}
-                        console.log('[WhatsApp Provider] Bypass script executed successfully');
-                    } catch (error) {
-                        console.error('[WhatsApp Provider] Error in bypass script:', error);
-                    }
-                })();
-            `;
-            
-            this.window.webContents.executeJavaScript(wrappedScript)
-                .then(() => {
-                    console.log('[WhatsApp Provider] Bypass script injected successfully');
-                })
-                .catch(error => {
-                    console.error('[WhatsApp Provider] Failed to inject bypass script:', error);
-                });
-        } catch (error) {
-            console.error('[WhatsApp Provider] Error reading bypass script:', error);
-        }
-    }
-
-    bypassCompatibilityCheck() {
-        // Execute script to bypass the compatibility check
-        log.info('Attempting to bypass WhatsApp compatibility check');
-        this.injectBypassScript();
-    }
-
+    
     // Check if the window title indicates notifications
     hasNotifications() {
         const title = this.window.getTitle();
         return title.includes('(') && title.includes(')');
-    }
-
-    clearSessionData() {
-        if (this.window && this.window.webContents) {
-            this.window.webContents.session.clearStorageData({
-                storages: ['cookies', 'localstorage', 'sessionstorage', 'websql', 'indexdb']
-            }, () => {
-                log.info('Session data cleared');
-            });
-        } else {
-            console.error('Window or webContents not available');
-        }
     }
 }
 
