@@ -10,9 +10,6 @@ const providerRegistry = require('./providers/provider.registry');
 // Import profile manager
 const profileManager = require('./services/profile.manager');
 
-// Import user agent configuration
-const userAgentConfig = require('./config/user-agent.config');
-
 // Configure logging
 log.transports.console.level = 'debug';
 log.transports.file.level = 'debug';
@@ -133,6 +130,25 @@ class AppManager {
         try {
             this.validateProvider();
 
+            // Initialize window first
+            const windowConfig = {
+                width: 1000,
+                height: 800,
+                webPreferences: {
+                    nodeIntegration: false,
+                    contextIsolation: true,
+                    webSecurity: true
+                }
+            };
+            
+            this.window = new BrowserWindow(windowConfig);
+
+            // Initialize provider with window
+            this.provider = providerRegistry.createProvider(this.window, process.argv.slice(1));
+            if (!this.provider) {
+                throw new Error('Failed to initialize provider');
+            }
+
             // Get or create profile
             let profile;
             try {
@@ -157,66 +173,21 @@ class AppManager {
 
                 // Create profile if it doesn't exist
                 if (!profile) {
-                    const partition = profileManager.createProfile(this.provider.getName(), this.currentProfile);
-                    log.info(`Created new profile: ${partition}`);
+                    profile = profileManager.createProfile(this.provider.getName(), this.currentProfile);
+                    log.info(`Created new profile: ${profile}`);
                 }
+
+                // Get partition name for the profile
+                const partition = profileManager.getPartitionName(this.provider.getName(), this.currentProfile);
+                log.info(`Using partition: ${partition}`);
+
+                // Configure user agent for the provider's session
+                this.provider.configureSession(partition);
+
             } catch (error) {
                 log.error('Error managing profile:', error);
                 throw error;
             }
-
-            // Set modern Chrome user agent
-            const userAgent = userAgentConfig.DEFAULT_USER_AGENT;
-            log.info('Using global user agent:', userAgent);
-            
-            // Update the user agent for all sessions
-            session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
-                details.requestHeaders['User-Agent'] = userAgent;
-                callback({ requestHeaders: details.requestHeaders });
-            });
-
-            // // For WhatsApp specifically, set up a more aggressive user agent override
-            // if (process.argv.includes('--whatsapp')) {
-            //     // Get the partition name for WhatsApp
-            //     const whatsAppPartition = profileManager.getPartitionName('WhatsApp', this.currentProfile);
-            //     const whatsAppSession = session.fromPartition(whatsAppPartition);
-            //
-            //     // Clear all cookies and cache for WhatsApp to ensure fresh session
-            //     whatsAppSession.clearStorageData().then(() => {
-            //         log.info('Cleared WhatsApp session data');
-            //     });
-            //
-            //     // Set user agent for WhatsApp session using centralized config
-            //     const whatsAppUserAgent = userAgentConfig.getUserAgentForProvider('WhatsApp');
-            //     const clientHintHeaders = userAgentConfig.CLIENT_HINT_HEADERS;
-            //
-            //     log.info('Using WhatsApp-specific user agent:', whatsAppUserAgent);
-            //     log.info('Using client hint headers:', JSON.stringify(clientHintHeaders));
-            //
-            //     whatsAppSession.webRequest.onBeforeSendHeaders((details, callback) => {
-            //         details.requestHeaders['User-Agent'] = whatsAppUserAgent;
-            //         // Add additional headers that might help with compatibility
-            //         Object.keys(clientHintHeaders).forEach(key => {
-            //             details.requestHeaders[key] = clientHintHeaders[key];
-            //         });
-            //         callback({ requestHeaders: details.requestHeaders });
-            //     });
-            // }
-
-            this.window = new BrowserWindow({
-                width: 1000,
-                height: 800,
-                webPreferences: {
-                    nodeIntegration: false,
-                    contextIsolation: true,
-                    webSecurity: true,
-                    preload: path.join(__dirname, 'preload.js')
-                }
-            });
-
-            // Create and initialize the provider using the registry
-            this.provider = providerRegistry.createProvider(this.window, process.argv.slice(1));
-            log.info(`Initializing ${this.provider.getName()} provider with profile ${this.currentProfile}...`);
 
             // Set provider window and webContents
             this.provider.window = this.window;

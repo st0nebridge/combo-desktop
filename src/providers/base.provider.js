@@ -1,5 +1,6 @@
 const {  getAppIconPath } = require('../utils/icons');
 const log = require("electron-log");
+const userAgentConfig = require('../config/user-agent.config');
 
 class BaseProvider {
     constructor(window) {
@@ -98,6 +99,50 @@ class BaseProvider {
             delete preferences.partition;
         }
         this._webPreferences = preferences;
+    }
+
+    /**
+     * Get the user agent string for this provider
+     * @returns {string} The user agent string
+     */
+    getUserAgent() {
+        return userAgentConfig.DEFAULT_USER_AGENT;
+    }
+
+    /**
+     * Get client hint headers for this provider
+     * @returns {Object} The client hint headers
+     */
+    getClientHints() {
+        return userAgentConfig.DEFAULT_CLIENT_HINTS;
+    }
+
+    /**
+     * Configure the session for this provider
+     * @param {string} partition - Session partition name
+     */
+    configureSession(partition) {
+        if (!partition || typeof partition !== 'string') {
+            throw new Error(`Invalid partition name: ${partition}`);
+        }
+
+        const { session } = require('electron');
+        const providerSession = session.fromPartition(partition);
+        const userAgent = this.getUserAgent();
+        const clientHints = this.getClientHints();
+
+        log.info(`[${this.getName()}] Configuring session (partition: ${partition})`);
+        log.info(`[${this.getName()}] Using user agent:`, userAgent);
+        log.info(`[${this.getName()}] Using client hints:`, JSON.stringify(clientHints));
+
+        providerSession.webRequest.onBeforeSendHeaders((details, callback) => {
+            const headers = details.requestHeaders;
+            headers['User-Agent'] = userAgent;
+            Object.entries(clientHints).forEach(([key, value]) => {
+                headers[key] = value;
+            });
+            callback({ requestHeaders: headers });
+        });
     }
 
     getStoragesNames() {

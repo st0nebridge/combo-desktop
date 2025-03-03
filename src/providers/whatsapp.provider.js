@@ -14,16 +14,6 @@ class WhatsAppProvider extends BaseProvider {
     constructor(options = {}) {
         super(null);
         
-        // // Set default options
-        // this.options = Object.assign({
-        //     userAgent: userAgentConfig.getUserAgentForProvider('WhatsApp'),
-        //     clientHintHeaders: userAgentConfig.CLIENT_HINT_HEADERS
-        // }, options);
-        //
-        // // Log the user agent configuration
-        // console.log('WhatsApp provider initialized with user agent:', this.options.userAgent);
-        // console.log('WhatsApp provider initialized with client hint headers:', this.options.clientHintHeaders);
-
         // Initialize the window
         this.window = null;
         this.webContents = null;
@@ -34,6 +24,30 @@ class WhatsAppProvider extends BaseProvider {
         // this.setupEventHandlers();
     }
     
+    /**
+     * Override user agent if needed
+     * @returns {string} The user agent string
+     */
+    getUserAgent() {
+        // Example of how to override the default user agent
+        // return 'Custom WhatsApp User Agent';
+        return super.getUserAgent();
+    }
+
+    /**
+     * Override client hints if needed
+     * @returns {Object} The client hint headers
+     */
+    getClientHints() {
+        // Example of how to override or extend default client hints
+        // const defaultHints = super.getClientHints();
+        // return {
+        //     ...defaultHints,
+        //     'custom-header': 'value'
+        // };
+        return super.getClientHints();
+    }
+
     /**
      * Initialize the provider with a profile
      * @param {string} profileName Profile name
