@@ -3,6 +3,7 @@
   "version": "1.1.4",
   "description": "Desktop application for WhatsApp and Facebook Messenger",
   "main": "src/main.js",
+  "chromeVersion": "121.0.6167.184",
   "scripts": {
     "start": "electron .",
     "whatsapp": "electron . --whatsapp",
