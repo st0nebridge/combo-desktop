@@ -13,15 +13,7 @@ class WhatsAppProvider extends BaseProvider {
      */
     constructor(options = {}) {
         super(null);
-        
-        // Initialize the window
-        this.window = null;
-        this.webContents = null;
-        this.profile = null;
         this.eventsSetup = false;
-        
-        // Set up event handlers
-        // this.setupEventHandlers();
     }
     
     /**
@@ -29,8 +21,6 @@ class WhatsAppProvider extends BaseProvider {
      * @returns {string} The user agent string
      */
     getUserAgent() {
-        // Example of how to override the default user agent
-        // return 'Custom WhatsApp User Agent';
         return super.getUserAgent();
     }
 
@@ -39,61 +29,21 @@ class WhatsAppProvider extends BaseProvider {
      * @returns {Object} The client hint headers
      */
     getClientHints() {
-        // Example of how to override or extend default client hints
-        // const defaultHints = super.getClientHints();
-        // return {
-        //     ...defaultHints,
-        //     'custom-header': 'value'
-        // };
         return super.getClientHints();
     }
 
     /**
-     * Initialize the provider with a profile
-     * @param {string} profileName Profile name
+     * Initialize provider-specific functionality
+     * @param {string} profile Profile name
      */
-    initialize(profileName = 'default') {
-        log.info('Initializing WhatsApp provider with profile', profileName + '...');
-        this.window.loadURL(this.getUrl());
-
-        // Store the profile name
-        this.profile = profileName;
+    async initializeProvider(profile) {
+        log.info('Initializing WhatsApp provider with profile:', profile);
         
-        // Setup event handlers if window is available
-        if (this.window && this.window.webContents && !this.eventsSetup) {
+        if (!this.eventsSetup) {
             this.setupEventHandlers();
             this.eventsSetup = true;
         }
-        
-        // Load the WhatsApp URL if window is available
-        // if (this.window && this.window.webContents) {
-        //     this.loadWhatsApp();
-        // } else {
-        //     console.error('Window or webContents not available for initialization');
-        // }
     }
-    
-    // /**
-    //  * Load WhatsApp URL
-    //  */
-    // loadWhatsApp() {
-    //     const url = this.getUrl();
-    //     log.info('Loading WhatsApp URL:', url);
-    //
-    //     // Load the URL
-    //     if (this.window && this.window.webContents) {
-    //         this.window.webContents.loadURL(url);
-    //
-    //         // this.window.webContents.loadURL(url, {
-    //         //     userAgent: this.options.userAgent,
-    //         //     extraHeaders: Object.entries(this.options.clientHintHeaders)
-    //         //         .map(([key, value]) => `${key}: ${value}`)
-    //         //         .join('\n')
-    //         // });
-    //     } else {
-    //         console.error('Window or webContents not available');
-    //     }
-    // }
 
     getName() {
         return 'WhatsApp';
@@ -107,7 +57,6 @@ class WhatsAppProvider extends BaseProvider {
         return 'whatsapp';
     }
 
-    // Optional: Override default notification interval
     getNotificationInterval() {
         return 3000; // 3 seconds, using default
     }
@@ -118,9 +67,18 @@ class WhatsAppProvider extends BaseProvider {
 
     setupEventHandlers() {
         if (!this.window || !this.window.webContents) {
-            console.error('Window or webContents not available for setting up event handlers');
+            log.error('Window or webContents not available for setting up event handlers');
             return;
         }
+        
+        // Monitor for notifications
+        this.window.webContents.on('page-title-updated', (event, title) => {
+            if (this.hasNotifications()) {
+                this.startNotification();
+            } else {
+                this.stopNotification();
+            }
+        });
     }
 
     injectCustomJS() {

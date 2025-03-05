@@ -1,4 +1,3 @@
-const {  getAppIconPath } = require('../utils/icons');
 const log = require("electron-log");
 const userAgentConfig = require('../config/user-agent.config');
 
@@ -12,9 +11,38 @@ class BaseProvider {
         this._webPreferences = {};
     }
 
-    // Abstract methods that must be implemented by child classes
-    initialize() {
-        throw new Error('initialize() must be implemented by child class');
+    // Initialize the window with provider-specific configuration
+    async initializeWindow(profile) {
+        if (!this.window || !this.window.webContents) {
+            throw new Error('Window not properly initialized');
+        }
+
+        try {
+            // Load the provider URL
+            const url = this.getUrl();
+            if (!url) {
+                throw new Error('Provider URL not specified');
+            }
+            
+            log.info(`[${this.getName()}] Initializing window with URL: ${url}`);
+            await this.window.loadURL(url);
+            
+            // Inject any custom JS
+            this.injectCustomJS();
+            
+            // Call provider-specific initialization
+            await this.initializeProvider(profile);
+            
+            log.info(`[${this.getName()}] Window initialization complete`);
+        } catch (error) {
+            log.error(`[${this.getName()}] Error initializing window:`, error);
+            throw error;
+        }
+    }
+
+    // Provider-specific initialization logic
+    async initializeProvider(profile) {
+        throw new Error('initializeProvider() must be implemented by child class');
     }
 
     // Return the URL that this provider should load
@@ -55,14 +83,6 @@ class BaseProvider {
     getTrayIcon(hasNotification = false) {
         const { getIconPath } = require('../utils/icons');
         return getIconPath(this.getBaseIconPath(), hasNotification);
-    }
-
-    /**
-     * Get the app icon path for this provider
-     * @returns {string} Path to the app icon
-     */
-    getAppIconPath() {
-        return getAppIconPath(this.getName().toLowerCase());
     }
 
     // Start notification blinking

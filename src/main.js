@@ -152,36 +152,15 @@ class AppManager {
             // Get or create profile
             let profile;
             try {
-                profile = profileManager.getProfile(this.provider.getName(), this.currentProfile);
-
-                // Handle non-default profiles that don't exist
-                if (!profile && this.currentProfile !== 'default') {
-                    const response = await dialog.showMessageBox({
-                        type: 'question',
-                        buttons: ['Cancel', 'Create Profile'],
-                        defaultId: 1,
-                        title: 'Create New Profile',
-                        message: `Profile '${this.currentProfile}' does not exist for ${this.provider.getName()}.`,
-                        detail: 'Would you like to create it?'
-                    });
-
-                    if (response.response === 0) {
-                        app.exit(0);
-                        return;
-                    }
-                }
-
-                // Create profile if it doesn't exist
+                profile = await this.getOrCreateProfile();
                 if (!profile) {
-                    profile = profileManager.createProfile(this.provider.getName(), this.currentProfile);
-                    log.info(`Created new profile: ${profile}`);
+                    app.exit(0);
+                    return;
                 }
 
-                // Get partition name for the profile
+                // Configure provider session
                 const partition = profileManager.getPartitionName(this.provider.getName(), this.currentProfile);
                 log.info(`Using partition: ${partition}`);
-
-                // Configure user agent for the provider's session
                 this.provider.configureSession(partition);
 
             } catch (error) {
@@ -189,66 +168,50 @@ class AppManager {
                 throw error;
             }
 
-            // Set provider window and webContents
-            this.provider.window = this.window;
-            this.provider.webContents = this.window.webContents;
-            
             // Setup event handlers for the window
             this.setupWindowEvents();
 
-            // Initialize the provider
-            this.provider.initialize(this.currentProfile);
-
-            // Get web preferences from provider
-            const webPreferences = {
-                ...this.provider.getWebPreferences(),
-                partition: profileManager.getPartitionName(this.provider.getName(), this.currentProfile),
-                nodeIntegration: false,
-                contextIsolation: true,
-                webSecurity: true,
-                preload: path.join(__dirname, 'preload.js')
-            };
-
-            // In newer Electron versions, we can't modify web preferences after window creation
-            // We need to recreate the window with the new preferences
-            const bounds = this.window.getBounds();
-            this.window.close();
-            
-            // Create a new window with the updated preferences
-            this.window = new BrowserWindow({
-                width: bounds.width || 1000,
-                height: bounds.height || 800,
-                x: bounds.x,
-                y: bounds.y,
-                icon: this.provider.getAppIconPath(),
-                title: this.provider.getName(),
-                webPreferences
-            });
-            
-            // Re-setup window events and shortcuts
-            this.setupWindowEvents();
-            this.setupShortcuts();
-            
-            // Load the URL
-            this.window.loadURL(this.provider.getUrl());
-
-            // Update window icon with provider's icon
-            this.window.setIcon(this.provider.getAppIconPath());
-
-            // Create tray icon
-            this.createTray();
-
-            // Set up IPC handlers for notifications
-            ipcMain.on('notification-state-changed', (event, isActive) => {
-                this.handleNotificationStateChange(isActive);
-            });
-
-            log.info('Browser window created.');
+            // Initialize the provider's window
+            await this.provider.initializeWindow(this.currentProfile);
 
         } catch (error) {
-            dialog.showErrorBox('Error', error.message);
-            log.error(error.message);
+            log.error('Error creating window:', error);
+            dialog.showErrorBox('Error', `Failed to create window: ${error.message}`);
             app.exit(1);
+        }
+    }
+
+    async getOrCreateProfile() {
+        try {
+            let profile = profileManager.getProfile(this.provider.getName(), this.currentProfile);
+
+            // Handle non-default profiles that don't exist
+            if (!profile && this.currentProfile !== 'default') {
+                const response = await dialog.showMessageBox({
+                    type: 'question',
+                    buttons: ['Cancel', 'Create Profile'],
+                    defaultId: 1,
+                    title: 'Create New Profile',
+                    message: `Profile '${this.currentProfile}' does not exist for ${this.provider.getName()}.`,
+                    detail: 'Would you like to create it?'
+                });
+
+                if (response.response === 0) {
+                    return null;
+                }
+            }
+
+            // Create profile if it doesn't exist
+            if (!profile) {
+                profile = profileManager.createProfile(this.provider.getName(), this.currentProfile);
+                log.info(`Created new profile: ${profile}`);
+            }
+
+            return profile;
+
+        } catch (error) {
+            log.error('Error in getOrCreateProfile:', error);
+            throw error;
         }
     }
 

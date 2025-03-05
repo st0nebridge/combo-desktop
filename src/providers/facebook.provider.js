@@ -27,8 +27,8 @@ class FacebookProvider extends BaseProvider {
         return 'https://www.messenger.com/login';
     }
 
-    initialize() {
-        console.log('Initializing Facebook Provider...');
+    async initializeProvider(profile) {
+        console.log(`Initializing Facebook Provider for profile: ${profile}...`);
         this.window.loadURL(this.getUrl());
         
         // Monitor for notifications
