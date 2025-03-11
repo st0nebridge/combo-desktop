@@ -1,7 +1,5 @@
-const { app, BrowserWindow, dialog, Tray, Menu, nativeTheme } = require('electron');
-const electronLocalshortcut = require('electron-localshortcut');
+const { app, dialog, Tray, Menu, nativeTheme } = require('electron');
 const log = require('electron-log');
-const path = require('path');
 
 // Import services
 const windowService = require('./services/window.service');
@@ -61,12 +59,25 @@ class AppManager {
 
     async initialize() {
         try {
+            // Handle reset-lock command first
+            if (providerCLI.shouldResetLock()) {
+                const success = await instanceManager.resetLock();
+                if (success) {
+                    log.info('Reset lock command executed successfully');
+                    app.exit(0);
+                } else {
+                    log.error('Failed to reset lock');
+                    app.exit(1);
+                }
+                return;
+            }
+
             // Initialize instance manager
-            const isFirstInstance = await instanceManager.initialize();
-            if (!isFirstInstance && !providerCLI.shouldForceNewInstance()) {
+            const initialized = await instanceManager.initialize();
+            if (!initialized) {
                 log.info('Another instance is already running');
-                app.quit();
-                return false;
+                app.exit(1);
+                return;
             }
 
             // Parse config file if provided
@@ -74,7 +85,7 @@ class AppManager {
             if (configPath) {
                 this.configFile = providerCLI.parseConfig(configPath);
                 if (!this.configFile) {
-                    app.quit();
+                    app.exit(1);
                     return false;
                 }
             }
@@ -88,15 +99,28 @@ class AppManager {
 
             // Initialize each provider
             for (const { provider: providerArg, profile } of providers) {
-                await this.initializeProvider(providerArg, profile || 'default');
+                try {
+                    const success = await this.initializeProvider(providerArg, profile || 'default');
+                    if (!success) {
+                        log.warn(`Failed to initialize provider: ${providerArg}`);
+                    }
+                } catch (error) {
+                    log.error(`Error initializing provider ${providerArg}:`, error);
+                }
             }
 
-            return true;
+            // If no windows were created, quit the app
+            if (windowService.getAllWindows().length === 0) {
+                log.warn('No windows created, quitting application');
+                app.exit(1);
+                return;
+            }
+
+            // Setup app events
+            this.setupAppEvents();
         } catch (error) {
-            log.error('Error initializing app:', error);
-            dialog.showErrorBox('Error', `Failed to initialize app: ${error.message}`);
-            app.quit();
-            return false;
+            log.error('Error initializing application:', error);
+            app.exit(1);
         }
     }
 
@@ -105,7 +129,7 @@ class AppManager {
             // Initialize provider first to get proper provider name
             const provider = providerRegistry.createProvider([providerArg]);
             if (!provider) {
-                throw new Error('Failed to initialize provider');
+                throw new Error(`Failed to initialize provider: ${providerArg}`);
             }
 
             // Get or create profile
@@ -136,10 +160,12 @@ class AppManager {
             }
 
             // Check if session can be registered
-            const canRegister = await instanceManager.registerSession(provider.getName(), profile);
-            if (!canRegister && !providerCLI.shouldForceNewInstance()) {
-                log.info(`Session ${provider.getName()}:${profile} already exists in another instance`);
-                return false;
+            const canRegister = await instanceManager.registerSession(provider, profile);
+            if (!canRegister) {
+                if (!providerCLI.shouldForceNewInstance()) {
+                    log.info(`Session ${provider.getName()}:${profile} already exists in another instance`);
+                    return false;
+                }
             }
 
             // Create window using the window service with session info
@@ -278,7 +304,7 @@ class AppManager {
 
         // Quit app if no windows left
         if (windowService.getAllWindows().length === 0) {
-            app.quit();
+            app.exit(0);
         }
     }
 
@@ -293,7 +319,7 @@ class AppManager {
         // Cleanup instance manager
         await instanceManager.cleanup();
 
-        app.quit();
+        app.exit(0);
     }
 
     showProviderRequiredError() {
@@ -304,7 +330,11 @@ class AppManager {
         const message = `No provider specified. Please use one of the following command arguments:\n\n${providerList}`;
         dialog.showErrorBox('Provider Required', message);
         log.error(message);
-        app.quit();
+        app.exit(1);
+    }
+
+    setupAppEvents() {
+        // Setup app events
     }
 }
 

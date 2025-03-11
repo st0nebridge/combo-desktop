@@ -58,6 +58,9 @@ class BaseProvider {
 
     // Get electron profile name
     getPartitionName(profile) {
+        if (!profile || typeof profile !== 'string') {
+            profile = 'default';
+        }
         return profileManager.getPartitionName(this.getName(), profile);
     }
 
@@ -72,22 +75,31 @@ class BaseProvider {
 
     // Spawn new window
     async spawnWindow(profile) {
-        let windowConfig = this.getWindowConfig();
-        let webPreferences = this.getWebPreferences();
+        try {
+            let windowConfig = this.getWindowConfig();
+            let webPreferences = this.getWebPreferences();
 
-        if (webPreferences.partition) {
-            console.warn('Partition property in web preferences will be ignored. Use profiles instead.');
+            if (webPreferences.partition) {
+                log.warn('Partition property in web preferences will be ignored. Use profiles instead.');
+            }
+
+            windowConfig.webPreferences = {
+                ...webPreferences,
+                partition: this.getPartitionName(profile)
+            };
+            
+            this.window = windowService.createWindow(windowConfig, `${this.getName()}:${profile}`, {
+                provider: this,
+                profile
+            });
+
+            await this.initializeWindow(profile);
+
+            return this.window;
+        } catch (error) {
+            log.error(`[${this.getName()}] Error spawning window:`, error);
+            return null;
         }
-
-        windowConfig.webPreferences = {
-            ...webPreferences,
-            partition: this.getPartitionName(profile)
-        };
-        
-        this.window = windowService.createWindow(windowConfig, `${this.getName()}:${profile}`);
-        await this.initializeWindow(profile);
-
-        return this.window;
     }
 
     // Initialize the window with provider-specific configuration
@@ -147,7 +159,9 @@ class BaseProvider {
         if (!this.hasNotification) {
             this.hasNotification = true;
             // The actual blinking will be handled by the main process
-            this.window.webContents.send('notification-state-changed', true);
+            if (this.window && this.window.webContents) {
+                this.window.webContents.send('notification-state-changed', true);
+            }
         }
     }
 
@@ -155,7 +169,9 @@ class BaseProvider {
     stopNotification() {
         if (this.hasNotification) {
             this.hasNotification = false;
-            this.window.webContents.send('notification-state-changed', false);
+            if (this.window && this.window.webContents) {
+                this.window.webContents.send('notification-state-changed', false);
+            }
         }
     }
 
@@ -203,19 +219,32 @@ class BaseProvider {
         });
     }
 
+    /**
+     * Get storage names for this provider
+     * @returns {Array<string>} Array of storage names
+     */
     getStoragesNames() {
-        return ['cookies', 'localstorage', 'sessionstorage', 'websql', 'indexdb'];
+        return ['appcache', 'cookies', 'localstorage'];
     }
 
-    clearSessionData() {
-        if (this.window && this.window.webContents) {
-            this.window.webContents.session.clearStorageData({
-                storages: this.getStoragesNames()
-            }, () => {
-                log.info('Session data cleared');
+    /**
+     * Clear session data for this provider
+     */
+    async clearSessionData() {
+        if (!this.window || !this.window.webContents) {
+            return;
+        }
+
+        try {
+            const { session } = this.window.webContents;
+            const storages = this.getStoragesNames();
+
+            await session.clearStorageData({
+                storages
             });
-        } else {
-            console.error('Window or webContents not available');
+            log.info(`[${this.getName()}] Session data cleared:`, storages);
+        } catch (error) {
+            log.error(`[${this.getName()}] Error clearing session data:`, error);
         }
     }
 }
