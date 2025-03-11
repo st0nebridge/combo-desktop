@@ -12,6 +12,7 @@ const providerRegistry = require('./providers/provider.registry');
 // Import CLI handlers
 const profileCLI = require('./cli/profile-cli');
 const providerCLI = require('./cli/provider-cli');
+const helpCLI = require('./cli/help-cli');
 
 // Configure logging
 log.transports.console.level = 'debug';
@@ -30,6 +31,16 @@ const profileCommandIndex = process.argv.indexOf('--profiles');
 if (profileCommandIndex !== -1) {
     app.whenReady().then(() => {
         profileCLI.handleCommand(process.argv.slice(profileCommandIndex + 1));
+    });
+    return;
+}
+
+// Handle manual/help commands
+const manualCommandIndex = process.argv.indexOf('--manual');
+if (manualCommandIndex !== -1) {
+    app.whenReady().then(() => {
+        helpCLI.run(process.argv);
+        app.exit(0);
     });
     return;
 }

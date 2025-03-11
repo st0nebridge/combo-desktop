@@ -71,7 +71,8 @@ class ProviderCLI {
             '--one-instance',
             '--reset-lock',
             '--version',
-            '--help'
+            '--help',
+            '--manual'
         ];
         return cliFlags.includes(arg);
     }
@@ -84,7 +85,8 @@ class ProviderCLI {
         return this.args.some(arg => {
             return arg === '--reset-lock' || 
                    arg === '--version' || 
-                   arg === '--help';
+                   arg === '--help' ||
+                   arg === '--manual';
         });
     }
 
