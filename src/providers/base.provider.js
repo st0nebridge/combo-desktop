@@ -2,6 +2,8 @@ const log = require("electron-log");
 const userAgentConfig = require('../config/user-agent.config');
 const windowService = require('../services/window.service');
 const profileManager = require("../services/profile.manager");
+const electronLocalshortcut = require('electron-localshortcut');
+const { shell } = require('electron');
 
 class BaseProvider {
     constructor(options = {}) {
@@ -112,6 +114,23 @@ class BaseProvider {
             // Configure session before loading URL
             const partition = this.getPartitionName(profile);
             this.configureSession(partition);
+
+            // Register ESC shortcut to minimize window
+            electronLocalshortcut.register(this.window, 'Esc', () => {
+                if (this.window) {
+                    this.window.hide();
+                }
+            });
+
+            // Handle external URLs
+            this.window.webContents.setWindowOpenHandler((details) => {
+                if (details.url) {
+                    shell.openExternal(details.url).catch(err => {
+                        log.error(`[${this.getName()}] Error opening external URL:`, err);
+                    });
+                }
+                return { action: 'deny' };
+            });
 
             // Load the provider URL
             const url = this.getUrl();
