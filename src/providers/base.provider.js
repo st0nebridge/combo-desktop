@@ -1,14 +1,93 @@
 const log = require("electron-log");
 const userAgentConfig = require('../config/user-agent.config');
+const windowService = require('../services/window.service');
+const profileManager = require("../services/profile.manager");
 
 class BaseProvider {
-    constructor(window) {
+    constructor(options = {}) {
         if (this.constructor === BaseProvider) {
             throw new Error('BaseProvider is abstract and cannot be instantiated directly');
         }
-        this.window = window;
+        
+        this.eventsSetup = false;
+        this.window = null;
         this.hasNotification = false;
-        this._webPreferences = {};
+    }
+
+    // Return the name of this provider
+    getName() {
+        throw new Error('getName() must be implemented by child class');
+    }
+
+    // Return the command line argument that activates this provider
+    getCommandArg() {
+        throw new Error('getCommandArg() must be implemented by child class');
+    }
+
+    // Return the URL that this provider should load
+    getUrl() {
+        throw new Error('getUrl() must be implemented by child class');
+    }
+
+    // Default notification blink interval in milliseconds
+    getNotificationInterval() {
+        return 3000; // 3 seconds
+    }
+
+    // Get the base icon path for this provider
+    getBaseIconPath() {
+        throw new Error('getBaseIconPath() must be implemented by child class');
+    }
+    
+    // Get window configuration
+    getWindowConfig() {
+        return {
+            width: 1000,
+            height: 800
+        };
+    }
+
+    // Get web preferences
+    getWebPreferences() {
+        return {
+            nodeIntegration: false,
+            contextIsolation: true,
+            webSecurity: true
+        };
+    }
+
+    // Get electron profile name
+    getPartitionName(profile) {
+        return profileManager.getPartitionName(this.getName(), profile);
+    }
+
+    // Optional: Custom JS injection
+    injectCustomJS() {
+        // Default implementation does nothing
+    }
+    
+    setupEventHandlers() {
+        // Provider specific event handlers
+    }
+
+    // Spawn new window
+    async spawnWindow(profile) {
+        let windowConfig = this.getWindowConfig();
+        let webPreferences = this.getWebPreferences();
+
+        if (webPreferences.partition) {
+            console.warn('Partition property in web preferences will be ignored. Use profiles instead.');
+        }
+
+        windowConfig.webPreferences = {
+            ...webPreferences,
+            partition: this.getPartitionName(profile)
+        };
+        
+        this.window = windowService.createWindow(windowConfig, `${this.getName()}:${profile}`);
+        await this.initializeWindow(profile);
+
+        return this.window;
     }
 
     // Initialize the window with provider-specific configuration
@@ -40,39 +119,17 @@ class BaseProvider {
         }
     }
 
-    // Provider-specific initialization logic
+    /**
+     * Initialize provider-specific functionality
+     * @param {string} profile Profile name
+     */
     async initializeProvider(profile) {
-        throw new Error('initializeProvider() must be implemented by child class');
-    }
+        log.info(`Initializing ${this.getName()} provider with profile:`, profile);
 
-    // Return the URL that this provider should load
-    getUrl() {
-        throw new Error('getUrl() must be implemented by child class');
-    }
-
-    // Return the name of this provider
-    getName() {
-        throw new Error('getName() must be implemented by child class');
-    }
-
-    // Return the command line argument that activates this provider
-    getCommandArg() {
-        throw new Error('getCommandArg() must be implemented by child class');
-    }
-
-    // Return the path to the provider's icon
-    getIconPath() {
-        throw new Error('getIconPath() must be implemented by child class');
-    }
-
-    // Default notification blink interval in milliseconds
-    getNotificationInterval() {
-        return 3000; // 3 seconds
-    }
-
-    // Get the base icon path for this provider
-    getBaseIconPath() {
-        throw new Error('getBaseIconPath() must be implemented by child class');
+        if (!this.eventsSetup) {
+            this.setupEventHandlers();
+            this.eventsSetup = true;
+        }
     }
 
     /**
@@ -100,25 +157,6 @@ class BaseProvider {
             this.hasNotification = false;
             this.window.webContents.send('notification-state-changed', false);
         }
-    }
-
-    // Optional: Custom JS injection
-    injectCustomJS() {
-        // Default implementation does nothing
-    }
-
-    // Get web preferences for the provider
-    getWebPreferences() {
-        return this._webPreferences;
-    }
-
-    // Set web preferences for the provider
-    setWebPreferences(preferences) {
-        if (preferences.partition) {
-            console.warn('Partition property in web preferences will be ignored. Use profiles instead.');
-            delete preferences.partition;
-        }
-        this._webPreferences = preferences;
     }
 
     /**

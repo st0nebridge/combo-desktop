@@ -1,13 +1,15 @@
-const { app, BrowserWindow, dialog, session, Tray, Menu, nativeTheme, ipcMain } = require('electron');
-const path = require('path');
+const { app, BrowserWindow, dialog, Tray, Menu, nativeTheme } = require('electron');
 const electronLocalshortcut = require('electron-localshortcut');
 const log = require('electron-log');
-const profileCLI = require('./cli/profile-cli');
+
+// Import window service
+const windowService = require('./services/window.service');
 
 // Import provider registry
 const providerRegistry = require('./providers/provider.registry');
 
 // Import profile manager
+const profileCLI = require('./cli/profile-cli');
 const profileManager = require('./services/profile.manager');
 
 // Configure logging
@@ -67,6 +69,18 @@ class AppManager {
                 }
                 this.updateTrayIcon(this.currentNotificationState);
             }
+        });
+
+        // Handle app quit
+        app.on('window-all-closed', () => {
+            windowService.closeAllWindows();
+            if (process.platform !== 'darwin') {
+                app.quit();
+            }
+        });
+
+        app.on('before-quit', () => {
+            windowService.closeAllWindows();
         });
     }
 
@@ -130,26 +144,13 @@ class AppManager {
         try {
             this.validateProvider();
 
-            // Initialize window first
-            const windowConfig = {
-                width: 1000,
-                height: 800,
-                webPreferences: {
-                    nodeIntegration: false,
-                    contextIsolation: true,
-                    webSecurity: true
-                }
-            };
-            
-            this.window = new BrowserWindow(windowConfig);
-
-            // Initialize provider with window
-            this.provider = providerRegistry.createProvider(this.window, process.argv.slice(1));
+            // Initialize provider first without window
+            this.provider = providerRegistry.createProvider(process.argv.slice(1));
             if (!this.provider) {
                 throw new Error('Failed to initialize provider');
             }
 
-            // Get or create profile
+            // Get or create profile before window creation
             let profile;
             try {
                 profile = await this.getOrCreateProfile();
@@ -168,11 +169,14 @@ class AppManager {
                 throw error;
             }
 
+            // Create window with provider's configuration
+            this.window = await this.provider.spawnWindow(this.currentProfile);
+
             // Setup event handlers for the window
             this.setupWindowEvents();
 
-            // Initialize the provider's window
-            await this.provider.initializeWindow(this.currentProfile);
+            // Setup tray icon
+            this.createTray();
 
         } catch (error) {
             log.error('Error creating window:', error);
@@ -276,16 +280,4 @@ app.on('ready', () => {
     log.info('Application starting...');
     const appManager = new AppManager();
     appManager.createWindow();
-});
-
-app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') {
-        app.quit();
-    }
-});
-
-app.on('activate', () => {
-    if (appManager.window === null) {
-        appManager.createWindow();
-    }
 });

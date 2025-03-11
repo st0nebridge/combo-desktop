@@ -1,50 +1,11 @@
 // WhatsApp provider functionality
 const log = require('electron-log');
 const BaseProvider = require('./base.provider');
-const userAgentConfig = require('../config/user-agent.config');
 
 /**
  * WhatsApp provider
  */
 class WhatsAppProvider extends BaseProvider {
-    /**
-     * Initialize the WhatsApp provider
-     * @param {Object} options Provider options
-     */
-    constructor(options = {}) {
-        super(null);
-        this.eventsSetup = false;
-    }
-    
-    /**
-     * Override user agent if needed
-     * @returns {string} The user agent string
-     */
-    getUserAgent() {
-        return super.getUserAgent();
-    }
-
-    /**
-     * Override client hints if needed
-     * @returns {Object} The client hint headers
-     */
-    getClientHints() {
-        return super.getClientHints();
-    }
-
-    /**
-     * Initialize provider-specific functionality
-     * @param {string} profile Profile name
-     */
-    async initializeProvider(profile) {
-        log.info('Initializing WhatsApp provider with profile:', profile);
-        
-        if (!this.eventsSetup) {
-            this.setupEventHandlers();
-            this.eventsSetup = true;
-        }
-    }
-
     getName() {
         return 'WhatsApp';
     }

@@ -8,7 +8,7 @@ class ProviderRegistry {
     }
 
     register(ProviderClass) {
-        const tempProvider = new ProviderClass(null); // Temporary instance to get metadata
+        const tempProvider = new ProviderClass(); // No longer need window for metadata
         const commandArg = tempProvider.getCommandArg();
         this.providers.set(commandArg, ProviderClass);
         return this;
@@ -29,7 +29,7 @@ class ProviderRegistry {
             try {
                 const ProviderClass = require(path.join(providersDir, file));
                 // Only register if it extends BaseProvider
-                const tempProvider = new ProviderClass(null);
+                const tempProvider = new ProviderClass();
                 if (tempProvider.getCommandArg && tempProvider.getName) {
                     this.register(ProviderClass);
                 }
@@ -39,21 +39,18 @@ class ProviderRegistry {
         });
     }
 
-    createProvider(window, args) {
+    createProvider(args) {
         // Find the matching provider based on command line arguments
         for (const [arg, ProviderClass] of this.providers) {
             if (args.includes(arg)) {
-                const provider = new ProviderClass();
-                provider.window = window;
-                provider.webContents = window.webContents;
-                return provider;
+                return new ProviderClass();
             }
         }
 
         // Get available provider commands for error message
         const availableCommands = Array.from(this.providers.entries())
             .map(([arg, ProviderClass]) => {
-                const provider = new ProviderClass(null);
+                const provider = new ProviderClass();
                 return `${arg} (${provider.getName()})`;
             })
             .join(', ');
@@ -65,7 +62,7 @@ class ProviderRegistry {
 
     getAvailableProviders() {
         return Array.from(this.providers.entries()).map(([arg, ProviderClass]) => {
-            const tempProvider = new ProviderClass(null);
+            const tempProvider = new ProviderClass();
             return {
                 name: tempProvider.getName(),
                 commandArg: arg

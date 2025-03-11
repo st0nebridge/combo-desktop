@@ -1,11 +1,11 @@
 // Facebook provider functionality
+const log = require('electron-log');
 const BaseProvider = require('./base.provider');
 
+/**
+ * Facebook provider
+ */
 class FacebookProvider extends BaseProvider {
-    constructor(window) {
-        super(window);
-    }
-
     getName() {
         return 'Facebook';
     }
@@ -18,7 +18,6 @@ class FacebookProvider extends BaseProvider {
         return 'facebook';
     }
 
-    // Optional: Override default notification interval
     getNotificationInterval() {
         return 3000; // 3 seconds, using default
     }
@@ -27,9 +26,11 @@ class FacebookProvider extends BaseProvider {
         return 'https://www.messenger.com/login';
     }
 
-    async initializeProvider(profile) {
-        console.log(`Initializing Facebook Provider for profile: ${profile}...`);
-        this.window.loadURL(this.getUrl());
+    setupEventHandlers() {
+        if (!this.window || !this.window.webContents) {
+            log.error('Window or webContents not available for setting up event handlers');
+            return;
+        }
         
         // Monitor for notifications
         this.window.webContents.on('page-title-updated', (event, title) => {
@@ -49,8 +50,9 @@ class FacebookProvider extends BaseProvider {
     injectCustomJS() {
         // Add any Facebook Messenger specific JS injection here
         this.window.webContents.executeJavaScript(`
-            // Disable service worker registrations
+            // Clear service worker registrations to avoid caching issues
             window.navigator.serviceWorker.getRegistrations().then(registrations => {
+                console.log('[Facebook Provider] Unregistering service workers:', registrations.length);
                 for (let registration of registrations) {
                     registration.unregister();
                 }
