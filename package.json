@@ -1,7 +1,7 @@
 {
-  "name": "combo-desktop",
+  "name": "desk-tray",
   "version": "1.1.4",
-  "description": "Desktop application for WhatsApp and Facebook Messenger",
+  "description": "Run web apps seamlessly in the background with quick access from your system tray.",
   "main": "src/main.js",
   "chromeVersion": "121.0.6167.184",
   "scripts": {
@@ -10,7 +10,7 @@
     "facebook": "electron . --facebook",
     "profiles": "electron . --profiles",
     "manual": "electron . --manual",
-    "clear-lock": "electron . --clear-lock",
+    "reset-lock": "electron . --reset-lock",
     "lint": "eslint src/",
     "test": "jest",
     "pack": "electron-builder --dir",
@@ -34,8 +34,8 @@
     "electron-store": "^8.1.0"
   },
   "build": {
-    "appId": "com.st0nebridge.combo-desktop",
-    "productName": "Combo Desktop",
+    "appId": "com.techdyn.desk-tray",
+    "productName": "Desk Tray",
     "directories": {
       "output": "dist"
     },

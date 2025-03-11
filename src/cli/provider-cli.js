@@ -1,7 +1,3 @@
-const log = require('electron-log');
-const fs = require('fs');
-const providerRegistry = require('../providers/provider.registry');
-
 class ProviderCLI {
     constructor() {
         this.args = process.argv.slice(2);
