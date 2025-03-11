@@ -96,6 +96,20 @@ class WindowService {
             }
         });
     }
+
+    async cleanup() {
+        // Cleanup all windows
+        for (const [windowName, window] of this.windows.entries()) {
+            try {
+                if (!window.isDestroyed()) {
+                    window.destroy();
+                }
+            } catch (error) {
+                log.error(`Error destroying window ${windowName}:`, error);
+            }
+        }
+        this.windows.clear();
+    }
 }
 
 module.exports = new WindowService();
