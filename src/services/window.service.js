@@ -1,6 +1,5 @@
-const { BrowserWindow } = require('electron');
+const { BrowserWindow, app } = require('electron');
 const log = require('electron-log');
-const path = require('path');
 
 class WindowService {
     constructor() {
@@ -59,9 +58,17 @@ class WindowService {
             }
         });
 
-        // Handle window close
-        window.on('closed', async () => {
+        // Handle window close attempt
+        window.on('close', async (event) => {
             try {
+                // Only prevent close if window should be hidden instead
+                const shouldPreventClose = !window.forceClose && !app.isQuitting;
+                if (shouldPreventClose) {
+                    event.preventDefault();
+                    window.hide();
+                    return;
+                }
+
                 // Cleanup session if provider exists
                 if (window.metadata && window.metadata.provider) {
                     const { provider, profile } = window.metadata;
@@ -71,6 +78,11 @@ class WindowService {
 
                 // Remove from our map
                 this.windows.delete(windowName);
+
+                // Check if this was the last window
+                if (this.windows.size === 0) {
+                    app.quit();
+                }
             } catch (error) {
                 log.error(`Error cleaning up window ${windowName}:`, error);
             }
@@ -85,32 +97,51 @@ class WindowService {
         return Array.from(this.windows.values());
     }
 
-    showWindow(windowName) {
+    // Helper to get window and name from input
+    resolveWindow(windowOrName) {
+        if (!windowOrName) {
+            return { window: null, windowName: null };
+        }
+
+        if (windowOrName instanceof BrowserWindow) {
+            for (const [name, win] of this.windows.entries()) {
+                if (win === windowOrName) {
+                    return { window: win, windowName: name };
+                }
+            }
+            return { window: windowOrName, windowName: null };
+        }
+
+        const window = this.windows.get(windowOrName);
+        return { window, windowName: windowOrName };
+    }
+
+    showWindow(windowOrName) {
         try {
-            const window = this.windows.get(windowName);
+            const { window } = this.resolveWindow(windowOrName);
             if (window && !window.isDestroyed()) {
                 window.show();
                 window.focus();
             }
         } catch (error) {
-            log.error(`Error showing window ${windowName}:`, error);
+            log.error('Error showing window:', error);
         }
     }
 
-    hideWindow(windowName) {
+    hideWindow(windowOrName) {
         try {
-            const window = this.windows.get(windowName);
+            const { window } = this.resolveWindow(windowOrName);
             if (window && !window.isDestroyed()) {
                 window.hide();
             }
         } catch (error) {
-            log.error(`Error hiding window ${windowName}:`, error);
+            log.error('Error hiding window:', error);
         }
     }
 
-    toggleWindow(windowName) {
+    toggleWindow(windowOrName) {
         try {
-            const window = this.windows.get(windowName);
+            const { window } = this.resolveWindow(windowOrName);
             if (window && !window.isDestroyed()) {
                 if (window.isVisible()) {
                     window.hide();
@@ -120,28 +151,45 @@ class WindowService {
                 }
             }
         } catch (error) {
-            log.error(`Error toggling window ${windowName}:`, error);
+            log.error('Error toggling window:', error);
         }
     }
 
-    closeAllWindows() {
-        this.windows.forEach((window, windowName) => {
+    closeWindow(windowOrName, force = false) {
+        try {
+            const { window } = this.resolveWindow(windowOrName);
+            if (window && !window.isDestroyed()) {
+                window.forceClose = force;
+                window.close();
+            }
+        } catch (error) {
+            log.error('Error closing window:', error);
+        }
+    }
+
+    closeAllWindows(force = false) {
+        this.windows.forEach((window) => {
             try {
                 if (!window.isDestroyed()) {
+                    window.forceClose = force;
                     window.close();
                 }
             } catch (error) {
-                log.error(`Error closing window ${windowName}:`, error);
+                log.error('Error closing window:', error);
             }
         });
     }
 
     async cleanup() {
+        // Set app as quitting to prevent window hide
+        app.isQuitting = true;
+        
         // Cleanup all windows
         for (const [windowName, window] of this.windows.entries()) {
             try {
                 if (!window.isDestroyed()) {
-                    window.destroy();
+                    window.forceClose = true;
+                    window.close();
                 }
             } catch (error) {
                 log.error(`Error destroying window ${windowName}:`, error);

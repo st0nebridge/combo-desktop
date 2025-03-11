@@ -300,13 +300,12 @@ class BaseProvider {
 
     // Get base context menu options that can be extended by providers
     getContextMenuOptions() {
-        const windowName = `${this.getName()}:${this.window?.metadata?.profile || 'default'}`;
         return [
             {
                 label: 'Show/Hide Window',
                 click: () => {
                     if (this.window) {
-                        windowService.toggleWindow(windowName);
+                        windowService.toggleWindow(this.window);
                     }
                 }
             },
@@ -315,7 +314,7 @@ class BaseProvider {
                 label: 'Quit',
                 click: () => {
                     if (this.window) {
-                        this.window.destroy();
+                        windowService.closeWindow(this.window, true);
                     }
                 }
             }
@@ -329,9 +328,8 @@ class BaseProvider {
 
     // Handle double click on tray icon - can be overridden by providers
     handleTrayDoubleClick() {
-        const windowName = `${this.getName()}:${this.window?.metadata?.profile || 'default'}`;
         if (this.window) {
-            windowService.toggleWindow(windowName);
+            windowService.toggleWindow(this.window);
         }
     }
 }
