@@ -65,7 +65,7 @@ class BaseProvider {
     injectCustomJS() {
         // Default implementation does nothing
     }
-    
+
     setupEventHandlers() {
         // Provider specific event handlers
     }

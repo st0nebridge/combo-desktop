@@ -71,4 +71,4 @@ class ProviderRegistry {
     }
 }
 
-module.exports = new ProviderRegistry(); // Export a singleton instance
+module.exports = new ProviderRegistry();
