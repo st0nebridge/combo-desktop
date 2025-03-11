@@ -17,7 +17,11 @@ class TrayService {
 
         try {
             const trayIcon = provider.getTrayIcon();
-            const tray = new Tray(trayIcon.path);
+            if (!trayIcon || !trayIcon.image) {
+                throw new Error('Invalid tray icon returned from provider');
+            }
+
+            const tray = new Tray(trayIcon.image);
 
             // Set up context menu
             this.updateContextMenu(tray, provider);
@@ -73,13 +77,17 @@ class TrayService {
                 const timer = setInterval(() => {
                     blinkState = !blinkState;
                     const trayIcon = provider.getTrayIcon(blinkState);
-                    tray.setImage(trayIcon.path);
+                    if (trayIcon && trayIcon.image) {
+                        tray.setImage(trayIcon.image);
+                    }
                 }, interval);
                 this.notificationTimers.set(windowName, timer);
             } else {
                 // Reset to normal icon
                 const trayIcon = provider.getTrayIcon(false);
-                tray.setImage(trayIcon.path);
+                if (trayIcon && trayIcon.image) {
+                    tray.setImage(trayIcon.image);
+                }
             }
 
             this.notificationStates.set(windowName, hasNotification);

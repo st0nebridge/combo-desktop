@@ -85,6 +85,45 @@ class WindowService {
         return Array.from(this.windows.values());
     }
 
+    showWindow(windowName) {
+        try {
+            const window = this.windows.get(windowName);
+            if (window && !window.isDestroyed()) {
+                window.show();
+                window.focus();
+            }
+        } catch (error) {
+            log.error(`Error showing window ${windowName}:`, error);
+        }
+    }
+
+    hideWindow(windowName) {
+        try {
+            const window = this.windows.get(windowName);
+            if (window && !window.isDestroyed()) {
+                window.hide();
+            }
+        } catch (error) {
+            log.error(`Error hiding window ${windowName}:`, error);
+        }
+    }
+
+    toggleWindow(windowName) {
+        try {
+            const window = this.windows.get(windowName);
+            if (window && !window.isDestroyed()) {
+                if (window.isVisible()) {
+                    window.hide();
+                } else {
+                    window.show();
+                    window.focus();
+                }
+            }
+        } catch (error) {
+            log.error(`Error toggling window ${windowName}:`, error);
+        }
+    }
+
     closeAllWindows() {
         this.windows.forEach((window, windowName) => {
             try {

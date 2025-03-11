@@ -90,7 +90,8 @@ class BaseProvider {
                 partition: this.getPartitionName(profile)
             };
             
-            this.window = windowService.createWindow(windowConfig, `${this.getName()}:${profile}`, {
+            const windowName = `${this.getName()}:${profile}`;
+            this.window = windowService.createWindow(windowConfig, windowName, {
                 provider: this,
                 profile
             });
@@ -299,12 +300,13 @@ class BaseProvider {
 
     // Get base context menu options that can be extended by providers
     getContextMenuOptions() {
+        const windowName = `${this.getName()}:${this.window?.metadata?.profile || 'default'}`;
         return [
             {
                 label: 'Show/Hide Window',
                 click: () => {
                     if (this.window) {
-                        windowService.toggleWindow(this.window);
+                        windowService.toggleWindow(windowName);
                     }
                 }
             },
@@ -327,8 +329,9 @@ class BaseProvider {
 
     // Handle double click on tray icon - can be overridden by providers
     handleTrayDoubleClick() {
+        const windowName = `${this.getName()}:${this.window?.metadata?.profile || 'default'}`;
         if (this.window) {
-            windowService.toggleWindow(this.window);
+            windowService.toggleWindow(windowName);
         }
     }
 }
