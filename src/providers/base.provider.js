@@ -296,6 +296,41 @@ class BaseProvider {
             log.error(`[${this.getName()}] Error clearing session data:`, error);
         }
     }
+
+    // Get base context menu options that can be extended by providers
+    getContextMenuOptions() {
+        return [
+            {
+                label: 'Show/Hide Window',
+                click: () => {
+                    if (this.window) {
+                        windowService.toggleWindow(this.window);
+                    }
+                }
+            },
+            { type: 'separator' },
+            {
+                label: 'Quit',
+                click: () => {
+                    if (this.window) {
+                        this.window.destroy();
+                    }
+                }
+            }
+        ];
+    }
+
+    // Handle single click on tray icon - can be overridden by providers
+    handleTrayClick() {
+        // Empty handler for provider override
+    }
+
+    // Handle double click on tray icon - can be overridden by providers
+    handleTrayDoubleClick() {
+        if (this.window) {
+            windowService.toggleWindow(this.window);
+        }
+    }
 }
 
 module.exports = BaseProvider;

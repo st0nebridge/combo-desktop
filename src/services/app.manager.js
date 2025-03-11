@@ -13,10 +13,6 @@ const providerCLI = require('../cli/provider-cli');
 
 class AppManager {
     constructor() {
-        this.trays = new Map(); // Map<windowName, Tray>
-        this.configFile = null;
-        this.notificationTimers = new Map(); // Map<windowName, Timer>
-
         // Initialize theme handling
         nativeTheme.on('updated', () => {
             this.handleThemeUpdate();
@@ -152,9 +148,11 @@ class AppManager {
                 throw new Error('Failed to create window');
             }
 
-            // Create tray
-            const tray = this.createTray(provider, windowName);
-            this.trays.set(windowName, tray);
+            // Create tray using TrayService
+            const tray = trayService.createTray(provider, windowName);
+            if (!tray) {
+                throw new Error('Failed to create tray icon');
+            }
 
             // Setup window events
             this.setupWindowEvents(provider, windowName);
@@ -202,47 +200,17 @@ class AppManager {
         window.webContents.on('ipc-message', (event, channel, ...args) => {
             if (channel === 'notification-state-changed') {
                 const [isActive] = args;
-                this.handleNotificationStateChange(provider, windowName, isActive);
+                this.handleNotificationStateChange(windowName, isActive);
             }
         });
     }
 
-    handleNotificationStateChange(provider, windowName, isActive) {
-        const tray = this.trays.get(windowName);
-        if (!tray) {
-            return;
+    handleNotificationStateChange(windowName, hasNotification) {
+        try {
+            trayService.setNotificationState(windowName, hasNotification);
+        } catch (error) {
+            logger.error(`Error handling notification state change for ${windowName}:`, error);
         }
-
-        const notificationTimer = this.notificationTimers.get(windowName);
-        if (notificationTimer) {
-            clearInterval(notificationTimer);
-            this.notificationTimers.delete(windowName);
-        }
-
-        if (isActive) {
-            // Start blinking
-            const interval = provider.getNotificationInterval();
-            let notificationState = false;
-            this.notificationTimers.set(windowName, setInterval(() => {
-                notificationState = !notificationState;
-                tray.setImage(provider.getTrayIcon(notificationState).image);
-            }, interval));
-        } else {
-            // Reset to normal icon
-            tray.setImage(provider.getTrayIcon(false).image);
-        }
-    }
-
-    createTray(provider, windowName) {
-        const contextMenu = [
-            { label: 'Show', click: () => this.showWindow(windowName) },
-            { label: 'Hide', click: () => this.hideWindow(windowName) },
-            { type: 'separator' },
-            { label: 'Quit', click: () => this.quitProvider(windowName) }
-        ];
-
-        trayService.createTray(provider.getTrayIcon(false).image, contextMenu);
-        return trayService.tray;
     }
 
     showWindow(windowName) {
@@ -265,12 +233,6 @@ class AppManager {
             return;
         }
 
-        const tray = this.trays.get(windowName);
-        if (tray) {
-            tray.destroy();
-            this.trays.delete(windowName);
-        }
-
         // Unregister session
         const [providerName, profile] = windowName.split(':');
         await instanceManager.unregisterSession(providerName, profile);
@@ -284,24 +246,15 @@ class AppManager {
         }
     }
 
-    async cleanup() {
-        // Cleanup instance manager
-        await instanceManager.cleanup();
-
-        // Cleanup window service
-        await windowService.cleanup();
-
-        // Cleanup notification timers
-        for (const timer of this.notificationTimers.values()) {
-            clearTimeout(timer);
+    cleanup() {
+        try {
+            // Cleanup services in proper order
+            trayService.cleanup();
+            windowService.cleanup();
+            instanceManager.cleanup();
+        } catch (error) {
+            logger.error('Error during cleanup:', error);
         }
-
-        // Cleanup trays
-        for (const tray of this.trays.values()) {
-            tray.destroy();
-        }
-
-        app.exit(0);
     }
 }
 
