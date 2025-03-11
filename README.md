@@ -7,6 +7,7 @@ A desktop application that combines WhatsApp and Facebook Messenger into a singl
 - WhatsApp Web integration
 - Facebook Messenger integration
 - Multi-profile support for each service
+- Multi-window support with session isolation
 - System tray support with notification indicators
 - Desktop notifications
 - Keyboard shortcuts
@@ -39,6 +40,72 @@ yarn whatsapp-tray
 
 # Start Facebook Messenger minimized to tray
 yarn facebook-tray
+```
+
+## Usage
+
+### Basic Usage
+
+```bash
+# Start with WhatsApp (default)
+yarn start
+
+# Start with Facebook Messenger
+yarn facebook
+
+# Start minimized to tray
+yarn whatsapp-tray
+
+# Start Facebook Messenger minimized to tray
+yarn facebook-tray
+```
+
+### Advanced Usage
+
+```bash
+# Start multiple providers
+electron . --whatsapp --facebook
+
+# Start providers with specific profiles
+electron . --whatsapp "work" --facebook "personal"
+
+# Start minimized to tray
+electron . --whatsapp --tray
+
+# Force new application instance
+electron . --whatsapp --new-instance
+
+# Use configuration file
+electron . --config config.json
+
+# Override Chrome version
+electron . --whatsapp --chrome-version "120.0.0"
+
+# Group all providers in one instance
+electron . --whatsapp "work" --facebook "personal" --one-instance
+```
+
+### Configuration File
+
+You can specify all settings in a JSON configuration file:
+
+```json
+{
+  "providers": [
+    {
+      "provider": "--whatsapp",
+      "profile": "work"
+    },
+    {
+      "provider": "--facebook",
+      "profile": "personal"
+    }
+  ],
+  "startMinimized": true,
+  "chromeVersion": "120.0.0",
+  "forceNewInstance": false,
+  "oneInstance": false
+}
 ```
 
 ## Architecture
@@ -99,6 +166,27 @@ electron . --whatsapp --profile work
 # Start Facebook with a specific profile
 electron . --facebook --profile personal
 ```
+
+## Multi-Window Support
+
+Combo Desktop now supports running multiple provider windows efficiently:
+
+- Each profile runs in its own process by default for better isolation
+- Multiple providers can be opened simultaneously
+- Only one instance of each provider+profile combination is allowed
+- Windows can be individually minimized to tray
+- Each window has its own tray icon with notifications
+- CLI commands target the correct application instance
+
+### Instance Management
+
+The application follows these rules for managing instances:
+
+1. By default, providers using the same profile group to the same application instance
+2. Different profiles run in separate processes for better isolation
+3. The `--new-instance` flag forces a new application instance
+4. The `--one-instance` flag groups all providers in one instance
+5. Only one instance of each provider+profile combination (session) is allowed
 
 ## Development
 

@@ -1,16 +1,19 @@
 const { app, BrowserWindow, dialog, Tray, Menu, nativeTheme } = require('electron');
 const electronLocalshortcut = require('electron-localshortcut');
 const log = require('electron-log');
+const path = require('path');
 
-// Import window service
+// Import services
 const windowService = require('./services/window.service');
+const instanceManager = require('./services/instance.manager');
+const profileManager = require('./services/profile.manager');
 
 // Import provider registry
 const providerRegistry = require('./providers/provider.registry');
 
-// Import profile manager
+// Import CLI handlers
 const profileCLI = require('./cli/profile-cli');
-const profileManager = require('./services/profile.manager');
+const providerCLI = require('./cli/provider-cli');
 
 // Configure logging
 log.transports.console.level = 'debug';
@@ -35,249 +38,279 @@ if (profileCommandIndex !== -1) {
 
 class AppManager {
     constructor() {
-        this.window = null;
-        this.tray = null;
-        this.provider = null;
-        this.notificationTimer = null;
-        this.isNotificationActive = false;
-        this.currentNotificationState = false;
-        this.trayContextMenu = null;
-        this.currentProfile = 'default';
-
-        // Parse command line arguments for profile
-        const args = process.argv.slice(1);
-        const profileIndex = args.indexOf('--profile');
-        if (profileIndex !== -1 && profileIndex + 1 < args.length) {
-            this.currentProfile = args[profileIndex + 1];
-        }
+        this.trays = new Map(); // Map<windowName, Tray>
+        this.configFile = null;
+        this.notificationTimers = new Map(); // Map<windowName, Timer>
 
         // Initialize theme handling
         nativeTheme.on('updated', () => {
-            console.log('Theme updated:', { 
-                isDark: nativeTheme.shouldUseDarkColors,
-                themeSource: nativeTheme.themeSource 
-            });
-            if (this.tray && this.provider) {
-                // Store current menu before destroying tray
-                const currentMenu = this.trayContextMenu;
-                this.tray.destroy();
-                this.tray = null;
-                this.createTray();
-                if (currentMenu) {
-                    this.tray.setContextMenu(currentMenu);
-                    this.trayContextMenu = currentMenu;
-                }
-                this.updateTrayIcon(this.currentNotificationState);
-            }
+            this.handleThemeUpdate();
         });
 
         // Handle app quit
         app.on('window-all-closed', () => {
-            windowService.closeAllWindows();
             if (process.platform !== 'darwin') {
-                app.quit();
+                this.cleanup();
             }
         });
 
         app.on('before-quit', () => {
-            windowService.closeAllWindows();
+            this.cleanup();
         });
     }
 
-    validateProvider() {
-        const args = process.argv.slice(1);
-        // Check if any provider argument is present
-        const hasProvider = availableProviders.some(provider => 
-            args.includes(provider.commandArg)
-        );
-
-        if (!hasProvider) {
-            const providerList = availableProviders
-                .map(p => `${p.commandArg} (${p.name})`)
-                .join('\n');
-
-            const message = `No provider specified. Please use one of the following command arguments:\n\n${providerList}`;
-            
-            dialog.showErrorBox('Provider Required', message);
-            log.error(message);
-            app.exit(1);
-        }
-    }
-
-    // Update tray icon based on notification state
-    updateTrayIcon(notificationState = false) {
-        if (!this.tray || !this.provider) {
-            return;
-        }
-        
-        const trayIconInfo = this.provider.getTrayIcon(notificationState);
-        this.tray.setImage(trayIconInfo.image);
-        this.currentNotificationState = notificationState;
-    }
-
-    // Handle notification state changes
-    handleNotificationStateChange(isActive) {
-        if (this.isNotificationActive === isActive) {
-            return;
-        }
-        
-        this.isNotificationActive = isActive;
-        if (isActive) {
-            // Start blinking
-            const interval = this.provider.getNotificationInterval();
-            this.notificationTimer = setInterval(() => {
-                this.currentNotificationState = !this.currentNotificationState;
-                this.updateTrayIcon(this.currentNotificationState);
-            }, interval);
-        } else {
-            // Stop blinking
-            if (this.notificationTimer) {
-                clearInterval(this.notificationTimer);
-                this.notificationTimer = null;
-            }
-            this.currentNotificationState = false;
-            this.updateTrayIcon(false);
-        }
-    }
-
-    async createWindow() {
+    async initialize() {
         try {
-            this.validateProvider();
+            // Initialize instance manager
+            const isFirstInstance = await instanceManager.initialize();
+            if (!isFirstInstance && !providerCLI.shouldForceNewInstance()) {
+                log.info('Another instance is already running');
+                app.quit();
+                return false;
+            }
 
-            // Initialize provider first without window
-            this.provider = providerRegistry.createProvider(process.argv.slice(1));
-            if (!this.provider) {
+            // Parse config file if provided
+            const configPath = providerCLI.getConfigFile();
+            if (configPath) {
+                this.configFile = providerCLI.parseConfig(configPath);
+                if (!this.configFile) {
+                    app.quit();
+                    return false;
+                }
+            }
+
+            // Get providers to initialize
+            const providers = this.configFile?.providers || providerCLI.parseProviderArgs();
+            if (providers.length === 0) {
+                this.showProviderRequiredError();
+                return false;
+            }
+
+            // Initialize each provider
+            for (const { provider: providerArg, profile } of providers) {
+                await this.initializeProvider(providerArg, profile || 'default');
+            }
+
+            return true;
+        } catch (error) {
+            log.error('Error initializing app:', error);
+            dialog.showErrorBox('Error', `Failed to initialize app: ${error.message}`);
+            app.quit();
+            return false;
+        }
+    }
+
+    async initializeProvider(providerArg, profile = 'default') {
+        try {
+            // Initialize provider first to get proper provider name
+            const provider = providerRegistry.createProvider([providerArg]);
+            if (!provider) {
                 throw new Error('Failed to initialize provider');
             }
 
-            // Get or create profile before window creation
-            let profile;
+            // Get or create profile
             try {
-                profile = await this.getOrCreateProfile();
-                if (!profile) {
-                    app.exit(0);
-                    return;
+                const existingProfile = profileManager.getProfile(provider.getName(), profile);
+                if (!existingProfile && profile !== 'default') {
+                    const response = await dialog.showMessageBox({
+                        type: 'question',
+                        buttons: ['Cancel', 'Create Profile'],
+                        defaultId: 1,
+                        title: 'Create New Profile',
+                        message: `Profile '${profile}' does not exist for ${provider.getName()}.`,
+                        detail: 'Would you like to create it?'
+                    });
+
+                    if (response.response === 0) {
+                        return false;
+                    }
+
+                    profileManager.createProfile(provider.getName(), profile);
+                } else if (!existingProfile) {
+                    // Create default profile if it doesn't exist
+                    profileManager.createProfile(provider.getName(), profile);
                 }
-
-                // Configure provider session
-                const partition = profileManager.getPartitionName(this.provider.getName(), this.currentProfile);
-                log.info(`Using partition: ${partition}`);
-                this.provider.configureSession(partition);
-
             } catch (error) {
                 log.error('Error managing profile:', error);
                 throw error;
             }
 
-            // Create window with provider's configuration
-            this.window = await this.provider.spawnWindow(this.currentProfile);
-
-            // Setup event handlers for the window
-            this.setupWindowEvents();
-
-            // Setup tray icon
-            this.createTray();
-
-        } catch (error) {
-            log.error('Error creating window:', error);
-            dialog.showErrorBox('Error', `Failed to create window: ${error.message}`);
-            app.exit(1);
-        }
-    }
-
-    async getOrCreateProfile() {
-        try {
-            let profile = profileManager.getProfile(this.provider.getName(), this.currentProfile);
-
-            // Handle non-default profiles that don't exist
-            if (!profile && this.currentProfile !== 'default') {
-                const response = await dialog.showMessageBox({
-                    type: 'question',
-                    buttons: ['Cancel', 'Create Profile'],
-                    defaultId: 1,
-                    title: 'Create New Profile',
-                    message: `Profile '${this.currentProfile}' does not exist for ${this.provider.getName()}.`,
-                    detail: 'Would you like to create it?'
-                });
-
-                if (response.response === 0) {
-                    return null;
-                }
+            // Check if session can be registered
+            const canRegister = await instanceManager.registerSession(provider.getName(), profile);
+            if (!canRegister && !providerCLI.shouldForceNewInstance()) {
+                log.info(`Session ${provider.getName()}:${profile} already exists in another instance`);
+                return false;
             }
 
-            // Create profile if it doesn't exist
-            if (!profile) {
-                profile = profileManager.createProfile(this.provider.getName(), this.currentProfile);
-                log.info(`Created new profile: ${profile}`);
+            // Create window using the window service with session info
+            const windowName = `${provider.getName()}:${profile}`;
+            const window = await provider.spawnWindow(profile);
+            if (!window) {
+                throw new Error('Failed to create window');
             }
 
-            return profile;
+            // Create tray
+            const tray = this.createTray(provider, windowName);
+            this.trays.set(windowName, tray);
 
+            // Setup window events
+            this.setupWindowEvents(provider, windowName);
+
+            // Start minimized if requested
+            if (providerCLI.shouldStartMinimized()) {
+                window.hide();
+            }
+
+            return true;
         } catch (error) {
-            log.error('Error in getOrCreateProfile:', error);
+            log.error('Error initializing provider:', error);
             throw error;
         }
     }
 
-    setupWindowEvents() {
-        this.window.on('close', (event) => {
-            if (!this.window.isQuitting) {
-                event.preventDefault();
-                this.window.hide();
+    createTray(provider, windowName) {
+        const tray = new Tray(provider.getTrayIcon(false).image);
+        const contextMenu = Menu.buildFromTemplate([
+            { label: 'Show', click: () => this.showWindow(windowName) },
+            { label: 'Hide', click: () => this.hideWindow(windowName) },
+            { type: 'separator' },
+            { label: 'Quit', click: () => this.quitProvider(windowName) }
+        ]);
+        tray.setContextMenu(contextMenu);
+        tray.setToolTip(provider.getName());
+
+        tray.on('click', () => {
+            const window = windowService.getWindowByName(windowName);
+            if (window) {
+                if (window.isVisible()) {
+                    window.hide();
+                } else {
+                    window.show();
+                }
             }
         });
+
+        return tray;
     }
 
-    setupShortcuts() {
-        electronLocalshortcut.register(this.window, 'Esc', () => {
-            this.window.hide();
+    setupWindowEvents(provider, windowName) {
+        const window = windowService.getWindowByName(windowName);
+        if (!window) return;
+
+        window.on('close', (event) => {
+            event.preventDefault();
+            this.hideWindow(windowName);
+        });
+
+        // Handle window-specific notifications
+        provider.on('notification-state-changed', (isActive) => {
+            this.handleNotificationStateChange(provider, windowName, isActive);
         });
     }
 
-    createTray() {
-        if (this.tray) {
-            return;
+    handleNotificationStateChange(provider, windowName, isActive) {
+        const tray = this.trays.get(windowName);
+        if (!tray) return;
+
+        const notificationTimer = this.notificationTimers.get(windowName);
+        if (notificationTimer) {
+            clearInterval(notificationTimer);
+            this.notificationTimers.delete(windowName);
         }
 
-        // Get icon with notification state
-        const trayIconInfo = this.provider.getTrayIcon(this.currentNotificationState);
-        this.tray = new Tray(trayIconInfo.image);
-        
-        // Create context menu
-        const contextMenu = Menu.buildFromTemplate([
-            {
-                label: 'Show',
-                click: () => {
-                    this.window.show();
-                    this.window.focus();
-                }
-            },
-            {
-                label: 'Exit',
-                click: () => {
-                    this.window.isQuitting = true;
-                    app.quit();
-                }
+        if (isActive) {
+            // Start blinking
+            const interval = provider.getNotificationInterval();
+            let notificationState = false;
+            this.notificationTimers.set(windowName, setInterval(() => {
+                notificationState = !notificationState;
+                tray.setImage(provider.getTrayIcon(notificationState).image);
+            }, interval));
+        } else {
+            // Reset to normal icon
+            tray.setImage(provider.getTrayIcon(false).image);
+        }
+    }
+
+    handleThemeUpdate() {
+        for (const [windowName, tray] of this.trays) {
+            const window = windowService.getWindowByName(windowName);
+            if (!window) continue;
+
+            const [providerName] = windowName.split(':');
+            const provider = providerRegistry.createProvider([`--${providerName.toLowerCase()}`]);
+            if (provider) {
+                tray.setImage(provider.getTrayIcon(false).image);
             }
-        ]);
-        
-        this.tray.setContextMenu(contextMenu);
-        this.trayContextMenu = contextMenu; // Store menu reference
-        
-        this.tray.on('click', () => {
-            if (this.window.isVisible()) {
-                this.window.hide();
-            } else {
-                this.window.show();
-                this.window.focus();
+        }
+    }
+
+    showWindow(windowName) {
+        const window = windowService.getWindowByName(windowName);
+        if (window) {
+            window.show();
+        }
+    }
+
+    hideWindow(windowName) {
+        const window = windowService.getWindowByName(windowName);
+        if (window) {
+            window.hide();
+        }
+    }
+
+    async quitProvider(windowName) {
+        const window = windowService.getWindowByName(windowName);
+        if (!window) return;
+
+        const tray = this.trays.get(windowName);
+        if (tray) {
+            tray.destroy();
+            this.trays.delete(windowName);
+        }
+
+        // Unregister session
+        const [providerName, profile] = windowName.split(':');
+        await instanceManager.unregisterSession(providerName, profile);
+
+        // Close window
+        window.destroy();
+
+        // Quit app if no windows left
+        if (windowService.getAllWindows().length === 0) {
+            app.quit();
+        }
+    }
+
+    async cleanup() {
+        // Cleanup all windows and trays
+        for (const windowMeta of windowService.getAllWindows()) {
+            if (windowMeta.name) {
+                await this.quitProvider(windowMeta.name);
             }
-        });
+        }
+
+        // Cleanup instance manager
+        await instanceManager.cleanup();
+
+        app.quit();
+    }
+
+    showProviderRequiredError() {
+        const providerList = availableProviders
+            .map(p => `${p.commandArg} (${p.name})`)
+            .join('\n');
+
+        const message = `No provider specified. Please use one of the following command arguments:\n\n${providerList}`;
+        dialog.showErrorBox('Provider Required', message);
+        log.error(message);
+        app.quit();
     }
 }
 
 // Initialize app
-app.on('ready', () => {
+app.whenReady().then(async () => {
     log.info('Application starting...');
     const appManager = new AppManager();
-    appManager.createWindow();
+    await appManager.initialize();
 });
