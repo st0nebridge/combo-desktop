@@ -268,8 +268,8 @@ class InstanceManager {
             // Resolve provider if string is passed
             if (typeof provider === 'string') {
                 const providerRegistry = require('../providers/provider.registry');
-                // Convert WhatsApp -> --whatsapp
-                const normalizedProvider = '--' + provider.toLowerCase().replace(/[^a-z0-9]/g, '');
+                // Convert provider name to proper --provider format
+                const normalizedProvider = provider.startsWith('--') ? provider : `--${provider.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
                 const resolvedProvider = providerRegistry.createProvider([normalizedProvider]);
                 if (!resolvedProvider) {
                     log.error('Failed to resolve provider string:', provider);
@@ -332,8 +332,8 @@ class InstanceManager {
             // Resolve provider if string is passed
             if (typeof provider === 'string') {
                 const providerRegistry = require('../providers/provider.registry');
-                // Convert WhatsApp -> --whatsapp
-                const normalizedProvider = '--' + provider.toLowerCase().replace(/[^a-z0-9]/g, '');
+                // Convert provider name to proper --provider format
+                const normalizedProvider = provider.startsWith('--') ? provider : `--${provider.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
                 const resolvedProvider = providerRegistry.createProvider([normalizedProvider]);
                 if (!resolvedProvider) {
                     log.error('Failed to resolve provider string:', provider);
@@ -387,21 +387,33 @@ class InstanceManager {
                 return false; // Allow new instance
             }
 
-            // Check if any provider+profile combination exists in current instance
-            const lockData = await this.getLockFileData();
-            const sessionExists = providers.some(({ provider, profile }) => {
+            if (useOneInstance) {
+                return true; // Force single instance
+            }
+
+            // For each provider+profile combination, check if it exists
+            for (const { provider: providerArg, profile } of providers) {
+                const providerRegistry = require('../providers/provider.registry');
+                const provider = providerRegistry.createProvider(['--' + providerArg]);
+                
                 if (!provider || typeof provider.getPartitionName !== 'function') {
-                    return false;
+                    continue;
                 }
 
                 const sessionKey = provider.getPartitionName(profile || 'default');
-                return lockData.sessions[sessionKey] === this.instanceId;
-            });
+                const lockData = await this.getLockFileData();
 
-            return !sessionExists && !useOneInstance;
+                // If this exact session doesn't exist, allow new instance
+                if (!lockData.sessions[sessionKey]) {
+                    return false;
+                }
+            }
+
+            // All sessions already exist, prevent new instance
+            return true;
         } catch (error) {
             log.error('Error handling second instance:', error);
-            return false;
+            return true; // Default to preventing new instance on error
         }
     }
 

@@ -14,42 +14,45 @@ class ProviderCLI {
      */
     parseProviderArgs() {
         const providers = [];
-        let currentProvider = null;
-        let currentProfile = null;
+        let i = 0;
 
-        for (let i = 0; i < this.args.length; i++) {
+        while (i < this.args.length) {
             const arg = this.args[i];
             
+            // Handle --config flag
             if (arg === '--config') {
                 if (i + 1 < this.args.length) {
                     this.configFile = this.args[i + 1];
-                    i++; // Skip next argument
+                    i += 2;
+                } else {
+                    i++;
                 }
                 continue;
             }
 
+            // Skip CLI flags
             if (this.isCliFlag(arg)) {
+                i++;
                 continue;
             }
 
-            if (arg.startsWith('--profile=')) {
-                currentProfile = arg.split('=')[1];
-                if (currentProvider) {
-                    providers.push({ provider: currentProvider, profile: currentProfile });
-                    currentProvider = null;
-                    currentProfile = null;
+            // Only process provider arguments that start with --
+            if (arg.startsWith('--')) {
+                const provider = arg; // Keep the -- prefix
+                let profile = null;
+
+                // Check if next argument exists and is not a flag/provider
+                if (i + 1 < this.args.length && !this.args[i + 1].startsWith('--')) {
+                    profile = this.args[i + 1];
+                    i += 2;
+                } else {
+                    i++;
                 }
-                continue;
-            }
 
-            currentProvider = arg;
-            if (currentProfile) {
-                providers.push({ provider: currentProvider, profile: currentProfile });
-                currentProvider = null;
-                currentProfile = null;
+                providers.push({ provider, profile });
             } else {
-                providers.push({ provider: currentProvider, profile: null });
-                currentProvider = null;
+                // Skip non-provider arguments
+                i++;
             }
         }
 
