@@ -109,6 +109,10 @@ class BaseProvider {
         }
 
         try {
+            // Configure session before loading URL
+            const partition = this.getPartitionName(profile);
+            this.configureSession(partition);
+
             // Load the provider URL
             const url = this.getUrl();
             if (!url) {
@@ -201,22 +205,48 @@ class BaseProvider {
         }
 
         const { session } = require('electron');
-        const providerSession = session.fromPartition(partition);
+        const ses = session.fromPartition(partition);
+
+        // Set user agent
         const userAgent = this.getUserAgent();
+        if (userAgent) {
+            ses.setUserAgent(userAgent);
+            log.info(`[${this.getName()}] Set user agent for partition ${partition}`);
+        }
+
+        // Set client hints
         const clientHints = this.getClientHints();
+        if (clientHints) {
+            ses.webRequest.onBeforeSendHeaders((details, callback) => {
+                // Only modify headers for URLs from this provider
+                if (details.url.startsWith(this.getUrl())) {
+                    // Preserve existing headers
+                    const headers = { ...details.requestHeaders };
 
-        log.info(`[${this.getName()}] Configuring session (partition: ${partition})`);
-        log.info(`[${this.getName()}] Using user agent:`, userAgent);
-        log.info(`[${this.getName()}] Using client hints:`, JSON.stringify(clientHints));
+                    // Add client hint headers
+                    for (const [key, value] of Object.entries(clientHints)) {
+                        headers[key] = value;
+                    }
 
-        providerSession.webRequest.onBeforeSendHeaders((details, callback) => {
-            const headers = details.requestHeaders;
-            headers['User-Agent'] = userAgent;
-            Object.entries(clientHints).forEach(([key, value]) => {
-                headers[key] = value;
+                    callback({ cancel: false, requestHeaders: headers });
+                } else {
+                    callback({ cancel: false });
+                }
             });
-            callback({ requestHeaders: headers });
-        });
+            log.info(`[${this.getName()}] Set client hints for partition ${partition}`);
+        }
+
+        // Allow provider-specific session configuration
+        this.configureProviderSession(ses);
+    }
+
+    /**
+     * Provider-specific session configuration
+     * @param {Electron.Session} session - Electron session object
+     */
+    configureProviderSession(session) {
+        // Default implementation does nothing
+        // Child classes can override this to add provider-specific session configuration
     }
 
     /**

@@ -1,4 +1,4 @@
-PROVIDER RULES
+# PROVIDER RULES
 1. All provider classes must extend BaseProvider
 2. All abstract methods in BaseProvider must be implemented by child classes
 3. Provider files must be named with the pattern <provider-name>.provider.js

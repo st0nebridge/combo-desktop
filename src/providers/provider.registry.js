@@ -63,9 +63,12 @@ class ProviderRegistry {
                 return null;
             }
 
+            // Convert args to lowercase for case-insensitive comparison
+            const lowerArgs = args.map(arg => arg.toLowerCase());
+
             // Find the matching provider based on command line arguments
             for (const [arg, ProviderClass] of this.providers) {
-                if (args.includes(arg)) {
+                if (lowerArgs.includes(arg.toLowerCase())) {
                     const provider = new ProviderClass();
                     if (typeof provider.getPartitionName !== 'function') {
                         log.error(`Provider ${provider.getName()} does not implement getPartitionName`);

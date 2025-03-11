@@ -18,7 +18,7 @@ log.transports.console.level = 'debug';
 log.transports.file.level = 'debug';
 log.transports.file.format = '[{y}-{m}-{d} {h}:{i}:{s}.{ms}] [{level}] {text}';
 log.transports.console.format = '[{h}:{i}:{s}.{ms}] [{level}] {text}';
-log.catchErrors();
+log.errorHandler.startCatching();
 log.info('Logging initialized');
 
 // Log available providers
@@ -206,7 +206,7 @@ class AppManager {
         tray.setToolTip(provider.getName());
 
         tray.on('click', () => {
-            const window = windowService.getWindowByName(windowName);
+            const window = windowService.getWindow(windowName);
             if (window) {
                 if (window.isVisible()) {
                     window.hide();
@@ -220,7 +220,7 @@ class AppManager {
     }
 
     setupWindowEvents(provider, windowName) {
-        const window = windowService.getWindowByName(windowName);
+        const window = windowService.getWindow(windowName);
         if (!window) return;
 
         window.on('close', (event) => {
@@ -228,9 +228,12 @@ class AppManager {
             this.hideWindow(windowName);
         });
 
-        // Handle window-specific notifications
-        provider.on('notification-state-changed', (isActive) => {
-            this.handleNotificationStateChange(provider, windowName, isActive);
+        // Handle window-specific notifications using IPC
+        window.webContents.on('ipc-message', (event, channel, ...args) => {
+            if (channel === 'notification-state-changed') {
+                const [isActive] = args;
+                this.handleNotificationStateChange(provider, windowName, isActive);
+            }
         });
     }
 
@@ -260,7 +263,7 @@ class AppManager {
 
     handleThemeUpdate() {
         for (const [windowName, tray] of this.trays) {
-            const window = windowService.getWindowByName(windowName);
+            const window = windowService.getWindow(windowName);
             if (!window) continue;
 
             const [providerName] = windowName.split(':');
@@ -272,21 +275,21 @@ class AppManager {
     }
 
     showWindow(windowName) {
-        const window = windowService.getWindowByName(windowName);
+        const window = windowService.getWindow(windowName);
         if (window) {
             window.show();
         }
     }
 
     hideWindow(windowName) {
-        const window = windowService.getWindowByName(windowName);
+        const window = windowService.getWindow(windowName);
         if (window) {
             window.hide();
         }
     }
 
     async quitProvider(windowName) {
-        const window = windowService.getWindowByName(windowName);
+        const window = windowService.getWindow(windowName);
         if (!window) return;
 
         const tray = this.trays.get(windowName);

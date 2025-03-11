@@ -212,8 +212,28 @@ class InstanceManager {
             if (!fs.existsSync(this.instanceLockFile)) {
                 return { instances: {}, sessions: {} };
             }
+
+            // Read the lock file
             const data = await fs.promises.readFile(this.instanceLockFile, 'utf8');
-            return JSON.parse(data);
+            
+            try {
+                // Try to parse the JSON
+                return JSON.parse(data);
+            } catch (parseError) {
+                log.error('Lock file contains invalid JSON, attempting recovery...');
+                
+                // Create backup of corrupted file
+                const backupPath = this.instanceLockFile + '.bak';
+                await fs.promises.writeFile(backupPath, data);
+                log.info(`Created backup of corrupted lock file: ${backupPath}`);
+                
+                // Reset to default state
+                const defaultData = { instances: {}, sessions: {} };
+                await this.updateLockFile(defaultData);
+                log.info('Reset lock file to default state');
+                
+                return defaultData;
+            }
         } catch (error) {
             log.error('Error reading lock file:', error);
             return { instances: {}, sessions: {} };
@@ -222,6 +242,20 @@ class InstanceManager {
 
     async updateLockFile(data) {
         try {
+            // Validate data structure before writing
+            if (!data || typeof data !== 'object') {
+                throw new Error('Invalid data structure');
+            }
+            
+            if (!data.instances || typeof data.instances !== 'object') {
+                data.instances = {};
+            }
+            
+            if (!data.sessions || typeof data.sessions !== 'object') {
+                data.sessions = {};
+            }
+
+            // Write the file
             await fs.promises.writeFile(this.instanceLockFile, JSON.stringify(data, null, 2));
         } catch (error) {
             log.error('Error updating lock file:', error);
@@ -231,8 +265,22 @@ class InstanceManager {
 
     async registerSession(provider, profile = 'default') {
         try {
+            // Resolve provider if string is passed
+            if (typeof provider === 'string') {
+                const providerRegistry = require('../providers/provider.registry');
+                // Convert WhatsApp -> --whatsapp
+                const normalizedProvider = '--' + provider.toLowerCase().replace(/[^a-z0-9]/g, '');
+                const resolvedProvider = providerRegistry.createProvider([normalizedProvider]);
+                if (!resolvedProvider) {
+                    log.error('Failed to resolve provider string:', provider);
+                    return false;
+                }
+                provider = resolvedProvider;
+            }
+
             if (!provider || typeof provider.getPartitionName !== 'function') {
                 log.error('Invalid provider or provider.getPartitionName is not a function');
+                console.trace();
                 return false;
             }
 
@@ -281,8 +329,22 @@ class InstanceManager {
 
     async unregisterSession(provider, profile = 'default') {
         try {
+            // Resolve provider if string is passed
+            if (typeof provider === 'string') {
+                const providerRegistry = require('../providers/provider.registry');
+                // Convert WhatsApp -> --whatsapp
+                const normalizedProvider = '--' + provider.toLowerCase().replace(/[^a-z0-9]/g, '');
+                const resolvedProvider = providerRegistry.createProvider([normalizedProvider]);
+                if (!resolvedProvider) {
+                    log.error('Failed to resolve provider string:', provider);
+                    return;
+                }
+                provider = resolvedProvider;
+            }
+
             if (!provider || typeof provider.getPartitionName !== 'function') {
                 log.error('Invalid provider or provider.getPartitionName is not a function');
+                console.trace();
                 return;
             }
 

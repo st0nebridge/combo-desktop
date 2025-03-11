@@ -9,6 +9,7 @@
     "whatsapp": "electron . --whatsapp",
     "facebook": "electron . --facebook",
     "profiles": "electron . --profiles",
+    "clear-lock": "electron . --clear-lock",
     "lint": "eslint src/",
     "test": "jest",
     "pack": "electron-builder --dir",
