@@ -4,6 +4,7 @@ const log = require('electron-log');
 class WindowService {
     constructor() {
         this.windows = new Map(); // Map<windowName, BrowserWindow>
+        this.isQuitting = false;
     }
 
     createWindow(config, windowName, metadata = {}) {
@@ -62,7 +63,7 @@ class WindowService {
         window.on('close', async (event) => {
             try {
                 // Only prevent close if window should be hidden instead
-                const shouldPreventClose = !window.forceClose && !app.isQuitting;
+                const shouldPreventClose = !window.forceClose && !this.isQuitting;
                 if (shouldPreventClose) {
                     event.preventDefault();
                     window.hide();
@@ -81,6 +82,8 @@ class WindowService {
 
                 // Check if this was the last window
                 if (this.windows.size === 0) {
+                    // Set quitting flag to prevent windows from being hidden
+                    this.isQuitting = true;
                     app.quit();
                 }
             } catch (error) {
@@ -159,6 +162,9 @@ class WindowService {
         try {
             const { window } = this.resolveWindow(windowOrName);
             if (window && !window.isDestroyed()) {
+                if (force) {
+                    this.isQuitting = true;
+                }
                 window.forceClose = force;
                 window.close();
             }
@@ -168,6 +174,9 @@ class WindowService {
     }
 
     closeAllWindows(force = false) {
+        if (force) {
+            this.isQuitting = true;
+        }
         this.windows.forEach((window) => {
             try {
                 if (!window.isDestroyed()) {
@@ -181,8 +190,8 @@ class WindowService {
     }
 
     async cleanup() {
-        // Set app as quitting to prevent window hide
-        app.isQuitting = true;
+        // Set quitting flag to prevent window hide
+        this.isQuitting = true;
         
         // Cleanup all windows
         for (const [windowName, window] of this.windows.entries()) {

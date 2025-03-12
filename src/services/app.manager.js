@@ -246,14 +246,21 @@ class AppManager {
         }
     }
 
-    cleanup() {
+    async cleanup() {
         try {
-            // Cleanup services in proper order
-            trayService.cleanup();
-            windowService.cleanup();
-            instanceManager.cleanup();
+            // Set window service to quitting mode first
+            windowService.isQuitting = true;
+
+            // Cleanup services in order
+            await trayService.cleanup();
+            await windowService.cleanup();
+            await instanceManager.cleanup();
+
+            // Force quit the app
+            app.exit(0);
         } catch (error) {
-            logger.error('Error during cleanup:', error);
+            logger.error('Error during app cleanup:', error);
+            app.exit(1);
         }
     }
 }
