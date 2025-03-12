@@ -4,6 +4,7 @@ const windowService = require('../services/window.service');
 const profileManager = require("../services/profile.manager");
 const electronLocalshortcut = require('electron-localshortcut');
 const { shell } = require('electron');
+const trayService = require('../services/tray.service'); // Added trayService import
 
 class BaseProvider {
     constructor(options = {}) {
@@ -314,6 +315,10 @@ class BaseProvider {
                 label: 'Quit',
                 click: () => {
                     if (this.window) {
+                        const windowName = `${this.getName()}:${this.window?.metadata?.profile || 'default'}`;
+                        // Remove tray icon first
+                        trayService.destroyTray(windowName);
+                        // Then close window with force flag
                         windowService.closeWindow(this.window, true);
                     }
                 }

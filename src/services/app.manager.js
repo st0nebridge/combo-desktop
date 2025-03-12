@@ -1,4 +1,4 @@
-const { app, dialog, Menu, nativeTheme } = require('electron');
+const { app, dialog, nativeTheme } = require('electron');
 
 // Import services
 const instanceManager = require('./instance.manager');

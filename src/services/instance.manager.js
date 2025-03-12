@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const { execSync } = require('child_process');
 const { setTimeout } = require('timers/promises');
+const properLock = require('proper-lockfile');
 
 class InstanceManager {
     constructor() {
@@ -15,8 +16,6 @@ class InstanceManager {
         this.activeSessions = new Map();
         this.instanceId = null;
         this.isFirstInstance = false;
-        this._writeLock = false;
-        this._lockTimeout = null;
     }
 
     async acquireWriteLock() {
@@ -260,11 +259,12 @@ class InstanceManager {
                 return { instances: {}, sessions: {} };
             }
 
-            // Wait for any pending writes
-            if (!await this.acquireWriteLock()) {
-                log.warn('Could not acquire read lock, using default data');
-                return { instances: {}, sessions: {} };
-            }
+            // Try to acquire a lock for reading
+            const release = await properLock.lock(this.instanceLockFile, {
+                retries: this.lockRetryCount,
+                retryWait: this.lockRetryDelay,
+                stale: 10000 // Consider lock stale after 10s
+            });
 
             try {
                 // Read the lock file
@@ -289,20 +289,19 @@ class InstanceManager {
                     return defaultData;
                 }
             } finally {
-                this.releaseWriteLock();
+                await release();
             }
         } catch (error) {
-            this.releaseWriteLock();
+            if (error.code === 'ELOCKED') {
+                log.warn('Could not acquire read lock, using default data');
+                return { instances: {}, sessions: {} };
+            }
             log.error('Error reading lock file:', error);
             return { instances: {}, sessions: {} };
         }
     }
 
     async updateLockFile(data) {
-        if (!await this.acquireWriteLock()) {
-            throw new Error('Could not acquire write lock');
-        }
-
         try {
             // Validate data structure before writing
             if (!data || typeof data !== 'object') {
@@ -317,15 +316,27 @@ class InstanceManager {
                 data.sessions = {};
             }
 
-            // Write the file atomically by writing to temp file first
-            const tempFile = this.instanceLockFile + '.tmp';
-            await fs.promises.writeFile(tempFile, JSON.stringify(data, null, 2));
-            await fs.promises.rename(tempFile, this.instanceLockFile);
+            // Acquire an exclusive lock for writing
+            const release = await properLock.lock(this.instanceLockFile, {
+                retries: this.lockRetryCount,
+                retryWait: this.lockRetryDelay,
+                stale: 10000 // Consider lock stale after 10s
+            });
+
+            try {
+                // Write the file atomically by writing to temp file first
+                const tempFile = this.instanceLockFile + '.tmp';
+                await fs.promises.writeFile(tempFile, JSON.stringify(data, null, 2));
+                await fs.promises.rename(tempFile, this.instanceLockFile);
+            } finally {
+                await release();
+            }
         } catch (error) {
+            if (error.code === 'ELOCKED') {
+                throw new Error('Could not acquire write lock');
+            }
             log.error('Error updating lock file:', error);
             throw error;
-        } finally {
-            this.releaseWriteLock();
         }
     }
 
@@ -485,9 +496,6 @@ class InstanceManager {
 
     async cleanup() {
         try {
-            // Force release any existing lock
-            this.releaseWriteLock();
-
             // Get current data
             const lockData = await this.getLockFileData();
 
@@ -514,8 +522,6 @@ class InstanceManager {
             this.activeSessions.clear();
         } catch (error) {
             log.error('Error during instance cleanup:', error);
-        } finally {
-            this.releaseWriteLock();
         }
     }
 }
