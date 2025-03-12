@@ -27,17 +27,16 @@ class ProviderCLI extends BaseCLI {
 
         /** @property {Object} commands - Map of command names to handler functions */
         this.commands = {
-            'list': this.listProviders.bind(this),
-            'init': this.initProvider.bind(this),
-            'whatsapp': this.initWhatsApp.bind(this),
-            'facebook': this.initFacebook.bind(this)
+            'list': this.listProviders.bind(this)
         };
 
-        /** @property {Object} commandAliases - Map of command aliases to actual command names */
-        this.commandAliases = {
-            '--whatsapp': 'whatsapp',
-            '--facebook': 'facebook'
-        };
+        // Auto-register provider commands from registry
+        const providers = providerRegistry.getAvailableProviders();
+        for (const provider of providers) {
+            const commandName = provider.commandArg.replace(/^--/, '');
+            this.commands[commandName] = this.initProvider.bind(this, commandName);
+            this.commands[provider.commandArg] = this.initProvider.bind(this, commandName);
+        }
     }
 
     /**
@@ -86,14 +85,15 @@ class ProviderCLI extends BaseCLI {
                 continue;
             }
 
-            // Check for provider commands and aliases
+            // Check for provider commands
             if (this.commands[arg]) {
                 result.command = arg;
                 continue;
             }
 
-            if (this.commandAliases[arg]) {
-                result.command = this.commandAliases[arg];
+            // Check for provider commands without -- prefix
+            if (this.commands[`--${arg}`]) {
+                result.command = `--${arg}`;
                 continue;
             }
         }
@@ -137,53 +137,23 @@ class ProviderCLI extends BaseCLI {
     }
 
     /**
-     * Initialize WhatsApp provider
-     * @method initWhatsApp
-     * @param {Object} args - Command arguments
-     * @returns {Promise<boolean>} True if initialization successful
-     */
-    async initWhatsApp(args) {
-        log.info('Initializing WhatsApp provider');
-        return await this.initProvider({
-            provider: 'whatsapp',
-            profile: args.profile,
-            tray: args.tray
-        });
-    }
-
-    /**
-     * Initialize Facebook provider
-     * @method initFacebook
-     * @param {Object} args - Command arguments
-     * @returns {Promise<boolean>} True if initialization successful
-     */
-    async initFacebook(args) {
-        log.info('Initializing Facebook provider');
-        return await this.initProvider({
-            provider: 'facebook',
-            profile: args.profile,
-            tray: args.tray
-        });
-    }
-
-    /**
      * Initialize a provider with specified configuration
      * @method initProvider
+     * @param {string} providerName - Name of the provider to initialize
      * @param {Object} args - Provider arguments
      * @returns {Promise<boolean>} True if initialization successful
      */
-    async initProvider(args) {
+    async initProvider(providerName, args) {
         try {
-            const { provider, profile, tray } = args;
-            if (!provider) {
+            if (!providerName) {
                 log.error('No provider specified');
                 return false;
             }
 
-            log.info(`Initializing provider: ${provider} with profile: ${profile}`);
-            const success = await appManager.initializeProvider(provider, profile, { tray });
+            log.info(`Initializing provider: ${providerName} with profile: ${args.profile}`);
+            const success = await appManager.initializeProvider(providerName, args.profile, { tray: args.tray });
             if (!success) {
-                log.error(`Failed to initialize provider: ${provider}`);
+                log.error(`Failed to initialize provider: ${providerName}`);
                 return false;
             }
 
@@ -200,43 +170,33 @@ class ProviderCLI extends BaseCLI {
      * @returns {Promise<boolean>} True if successful
      */
     async listProviders() {
-        try {
-            const providers = providerRegistry.getAvailableProviders();
-            if (providers.length === 0) {
-                log.info('No providers available');
-                return true;
-            }
-
-            log.info('Available providers:');
-            providers.forEach(({ name, commandArg }) => {
-                log.info(`  ${name} (${commandArg})`);
-            });
-
-            return true;
-        } catch (error) {
-            log.error('Error listing providers:', error);
-            return false;
-        }
+        const providers = providerRegistry.getAvailableProviders();
+        log.info('\nAvailable providers:');
+        providers.forEach(provider => {
+            log.info(`  ${provider.name} (${provider.commandArg})`);
+        });
+        return true;
     }
 
     /**
-     * Show provider CLI usage information
+     * Show provider CLI usage
      * @method showUsage
      */
     showUsage() {
-        const usage = `
-Provider CLI Usage:
-  yarn whatsapp           Launch WhatsApp provider
-  yarn facebook          Launch Facebook provider
-  yarn whatsapp --tray   Launch WhatsApp with tray icon
-  yarn facebook --tray   Launch Facebook with tray icon
-  yarn provider list     List available providers
+        const providers = providerRegistry.getAvailableProviders();
+        const providerList = providers.map(p => `  ${p.commandArg}\t\t${p.name}`).join('\n');
+        
+        log.info(`
+Provider Commands:
+  list\t\tList available providers
+${providerList}
 
 Options:
-  --profile <name>      Use specific profile (default: 'default')
-  --tray               Create tray icon for provider
-`;
-        log.info(usage);
+  --profile <name>\tUse specific profile (default: default)
+  --tray\t\tStart in tray
+  --help\t\tShow this help
+  --manual\tShow detailed manual
+`);
     }
 }
 
