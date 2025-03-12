@@ -1,17 +1,29 @@
+/**
+ * @file Instance management service that handles application instance lifecycle,
+ * locking, and PID tracking to ensure proper multi-instance behavior.
+ */
+
 const { app, ipcMain } = require('electron');
 const log = require('electron-log');
 const path = require('path');
 const fs = require('fs');
 const { execSync } = require('child_process');
-const { setTimeout } = require('timers/promises');
 const properLock = require('proper-lockfile');
-const cliRegistry = require('../cli/cli.registry');
 
 /**
- * Instance Manager
- * Handles instance management, locking, and PID tracking
+ * Service for managing application instances.
+ * Handles instance lifecycle, locking, and process management:
+ * - Instance creation and cleanup
+ * - File locking and PID tracking
+ * - Profile-based instance management
+ * - IPC communication for instances
+ * @class InstanceManager
  */
 class InstanceManager {
+    /**
+     * Creates a new InstanceManager instance
+     * @constructor
+     */
     constructor() {
         // Ensure app name is set before getting userData path
         if (!app.name) {
@@ -19,14 +31,28 @@ class InstanceManager {
             app.name = packageJson.name;
         }
 
-        const userData = app.getPath('userData');
-        this.instanceLockFile = path.join(userData, 'instance.lock');
-        this.pidFile = path.join(userData, 'pids.json');
+        /** @property {string} instanceLockFile - Path to instance lock file */
+        this.instanceLockFile = path.join(app.getPath('userData'), 'instance.lock');
+        
+        /** @property {string} pidFile - Path to PID tracking file */
+        this.pidFile = path.join(app.getPath('userData'), 'pids.json');
+        
+        /** @property {number} lockRetryCount - Number of times to retry acquiring lock */
         this.lockRetryCount = 5;
-        this.lockRetryDelay = 200; // ms
+        
+        /** @property {number} lockRetryDelay - Delay in ms between lock retries */
+        this.lockRetryDelay = 200;
+        
+        /** @property {Map<string, Object>} activeSessions - Map of active provider sessions */
         this.activeSessions = new Map();
+        
+        /** @property {string|null} instanceId - Unique ID for this instance */
         this.instanceId = null;
+        
+        /** @property {boolean} isFirstInstance - Whether this is the first instance */
         this.isFirstInstance = false;
+        
+        /** @property {string|null} currentProfile - Current active profile */
         this.currentProfile = null;
 
         // Ensure directories exist
@@ -44,7 +70,9 @@ class InstanceManager {
     }
 
     /**
-     * Ensure required directories exist
+     * Ensure required directories exist for instance management
+     * @method ensureDirectories
+     * @throws {Error} If directory creation fails
      */
     async ensureDirectories() {
         try {
@@ -64,6 +92,7 @@ class InstanceManager {
 
     /**
      * Register cleanup handlers for process exit
+     * @method registerCleanupHandlers
      */
     registerCleanupHandlers() {
         const cleanup = async () => {
@@ -81,9 +110,11 @@ class InstanceManager {
 
     /**
      * Acquire a write lock on a file
+     * @method acquireWriteLock
      * @param {string} file - File to lock
-     * @param {Object} options - Lock options
+     * @param {Object} [options={}] - Lock options
      * @returns {Promise<Function>} Release function
+     * @throws {Error} If lock cannot be acquired
      */
     async acquireWriteLock(file, options = {}) {
         try {
@@ -102,7 +133,9 @@ class InstanceManager {
     }
 
     /**
-     * Register this instance's PID
+     * Register this instance's PID in the PID file
+     * @method registerPid
+     * @throws {Error} If PID registration fails
      */
     async registerPid() {
         let release;
@@ -146,8 +179,10 @@ class InstanceManager {
 
     /**
      * Handle instance registration based on CLI arguments
+     * @method handleInstanceRegistration
      * @param {Object} args - Parsed CLI arguments
      * @returns {Promise<boolean>} True if registration successful
+     * @throws {Error} If registration fails
      */
     async handleInstanceRegistration(args) {
         try {
@@ -193,8 +228,10 @@ class InstanceManager {
 
     /**
      * Check if we should create a new instance
+     * @method shouldCreateNewInstance
      * @param {Object} args - CLI arguments
      * @returns {Promise<boolean>} True if we should create a new instance
+     * @throws {Error} If check fails
      */
     async shouldCreateNewInstance(args) {
         try {
@@ -245,7 +282,9 @@ class InstanceManager {
     }
 
     /**
-     * Initialize the lock file for this instance
+     * Initialize the instance lock file
+     * @method initializeLockFile
+     * @throws {Error} If lock file initialization fails
      */
     async initializeLockFile() {
         let release;
@@ -286,43 +325,91 @@ class InstanceManager {
     }
 
     /**
-     * Check if a process is running
-     * @param {number} pid - Process ID to check
-     * @returns {boolean} True if process is running
-     */
-    isProcessRunning(pid) {
-        try {
-            if (process.platform === 'win32') {
-                const output = execSync(`tasklist /FI "PID eq ${pid}" /NH`, { stdio: 'pipe' }).toString();
-                return output.includes(pid.toString());
-            } else {
-                process.kill(pid, 0);
-                return true;
-            }
-        } catch (error) {
-            return false;
-        }
-    }
-
-    /**
-     * Reset the instance lock file
+     * Reset the instance lock file and terminate all running instances
+     * @method resetLock
+     * @throws {Error} If lock reset fails
+     * @returns {Promise<void>} Resolves when lock is reset and instances are terminated
      */
     async resetLock() {
+        let release;
         try {
-            if (fs.existsSync(this.instanceLockFile)) {
-                await fs.promises.unlink(this.instanceLockFile);
-                log.info('Instance lock file reset');
+            // Try to acquire lock to ensure we have exclusive access
+            try {
+                release = await this.acquireWriteLock(this.pidFile);
+            } catch (lockError) {
+                log.warn('Could not acquire lock, proceeding with force reset:', lockError.message);
             }
+
+            // Read and handle PIDs
+            let pids = [];
+            if (fs.existsSync(this.pidFile)) {
+                try {
+                    const data = await fs.promises.readFile(this.pidFile, 'utf8');
+                    pids = JSON.parse(data);
+                    log.debug('Found PIDs:', pids);
+                } catch (readError) {
+                    log.warn('Error reading PIDs file:', readError.message);
+                }
+            }
+
+            // Terminate running processes
+            let terminatedCount = 0;
+            for (const pid of pids) {
+                if (this.isProcessRunning(pid)) {
+                    try {
+                        process.kill(pid);
+                        terminatedCount++;
+                        log.info(`Terminated process ${pid}`);
+                    } catch (killError) {
+                        log.warn(`Failed to terminate process ${pid}:`, killError.message);
+                    }
+                } else {
+                    log.debug(`Process ${pid} is not running`);
+                }
+            }
+
+            // Remove lock and PID files
+            const filesToRemove = [this.instanceLockFile, this.pidFile];
+            for (const file of filesToRemove) {
+                if (fs.existsSync(file)) {
+                    try {
+                        await fs.promises.unlink(file);
+                        log.info(`Removed file: ${file}`);
+                    } catch (unlinkError) {
+                        log.error(`Failed to remove ${file}:`, unlinkError.message);
+                        throw unlinkError;
+                    }
+                }
+            }
+
+            if (terminatedCount > 0) {
+                console.log(`\nTerminated ${terminatedCount} running instance${terminatedCount !== 1 ? 's' : ''}.`);
+            } else {
+                console.log('\nNo running instances found.');
+            }
+            console.log('Instance lock reset successfully.\n');
+
         } catch (error) {
-            log.error('Error resetting lock file:', error);
+            log.error('Error resetting instance lock:', error);
             throw error;
+        } finally {
+            if (release) {
+                try {
+                    await release();
+                } catch (releaseError) {
+                    log.warn('Error releasing lock:', releaseError.message);
+                }
+            }
         }
     }
 
     /**
-     * Add a provider to the current instance
-     * @param {string} provider - Provider name
+     * Add a provider to this instance
+     * @method addProviderToInstance
+     * @param {string} provider - Provider command argument
      * @param {string} profile - Profile name
+     * @returns {Promise<boolean>} True if provider added successfully
+     * @throws {Error} If provider addition fails
      */
     async addProviderToInstance(provider, profile) {
         let release;
@@ -359,7 +446,29 @@ class InstanceManager {
     }
 
     /**
-     * Clean up instance data on exit
+     * Check if a process is running
+     * @method isProcessRunning
+     * @param {number} pid - Process ID to check
+     * @returns {boolean} True if process is running
+     */
+    isProcessRunning(pid) {
+        try {
+            if (process.platform === 'win32') {
+                const output = execSync(`tasklist /FI "PID eq ${pid}" /NH`, { stdio: 'pipe' }).toString();
+                return output.includes(pid.toString());
+            } else {
+                process.kill(pid, 0);
+                return true;
+            }
+        } catch (error) {
+            return false;
+        }
+    }
+
+    /**
+     * Clean up instance resources
+     * @method cleanup
+     * @throws {Error} If cleanup fails
      */
     async cleanup() {
         let release;
@@ -400,4 +509,5 @@ class InstanceManager {
     }
 }
 
+// Export a singleton instance
 module.exports = new InstanceManager();

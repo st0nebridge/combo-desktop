@@ -1,14 +1,44 @@
-// Tray management logic
+/**
+ * @file System tray management service that handles creation, updates,
+ * and notification states of tray icons for application providers.
+ */
+
 const { Tray, Menu } = require('electron');
 const logger = require('./logging.service');
 
+/**
+ * Service for managing system tray icons.
+ * Handles tray lifecycle, notifications, and menu management:
+ * - Tray creation and cleanup
+ * - Notification state and blinking
+ * - Context menu updates
+ * - Click event handling
+ * @class TrayService
+ */
 class TrayService {
+    /**
+     * Creates a new TrayService instance
+     * @constructor
+     */
     constructor() {
+        /** @property {Map<string, Object>} trays - Map of window names to tray info objects */
         this.trays = new Map(); // Map<windowName, { tray: Tray, provider: BaseProvider }>
+        
+        /** @property {Map<string, boolean>} notificationStates - Map of window names to notification states */
         this.notificationStates = new Map(); // Map<windowName, boolean>
+        
+        /** @property {Map<string, NodeJS.Timer>} notificationTimers - Map of window names to notification timers */
         this.notificationTimers = new Map(); // Map<windowName, Timer>
     }
 
+    /**
+     * Create a new tray icon for a provider
+     * @method createTray
+     * @param {BaseProvider} provider - Provider instance to create tray for
+     * @param {string} windowName - Name of associated window
+     * @returns {Electron.Tray|null} Created tray instance or null if creation fails
+     * @throws {Error} If provider returns invalid tray icon
+     */
     createTray(provider, windowName) {
         if (this.trays.has(windowName)) {
             logger.warn(`Tray already exists for window: ${windowName}`);
@@ -46,6 +76,13 @@ class TrayService {
         }
     }
 
+    /**
+     * Update the context menu for a tray icon
+     * @method updateContextMenu
+     * @param {Electron.Tray} tray - Tray instance to update
+     * @param {BaseProvider} provider - Provider instance to get menu from
+     * @throws {Error} If menu creation fails
+     */
     updateContextMenu(tray, provider) {
         try {
             const template = provider.getContextMenuOptions();
@@ -56,6 +93,13 @@ class TrayService {
         }
     }
 
+    /**
+     * Set notification state for a tray icon
+     * @method setNotificationState
+     * @param {string} windowName - Name of window with tray
+     * @param {boolean} hasNotification - Whether notification is active
+     * @throws {Error} If notification state update fails
+     */
     setNotificationState(windowName, hasNotification) {
         const trayInfo = this.trays.get(windowName);
         if (!trayInfo) {
@@ -96,6 +140,11 @@ class TrayService {
         }
     }
 
+    /**
+     * Clear notification timer for a window
+     * @method clearNotificationTimer
+     * @param {string} windowName - Name of window
+     */
     clearNotificationTimer(windowName) {
         const timer = this.notificationTimers.get(windowName);
         if (timer) {
@@ -104,6 +153,12 @@ class TrayService {
         }
     }
 
+    /**
+     * Destroy tray icon for a window
+     * @method destroyTray
+     * @param {string} windowName - Name of window
+     * @throws {Error} If tray destruction fails
+     */
     destroyTray(windowName) {
         const trayInfo = this.trays.get(windowName);
         if (!trayInfo) {
@@ -121,6 +176,10 @@ class TrayService {
         }
     }
 
+    /**
+     * Clean up all tray icons and timers
+     * @method cleanup
+     */
     cleanup() {
         // Clear all notification timers and destroy trays
         for (const [windowName] of this.trays) {
@@ -132,4 +191,5 @@ class TrayService {
     }
 }
 
+// Export a singleton instance
 module.exports = new TrayService();

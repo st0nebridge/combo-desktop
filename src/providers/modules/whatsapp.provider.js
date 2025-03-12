@@ -43,7 +43,7 @@ class WhatsAppProvider extends BaseProvider {
 
         try {
             // Ensure we have the correct user agent
-            const userAgent = userAgentConfig.getProviderUserAgent('whatsapp');
+            const userAgent = userAgentConfig.getUserAgent('WhatsApp');
             if (!userAgent) {
                 throw new Error('No user agent configured for WhatsApp');
             }
@@ -75,6 +75,16 @@ class WhatsAppProvider extends BaseProvider {
      */
     getCommandArg() {
         return '--whatsapp';
+    }
+
+    /**
+     * Get partition name for this provider
+     * @method getPartitionName
+     * @override
+     * @returns {string} Partition name 'whatsapp'
+     */
+    getPartitionName() {
+        return 'whatsapp';
     }
 
     /**
@@ -202,7 +212,6 @@ class WhatsAppProvider extends BaseProvider {
                     childList: true,
                     subtree: true
                 });
-                console.log('[WhatsApp Provider] MutationObserver started');
             }
         `).then(() => {
             log.info('Custom JavaScript injection completed');

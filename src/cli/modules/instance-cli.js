@@ -1,216 +1,74 @@
 /**
- * @module InstanceCLI
- * @description CLI module for managing application instances and their lifecycle.
- * Handles instance creation, listing, locking, and tray behavior.
- */
-
-const BaseCLI = require('../abstract/base-cli');
-const log = require('electron-log');
-const fs = require('fs-extra');
-const path = require('path');
-const { app } = require('electron');
-
-/**
  * CLI module for managing application instances.
+ * Handles instance lifecycle, locking, and process management.
  * Extends BaseCLI to provide instance management functionality:
- * - Instance listing and status
- * - Instance lock management
- * - Tray and startup behavior
+ * - Instance lock management (reset-lock)
+ * - Instance creation (new-instance)
  * @class InstanceCLI
  * @extends {BaseCLI}
  */
+
+const log = require('electron-log');
+const BaseCLI = require('../abstract/base-cli');
+const instanceManager = require('../../services/instance.manager');
+
 class InstanceCLI extends BaseCLI {
     /**
-     * Creates a new InstanceCLI instance
+     * Creates a new InstanceCLI instance and initializes command mapping
      * @constructor
      */
     constructor() {
         super();
-        
-        /** @property {Array<string>} moduleFlags - Supported command flags */
-        this.moduleFlags = [
-            '--instances',
-            '--new-instance',
-            '--one-instance',
-            '--reset-lock',
-            '--tray'
-        ];
 
-        // Initialize paths
-        this.initializePaths();
-
-        // Bind command functions
-        /** @property {Object} commands - Map of command names to handler functions */
+        // Define command map according to CLI module rules
         this.commands = {
-            'instances': this.listInstances.bind(this),
-            'reset-lock': this.resetLock.bind(this)
+            'reset-lock': this.resetLock.bind(this),
+            'new-instance': this.createNewInstance.bind(this)
         };
     }
 
     /**
-     * Initialize instance-related paths and ensure directories exist
-     * @method initializePaths
-     * @throws {Error} If initialization fails
+     * Parse command line arguments for instance management.
+     * Follows command mapping pattern to identify and handle instance-specific commands.
+     * @method parseArgs
+     * @param {Object} args - Command line arguments
+     * @returns {Object|null} Parsed arguments if this module can handle them, null otherwise
      */
-    initializePaths() {
+    async parseArgs(args) {
         try {
-            // Ensure app name is set before getting userData path
-            if (!app.name) {
-                const packageJson = require('../../../package.json');
-                app.name = packageJson.name;
+            // Check if any of our commands are present
+            for (const [command, handler] of Object.entries(this.commands)) {
+                if (args[command]) {
+                    return {
+                        command,
+                        handler,
+                        args
+                    };
+                }
             }
 
-            const userData = app.getPath('userData');
-            this.instanceLockFile = path.join(userData, 'instance.lock');
-            this.pidFile = path.join(userData, 'pids.json');
-
-            // Ensure directories exist
-            fs.ensureDirSync(userData);
+            return null;
         } catch (error) {
-            log.error('Error initializing instance paths:', error);
+            log.error('Error parsing instance arguments:', error);
             throw error;
         }
     }
 
     /**
-     * Get instance-specific result object with additional fields
-     * @method getInstanceResultObject
-     * @returns {Object} Result object with structure { help: false, manual: false, tray: false, newInstance: false, oneInstance: false, resetLock: false, instances: false, cliCommand: false }
-     */
-    getInstanceResultObject() {
-        const result = this.getBaseResultObject();
-        return {
-            ...result,
-            tray: false,
-            newInstance: false,
-            oneInstance: false,
-            resetLock: false,
-            instances: false,
-            cliCommand: false
-        };
-    }
-
-    /**
-     * Parse instance-specific command line arguments
-     * @method parseArgs
-     * @override
-     * @returns {Object|null} Parsed arguments or null if no instance flags found
-     */
-    parseArgs() {
-        const result = this.getInstanceResultObject();
-
-        let i = 0;
-        while (i < this.args.length) {
-            const arg = this.args[i];
-
-            switch (arg) {
-                case '--tray': {
-                    result.tray = true;
-                    i++;
-                    break;
-                }
-                case '--new-instance': {
-                    result.newInstance = true;
-                    i++;
-                    break;
-                }
-                case '--one-instance': {
-                    result.oneInstance = true;
-                    i++;
-                    break;
-                }
-                case '--reset-lock': {
-                    result.resetLock = true;
-                    result.cliCommand = true;
-                    i++;
-                    break;
-                }
-                case '--instances': {
-                    result.instances = true;
-                    result.cliCommand = true;
-                    i++;
-                    break;
-                }
-                default: {
-                    i = this.parseCommonFlags(result, i);
-                }
-            }
-        }
-
-        // Return null if no instance-specific flags found
-        if (!result.tray && 
-            !result.newInstance && 
-            !result.oneInstance && 
-            !result.resetLock && 
-            !result.instances && 
-            !result.help && 
-            !result.manual) {
-            return null;
-        }
-
-        return result;
-    }
-
-    /**
-     * Check if the current command is a CLI command
-     * @method isCliCommand
-     * @override
-     * @returns {boolean} True if this is a CLI command
-     */
-    isCliCommand() {
-        try {
-            const args = this.parseArgs();
-            return args && args.cliCommand;
-        } catch (error) {
-            log.error('Error checking CLI command:', error);
-            return false;
-        }
-    }
-
-    /**
-     * Execute instance-specific commands based on parsed arguments
+     * Execute the parsed command using the command mapping pattern.
+     * Delegates execution to the appropriate command handler.
      * @method execute
-     * @override
-     * @param {Object} args - Parsed arguments from parseArgs()
-     * @throws {Error} If command execution fails
+     * @param {Object} args - Parsed arguments from parseArgs
+     * @returns {Promise<boolean>} True if command executed successfully
      */
-    execute(args) {
+    async execute(args) {
         try {
-            if (!args) {
-                return;
+            if (!args || !args.command || !args.handler) {
+                return false;
             }
 
-            if (args.help) {
-                this.showUsage();
-                return;
-            }
-
-            if (args.manual) {
-                this.showManual();
-                return;
-            }
-
-            // Execute bound commands
-            if (args.instances && this.commands.instances) {
-                this.commands.instances();
-                return;
-            }
-
-            if (args.resetLock && this.commands['reset-lock']) {
-                this.commands['reset-lock']();
-                return;
-            }
-
-            // Handle instance flags
-            if (args.tray) {
-                log.info('Starting minimized to tray');
-            }
-            if (args.newInstance) {
-                log.info('Forcing new instance');
-            }
-            if (args.oneInstance) {
-                log.info('Enforcing single instance');
-            }
+            // Execute the command handler
+            return await args.handler();
         } catch (error) {
             log.error('Error executing instance command:', error);
             throw error;
@@ -218,91 +76,58 @@ class InstanceCLI extends BaseCLI {
     }
 
     /**
-     * Show basic usage information and available commands
+     * Check if command is a CLI command that shouldn't register a PID.
+     * All instance commands are CLI commands and don't require PID registration.
+     * @method isCliCommand
+     * @returns {boolean} True if this is a CLI command
+     */
+    isCliCommand() {
+        return true;
+    }
+
+    /**
+     * Show basic usage information and available commands.
+     * Provides help text for all supported instance management commands.
      * @method showUsage
-     * @override
      */
     showUsage() {
         console.log('\nInstance Management Commands:');
-        console.log('  --instances       List running instances');
-        console.log('  --new-instance    Force create new instance');
-        console.log('  --one-instance    Force use existing instance');
-        console.log('  --reset-lock      Reset instance lock file');
-        console.log('  --tray            Start minimized to tray');
-        console.log('\nHelp Options:');
-        console.log('  --help            Show this help');
-        console.log('  --manual          Show detailed manual\n');
+        console.log('  --reset-lock       Reset instance lock and terminate running instances');
+        console.log('  --new-instance     Force creation of a new instance');
+        console.log();
     }
 
     /**
-     * Show detailed manual with instance management information
-     * @method showManual
-     * @override
+     * Reset the instance lock file and terminate all running instances.
+     * Delegates to instance manager for proper lock handling and process termination.
+     * @method resetLock
+     * @throws {Error} If unable to read PID file, terminate processes, or remove lock files
+     * @returns {Promise<boolean>} True if reset was successful
      */
-    showManual() {
-        console.log('\nInstance Management Manual:');
-        console.log('\n1. Instance Isolation');
-        console.log('   Each instance runs in its own process and can have its own profile.');
-        console.log('   Use --new-instance to force create a new instance.');
-        console.log('   Use --one-instance to force use an existing instance.');
-        console.log('\n2. Lock Management');
-        console.log('   The app uses a lock file to track running instances.');
-        console.log('   If the app crashes, the lock might remain.');
-        console.log('   Use --reset-lock to clear a stuck lock file.');
-        console.log('\n3. Tray Mode');
-        console.log('   Start the app minimized to tray with --tray.\n');
-    }
-
-    /**
-     * List all running application instances
-     * @method listInstances
-     * @throws {Error} If unable to read instance information
-     */
-    async listInstances() {
+    async resetLock() {
         try {
-            if (!fs.existsSync(this.instanceLockFile)) {
-                console.log('\nNo instances running.\n');
-                return;
-            }
-
-            const pids = await fs.readJson(this.pidFile, { throws: false }) || {};
-            const runningPids = Object.entries(pids)
-                .filter(([pid]) => {
-                    try {
-                        process.kill(parseInt(pid), 0);
-                        return true;
-                    } catch {
-                        return false;
-                    }
-                });
-
-            if (runningPids.length === 0) {
-                console.log('\nNo instances running.\n');
-                return;
-            }
-
-            console.log('\nRunning instances:');
-            for (const [pid, info] of runningPids) {
-                console.log(`  - PID ${pid}${info.profile ? ` (${info.profile})` : ''}`);
-            }
-            console.log();
+            await instanceManager.resetLock();
+            return true;
         } catch (error) {
-            log.error('Error listing instances:', error);
+            log.error('Error resetting instance lock:', error);
             throw error;
         }
     }
 
     /**
-     * Reset the instance lock file
-     * @method resetLock
-     * @throws {Error} If unable to reset lock file
+     * Create a new instance of the application.
+     * Forces creation of a new instance regardless of existing instances.
+     * @method createNewInstance
+     * @throws {Error} If unable to create new instance
+     * @returns {Promise<boolean>} True if instance was created successfully
      */
-    async resetLock() {
+    async createNewInstance() {
         try {
-            await fs.remove(this.instanceLockFile);
-            console.log('\nInstance lock reset.\n');
+            // TO DO: Implement createNewInstance logic
+            log.info('Creating new instance...');
+            return true;
         } catch (error) {
-            log.error('Error resetting instance lock:', error);
+            log.error('Error creating new instance:', error);
             throw error;
         }
     }

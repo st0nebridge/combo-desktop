@@ -1,5 +1,6 @@
 /**
- * @file Provider registry that manages registration and creation of service providers
+ * @file Provider registry that manages registration, validation, and creation
+ * of service providers across the application.
  */
 
 const fs = require('fs');
@@ -7,19 +8,31 @@ const path = require('path');
 const log = require('electron-log');
 
 /**
- * Provider Registry
- * Manages provider registration and creation
+ * Service for managing provider registration and lifecycle.
+ * Handles provider operations and validation:
+ * - Auto-registration of providers from modules directory
+ * - Provider validation and creation
+ * - Provider lookup and enumeration
+ * - Required method enforcement
+ * @class ProviderRegistry
  */
 class ProviderRegistry {
+    /**
+     * Creates a new ProviderRegistry instance
+     * @constructor
+     */
     constructor() {
+        /** @property {Map<string, Class>} providers - Map of provider command args to provider classes */
         this.providers = new Map();
         this.autoRegisterProviders();
     }
 
     /**
      * Register a provider class
+     * @method register
      * @param {Class} ProviderClass - Provider class to register
      * @returns {ProviderRegistry} this for chaining
+     * @throws {Error} If provider validation fails
      */
     register(ProviderClass) {
         try {
@@ -38,10 +51,12 @@ class ProviderRegistry {
     }
 
     /**
-     * Auto-register all providers in the providers directory
+     * Auto-register all providers in the modules directory
+     * @method autoRegisterProviders
+     * @throws {Error} If provider registration fails
      */
     autoRegisterProviders() {
-        const providersDir = __dirname;
+        const providersDir = path.join(__dirname, 'modules');
         
         try {
             const files = fs.readdirSync(providersDir);
@@ -49,7 +64,6 @@ class ProviderRegistry {
             files.forEach(file => {
                 // Skip non-provider files
                 if (file === 'base.provider.js' || 
-                    file === 'provider.registry.js' || 
                     !file.endsWith('.provider.js')) {
                     return;
                 }
@@ -74,8 +88,10 @@ class ProviderRegistry {
 
     /**
      * Create a provider instance by command arg
+     * @method createProvider
      * @param {string} providerArg - Command line argument for the provider
      * @returns {Object|null} Provider instance or null if not found
+     * @throws {Error} If provider creation fails
      */
     createProvider(providerArg) {
         try {
@@ -102,6 +118,8 @@ class ProviderRegistry {
                 return null;
             }
 
+            // Initialize provider
+            provider.initialize();
             return provider;
         } catch (error) {
             log.error('Error creating provider:', error);
@@ -111,8 +129,10 @@ class ProviderRegistry {
 
     /**
      * Validate a provider instance implements all required methods
+     * @method validateProvider
      * @param {Object} provider - Provider instance to validate
      * @returns {boolean} True if provider is valid
+     * @throws {Error} If provider validation fails
      */
     validateProvider(provider) {
         const required = ['getName', 'getCommandArg', 'getPartitionName', 'getUrl'];
@@ -127,7 +147,9 @@ class ProviderRegistry {
 
     /**
      * Get list of available providers
-     * @returns {Array} List of provider info objects
+     * @method getAvailableProviders
+     * @returns {Array<Object>} List of provider info objects with name and commandArg
+     * @throws {Error} If provider enumeration fails
      */
     getAvailableProviders() {
         try {
@@ -145,5 +167,5 @@ class ProviderRegistry {
     }
 }
 
-// Export singleton instance
+// Export a singleton instance
 module.exports = new ProviderRegistry();

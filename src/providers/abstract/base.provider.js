@@ -10,13 +10,13 @@
  * - getBaseIconPath(): Base icon path for this provider
  */
 
-const loggingService = require('../services/logging.service');
-const userAgentConfig = require('../config/user-agent.config');
-const windowService = require('../services/window.service');
-const profileManager = require("../services/profile.manager");
+const log = require('electron-log');
+const userAgentConfig = require('../../config/user-agent.config');
+const windowService = require('../../services/window.service');
+const profileManager = require("../../services/profile.manager");
 const electronLocalshortcut = require('electron-localshortcut');
 const { shell } = require('electron');
-const trayService = require('../services/tray.service');
+const trayService = require('../../services/tray.service');
 
 /**
  * Abstract base class for all application providers.
@@ -29,12 +29,9 @@ class BaseProvider {
     /**
      * Creates a new BaseProvider instance.
      * @constructor
-     * @param {Object} [options={}] - Configuration options for the provider
-     * @param {string} [options.userAgent] - Custom user agent string
-     * @param {Object} [options.windowConfig] - Custom window configuration
      * @throws {Error} If attempting to instantiate BaseProvider directly
      */
-    constructor(options = {}) {
+    constructor() {
         if (this.constructor === BaseProvider) {
             throw new Error('BaseProvider is abstract and cannot be instantiated directly');
         }
@@ -47,9 +44,6 @@ class BaseProvider {
         
         /** @property {boolean} hasNotification - Whether the provider has active notifications */
         this.hasNotification = false;
-        
-        /** @property {Object} options - Provider configuration options */
-        this.options = options;
     }
 
     /**
@@ -171,7 +165,7 @@ class BaseProvider {
             let webPreferences = this.getWebPreferences();
 
             if (webPreferences.partition) {
-                loggingService.warn('Partition property in web preferences will be ignored. Use profiles instead.');
+                log.warn('Partition property in web preferences will be ignored. Use profiles instead.');
             }
 
             windowConfig.webPreferences = {
@@ -189,7 +183,7 @@ class BaseProvider {
 
             return this.window;
         } catch (error) {
-            loggingService.error(`[${this.getName()}] Error spawning window:`, error);
+            log.error(`[${this.getName()}] Error spawning window:`, error);
             return null;
         }
     }
@@ -221,7 +215,7 @@ class BaseProvider {
             this.window.webContents.setWindowOpenHandler((details) => {
                 if (details.url) {
                     shell.openExternal(details.url).catch(err => {
-                        loggingService.error(`[${this.getName()}] Error opening external URL:`, err);
+                        log.error(`[${this.getName()}] Error opening external URL:`, err);
                     });
                 }
                 return { action: 'deny' };
@@ -233,7 +227,7 @@ class BaseProvider {
                 throw new Error('Provider URL not specified');
             }
             
-            loggingService.info(`[${this.getName()}] Initializing window with URL: ${url}`);
+            log.info(`[${this.getName()}] Initializing window with URL: ${url}`);
             await this.window.loadURL(url);
             
             // Inject any custom JS
@@ -242,9 +236,9 @@ class BaseProvider {
             // Call provider-specific initialization
             await this.initializeProvider(profile);
             
-            loggingService.info(`[${this.getName()}] Window initialization complete`);
+            log.info(`[${this.getName()}] Window initialization complete`);
         } catch (error) {
-            loggingService.error(`[${this.getName()}] Error initializing window:`, error);
+            log.error(`[${this.getName()}] Error initializing window:`, error);
             throw error;
         }
     }
@@ -255,7 +249,7 @@ class BaseProvider {
      * @returns {Promise<void>}
      */
     async initializeProvider(profile) {
-        loggingService.info(`Initializing ${this.getName()} provider with profile:`, profile);
+        log.info(`Initializing ${this.getName()} provider with profile:`, profile);
 
         if (!this.eventsSetup) {
             this.setupEventHandlers();
@@ -272,20 +266,12 @@ class BaseProvider {
         const session = require('electron').session;
         const partitionSession = session.fromPartition(partition);
         
-        // Set user agent if provided in options or get from config
-        const userAgent = this.options.userAgent || userAgentConfig.getUserAgentForProvider(this.getName());
+        // Set user agent
+        const userAgent = userAgentConfig.getUserAgent(this.getName());
         if (userAgent) {
             partitionSession.setUserAgent(userAgent);
-            loggingService.info(`[${this.getName()}] Set user agent for partition ${partition}: ${userAgent}`);
+            log.info(`[${this.getName()}] Set user agent for partition ${partition}: ${userAgent}`);
         }
-    }
-
-    /**
-     * Gets the user agent string for this provider.
-     * @returns {string|null} The user agent string or null if not configured
-     */
-    getUserAgent() {
-        return this.options.userAgent || userAgentConfig.getUserAgentForProvider(this.getName());
     }
 
     /**
@@ -365,9 +351,9 @@ class BaseProvider {
             await session.clearStorageData({
                 storages
             });
-            loggingService.info(`[${this.getName()}] Session data cleared:`, storages);
+            log.info(`[${this.getName()}] Session data cleared:`, storages);
         } catch (error) {
-            loggingService.error(`[${this.getName()}] Error clearing session data:`, error);
+            log.error(`[${this.getName()}] Error clearing session data:`, error);
         }
     }
 
@@ -405,7 +391,9 @@ class BaseProvider {
      * Handle single click on tray icon - can be overridden by providers
      */
     handleTrayClick() {
-        // Empty handler for provider override
+        if (this.window) {
+            windowService.toggleWindow(this.window);
+        }
     }
 
     /**
@@ -413,7 +401,7 @@ class BaseProvider {
      */
     handleTrayDoubleClick() {
         if (this.window) {
-            windowService.toggleWindow(this.window);
+            windowService.showWindow(this.window);
         }
     }
 }

@@ -1,20 +1,19 @@
 /**
- * @module ProviderCLI
- * @description CLI module for managing service providers and their configuration.
- * Handles provider initialization, configuration, and instance management.
+ * @file CLI module for managing service providers.
+ * Handles provider initialization, configuration, and command execution.
  */
 
-const BaseCLI = require('../abstract/base-cli');
 const log = require('electron-log');
-const { app } = require('electron');
-const path = require('path');
+const BaseCLI = require('../abstract/base-cli');
+const providerRegistry = require('../../providers');
+const appManager = require('../../services/app.manager');
 
 /**
  * CLI module for managing service providers.
- * Extends BaseCLI to provide provider-specific functionality:
+ * Handles:
  * - Provider initialization and configuration
- * - Profile management for providers
- * - Instance control
+ * - Command parsing and execution
+ * - Provider-specific arguments
  * @class ProviderCLI
  * @extends {BaseCLI}
  */
@@ -25,119 +24,82 @@ class ProviderCLI extends BaseCLI {
      */
     constructor() {
         super();
-        
-        /** @property {Array<string>} moduleFlags - Supported command flags */
-        this.moduleFlags = [
-            '--whatsapp',
-            '--facebook'
-        ];
 
-        // Bind command functions using .bind() pattern for command mapping
-        /** @property {Object} commands - Map of provider names to initialization functions */
+        /** @property {Object} commands - Map of command names to handler functions */
         this.commands = {
-            'whatsapp': this.initProvider.bind(this, 'whatsapp'),
-            'facebook': this.initProvider.bind(this, 'facebook')
+            'list': this.listProviders.bind(this),
+            'init': this.initProvider.bind(this),
+            'whatsapp': this.initWhatsApp.bind(this),
+            'facebook': this.initFacebook.bind(this)
         };
-    }
 
-    /**
-     * Get provider-specific result object with additional fields
-     * @method getProviderResultObject
-     * @returns {Object} Result object with structure { help: false, manual: false, config: null, profile: null, providers: [], newInstance: false, oneInstance: false, resetLock: false, cliCommand: false }
-     */
-    getProviderResultObject() {
-        const result = this.getBaseResultObject();
-        return {
-            ...result,
-            config: null,
-            profile: null,
-            providers: [],
-            newInstance: false,
-            oneInstance: false,
-            resetLock: false,
-            cliCommand: false
+        /** @property {Object} commandAliases - Map of command aliases to actual command names */
+        this.commandAliases = {
+            '--whatsapp': 'whatsapp',
+            '--facebook': 'facebook'
         };
     }
 
     /**
      * Parse provider-specific command line arguments
      * @method parseArgs
-     * @override
-     * @returns {Object|null} Parsed arguments or null if no provider flags found
+     * @param {Array<string>} args - Command line arguments
+     * @param {number} startIndex - Starting index in args array
+     * @returns {Object} Parsed arguments object
      */
-    parseArgs() {
-        const result = this.getProviderResultObject();
+    parseArgs(args, startIndex = 0) {
+        const result = this.getBaseResultObject();
+        result.tray = false;
+        result.command = null;
+        result.profile = 'default';
 
-        let i = 0;
-        while (i < this.args.length) {
-            const arg = this.args[i];
+        // Handle no args case
+        if (!args || args.length === 0) {
+            return null;
+        }
 
-            // Handle provider commands
-            if (arg === '--whatsapp' || arg === '--facebook') {
-                let profile = null;
-                if (i + 1 < this.args.length && !this.args[i + 1].startsWith('--')) {
-                    profile = this.args[i + 1];
-                    i += 2;
-                } else {
-                    i++;
-                }
-                result.providers.push({ provider: arg.slice(2), profile });
-                continue;
-            }
-
-            // Handle instance flags
-            if (arg === '--new-instance') {
-                result.newInstance = true;
+        // Process each argument
+        for (let i = startIndex; i < args.length; i++) {
+            const arg = args[i];
+            
+            // Check for base flags first
+            const baseResult = this.parseCommonFlags(result, i);
+            if (baseResult.skipNext) {
                 i++;
                 continue;
             }
-
-            if (arg === '--one-instance') {
-                result.oneInstance = true;
-                i++;
+            if (baseResult.handled) {
                 continue;
             }
 
-            if (arg === '--reset-lock') {
-                result.resetLock = true;
-                result.cliCommand = true;
-                i++;
-                continue;
-            }
-
-            // Handle config flag
-            if (arg === '--config') {
-                if (i + 1 < this.args.length && !this.args[i + 1].startsWith('--')) {
-                    result.config = this.args[i + 1];
-                    i += 2;
-                    continue;
-                }
-                i++;
+            // Handle provider-specific flags
+            if (arg === '--tray') {
+                result.tray = true;
                 continue;
             }
 
             // Handle profile flag
             if (arg === '--profile') {
-                if (i + 1 < this.args.length && !this.args[i + 1].startsWith('--')) {
-                    result.profile = this.args[i + 1];
-                    i += 2;
-                    continue;
+                if (i + 1 < args.length) {
+                    result.profile = args[++i];
                 }
-                i++;
                 continue;
             }
 
-            // Use common flag parsing
-            i = this.parseCommonFlags(result, i);
+            // Check for provider commands and aliases
+            if (this.commands[arg]) {
+                result.command = arg;
+                continue;
+            }
+
+            if (this.commandAliases[arg]) {
+                result.command = this.commandAliases[arg];
+                continue;
+            }
         }
 
-        // Return null if no providers or special flags found
-        if (result.providers.length === 0 && 
-            !result.newInstance && 
-            !result.oneInstance && 
-            !result.resetLock && 
-            !result.help && 
-            !result.manual) {
+        // Return null if no valid command found
+        if (!result.command) {
             return null;
         }
 
@@ -145,118 +107,136 @@ class ProviderCLI extends BaseCLI {
     }
 
     /**
-     * Initialize a provider with optional profile
-     * @method initProvider
-     * @param {string} provider - Provider name (e.g., 'whatsapp', 'facebook')
-     * @param {string} [profile] - Optional profile name
-     * @throws {Error} If provider initialization fails
-     */
-    initProvider(provider, profile) {
-        log.info(`Initializing provider ${provider}${profile ? ` with profile ${profile}` : ''}`);
-    }
-
-    /**
-     * Check if the current command is a CLI command
+     * Check if this is a CLI command that needs a PID
      * @method isCliCommand
-     * @override
      * @returns {boolean} True if this is a CLI command
      */
     isCliCommand() {
+        return false;
+    }
+
+    /**
+     * Execute provider commands based on parsed arguments
+     * @method execute
+     * @param {Object} args - Parsed command line arguments
+     * @returns {Promise<boolean>} True if execution successful
+     */
+    async execute(args) {
         try {
-            const args = this.parseArgs();
-            return args && args.cliCommand;
+            if (!args || !args.command || !this.commands[args.command]) {
+                log.error('No valid provider or command specified');
+                return false;
+            }
+
+            log.info(`Executing provider command: ${args.command}`);
+            return await this.commands[args.command](args);
         } catch (error) {
-            log.error('Error checking CLI command:', error);
+            log.error('Error executing provider command:', error);
             return false;
         }
     }
 
     /**
-     * Execute provider-specific commands based on parsed arguments
-     * @method execute
-     * @override
-     * @param {Object} args - Parsed arguments from parseArgs()
-     * @throws {Error} If command execution fails or config validation fails
+     * Initialize WhatsApp provider
+     * @method initWhatsApp
+     * @param {Object} args - Command arguments
+     * @returns {Promise<boolean>} True if initialization successful
      */
-    execute(args) {
-        if (!args) {
-            return;
-        }
+    async initWhatsApp(args) {
+        log.info('Initializing WhatsApp provider');
+        return await this.initProvider({
+            provider: 'whatsapp',
+            profile: args.profile,
+            tray: args.tray
+        });
+    }
 
-        // Show help if requested
-        if (args.help) {
-            this.showUsage();
-            return;
-        }
+    /**
+     * Initialize Facebook provider
+     * @method initFacebook
+     * @param {Object} args - Command arguments
+     * @returns {Promise<boolean>} True if initialization successful
+     */
+    async initFacebook(args) {
+        log.info('Initializing Facebook provider');
+        return await this.initProvider({
+            provider: 'facebook',
+            profile: args.profile,
+            tray: args.tray
+        });
+    }
 
-        // Show manual if requested
-        if (args.manual) {
-            this.showManual();
-            return;
-        }
-
-        // Validate config file if specified
-        if (args.config) {
-            this.validateFilePath(args.config);
-        }
-
-        // Execute provider commands
-        for (const { provider, profile } of args.providers) {
-            if (this.commands[provider]) {
-                this.commands[provider](profile);
+    /**
+     * Initialize a provider with specified configuration
+     * @method initProvider
+     * @param {Object} args - Provider arguments
+     * @returns {Promise<boolean>} True if initialization successful
+     */
+    async initProvider(args) {
+        try {
+            const { provider, profile, tray } = args;
+            if (!provider) {
+                log.error('No provider specified');
+                return false;
             }
-        }
 
-        // Log other flags
-        if (args.newInstance) {
-            log.info('Forcing new instance');
-        }
-        if (args.oneInstance) {
-            log.info('Enforcing single instance');
-        }
-        if (args.resetLock) {
-            log.info('Resetting instance lock');
+            log.info(`Initializing provider: ${provider} with profile: ${profile}`);
+            const success = await appManager.initializeProvider(provider, profile, { tray });
+            if (!success) {
+                log.error(`Failed to initialize provider: ${provider}`);
+                return false;
+            }
+
+            return true;
+        } catch (error) {
+            log.error('Error initializing provider:', error);
+            return false;
         }
     }
 
     /**
-     * Show basic usage information and available commands
+     * List available providers
+     * @method listProviders
+     * @returns {Promise<boolean>} True if successful
+     */
+    async listProviders() {
+        try {
+            const providers = providerRegistry.getAvailableProviders();
+            if (providers.length === 0) {
+                log.info('No providers available');
+                return true;
+            }
+
+            log.info('Available providers:');
+            providers.forEach(({ name, commandArg }) => {
+                log.info(`  ${name} (${commandArg})`);
+            });
+
+            return true;
+        } catch (error) {
+            log.error('Error listing providers:', error);
+            return false;
+        }
+    }
+
+    /**
+     * Show provider CLI usage information
      * @method showUsage
-     * @override
      */
     showUsage() {
-        console.log('\nProvider CLI Usage:');
-        console.log('  --whatsapp [profile]    Start WhatsApp with optional profile');
-        console.log('  --facebook [profile]    Start Facebook with optional profile');
-        console.log('\nConfiguration Options:');
-        console.log('  --config <path>         Use specific configuration file');
-        console.log('  --profile <name>        Use specific profile');
-        console.log('\nInstance Options:');
-        console.log('  --new-instance          Force new instance');
-        console.log('  --one-instance          Allow only one instance');
-        console.log('  --reset-lock            Reset instance lock');
-        console.log('\nHelp Options:');
-        console.log('  --help                  Show help information');
-        console.log('  --manual                Show detailed manual\n');
-    }
+        const usage = `
+Provider CLI Usage:
+  yarn whatsapp           Launch WhatsApp provider
+  yarn facebook          Launch Facebook provider
+  yarn whatsapp --tray   Launch WhatsApp with tray icon
+  yarn facebook --tray   Launch Facebook with tray icon
+  yarn provider list     List available providers
 
-    /**
-     * Show detailed manual with provider configuration information
-     * @method showManual
-     * @override
-     */
-    showManual() {
-        console.log('\nProvider CLI Manual:');
-        console.log('\n1. Providers');
-        console.log('   Use --whatsapp or --facebook to start specific providers');
-        console.log('   Optionally specify a profile name after the provider flag');
-        console.log('\n2. Configuration');
-        console.log('   Use --config to specify a custom config file');
-        console.log('   Use --profile to specify a named profile');
-        console.log('\n3. Instance Management');
-        console.log('   Use --new-instance to force a new instance');
-        console.log('   Use --one-instance to allow only one instance');
-        console.log('   Use --reset-lock to reset instance lock\n');
+Options:
+  --profile <name>      Use specific profile (default: 'default')
+  --tray               Create tray icon for provider
+`;
+        log.info(usage);
     }
 }
 

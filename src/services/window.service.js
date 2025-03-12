@@ -1,12 +1,42 @@
+/**
+ * @file Window management service that handles creation, lifecycle, and state
+ * of all application windows. Provides centralized window control and event handling.
+ */
+
 const { BrowserWindow, app } = require('electron');
 const log = require('electron-log');
 
+/**
+ * Service for managing application windows.
+ * Handles window lifecycle, state management, and events:
+ * - Window creation and configuration
+ * - Window visibility and focus
+ * - Window cleanup and session management
+ * - Window event handling
+ * @class WindowService
+ */
 class WindowService {
+    /**
+     * Creates a new WindowService instance
+     * @constructor
+     */
     constructor() {
-        this.windows = new Map(); // Map<windowName, BrowserWindow>
+        /** @property {Map<string, Electron.BrowserWindow>} windows - Map of window names to window instances */
+        this.windows = new Map();
+        
+        /** @property {boolean} isQuitting - Whether the app is in the process of quitting */
         this.isQuitting = false;
     }
 
+    /**
+     * Create a new browser window with the specified configuration
+     * @method createWindow
+     * @param {Object} config - Window configuration options
+     * @param {string} windowName - Unique identifier for the window
+     * @param {Object} [metadata={}] - Additional metadata to attach to the window
+     * @returns {Electron.BrowserWindow|null} Created window or null if creation fails
+     * @throws {Error} If window name is not provided
+     */
     createWindow(config, windowName, metadata = {}) {
         try {
             if (!windowName) {
@@ -47,6 +77,12 @@ class WindowService {
         }
     }
 
+    /**
+     * Set up event handlers for a window
+     * @method setupWindowEvents
+     * @param {Electron.BrowserWindow} window - Window to set up events for
+     * @param {string} windowName - Name of the window
+     */
     setupWindowEvents(window, windowName) {
         if (!window || !windowName) {
             return;
@@ -92,15 +128,33 @@ class WindowService {
         });
     }
 
+    /**
+     * Get a window by its name
+     * @method getWindow
+     * @param {string} windowName - Name of the window to retrieve
+     * @returns {Electron.BrowserWindow|undefined} The window instance if found
+     */
     getWindow(windowName) {
         return this.windows.get(windowName);
     }
 
+    /**
+     * Get all active windows
+     * @method getAllWindows
+     * @returns {Electron.BrowserWindow[]} Array of all window instances
+     */
     getAllWindows() {
         return Array.from(this.windows.values());
     }
 
-    // Helper to get window and name from input
+    /**
+     * Resolve a window reference from either a window instance or name
+     * @method resolveWindow
+     * @param {Electron.BrowserWindow|string} windowOrName - Window instance or name
+     * @returns {Object} Object containing window and windowName
+     * @property {Electron.BrowserWindow|null} window - Resolved window instance
+     * @property {string|null} windowName - Resolved window name
+     */
     resolveWindow(windowOrName) {
         if (!windowOrName) {
             return { window: null, windowName: null };
@@ -119,6 +173,12 @@ class WindowService {
         return { window, windowName: windowOrName };
     }
 
+    /**
+     * Show and focus a window
+     * @method showWindow
+     * @param {Electron.BrowserWindow|string} windowOrName - Window instance or name
+     * @throws {Error} If window operation fails
+     */
     showWindow(windowOrName) {
         try {
             const { window } = this.resolveWindow(windowOrName);
@@ -131,6 +191,12 @@ class WindowService {
         }
     }
 
+    /**
+     * Hide a window
+     * @method hideWindow
+     * @param {Electron.BrowserWindow|string} windowOrName - Window instance or name
+     * @throws {Error} If window operation fails
+     */
     hideWindow(windowOrName) {
         try {
             const { window } = this.resolveWindow(windowOrName);
@@ -142,6 +208,12 @@ class WindowService {
         }
     }
 
+    /**
+     * Toggle window visibility
+     * @method toggleWindow
+     * @param {Electron.BrowserWindow|string} windowOrName - Window instance or name
+     * @throws {Error} If window operation fails
+     */
     toggleWindow(windowOrName) {
         try {
             const { window } = this.resolveWindow(windowOrName);
@@ -158,6 +230,13 @@ class WindowService {
         }
     }
 
+    /**
+     * Close a window
+     * @method closeWindow
+     * @param {Electron.BrowserWindow|string} windowOrName - Window instance or name
+     * @param {boolean} [force=false] - Force close without allowing prevention
+     * @throws {Error} If window operation fails
+     */
     closeWindow(windowOrName, force = false) {
         try {
             const { window } = this.resolveWindow(windowOrName);
@@ -173,6 +252,12 @@ class WindowService {
         }
     }
 
+    /**
+     * Close all windows
+     * @method closeAllWindows
+     * @param {boolean} [force=false] - Force close without allowing prevention
+     * @throws {Error} If window operation fails
+     */
     closeAllWindows(force = false) {
         if (force) {
             this.isQuitting = true;
@@ -189,6 +274,11 @@ class WindowService {
         });
     }
 
+    /**
+     * Clean up all windows and prepare for app quit
+     * @method cleanup
+     * @throws {Error} If cleanup fails
+     */
     async cleanup() {
         // Set quitting flag to prevent window hide
         this.isQuitting = true;
@@ -208,4 +298,5 @@ class WindowService {
     }
 }
 
+// Export a singleton instance
 module.exports = new WindowService();

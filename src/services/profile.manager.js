@@ -1,8 +1,26 @@
+/**
+ * @file Profile management service that handles user profile storage,
+ * retrieval, and migration across different application providers.
+ */
+
 const Store = require('electron-store');
 const { app } = require('electron');
 const log = require('electron-log');
 
+/**
+ * Service for managing user profiles.
+ * Handles profile lifecycle and storage operations:
+ * - Profile creation and deletion
+ * - Profile data storage and retrieval
+ * - Profile migration and updates
+ * - Provider-specific profile management
+ * @class ProfileManager
+ */
 class ProfileManager {
+    /**
+     * Creates a new ProfileManager instance
+     * @constructor
+     */
     constructor() {
         // Ensure app name is set before getting userData path
         if (!app.name) {
@@ -10,6 +28,7 @@ class ProfileManager {
             app.name = packageJson.name;
         }
 
+        /** @property {Store} store - Electron store for profile data */
         this.store = new Store({
             name: 'profiles',
             defaults: {
@@ -20,8 +39,10 @@ class ProfileManager {
     }
 
     /**
-     * Initialize the profile manager
+     * Initialize the profile manager and migrate old profiles
+     * @method init
      * @returns {Promise<boolean>} True if initialization successful
+     * @throws {Error} If initialization fails
      */
     async init() {
         try {
@@ -37,6 +58,8 @@ class ProfileManager {
 
     /**
      * Migrate old profile format to new format if needed
+     * @method migrateOldProfiles
+     * @throws {Error} If migration fails
      */
     async migrateOldProfiles() {
         try {
@@ -69,20 +92,23 @@ class ProfileManager {
 
     /**
      * Get partition name for a provider and profile
+     * @method getPartitionName
      * @param {string} providerName - Provider name
-     * @param {string} profileName - Profile name
-     * @returns {string} Partition name
+     * @param {string} [profileName='default'] - Profile name
+     * @returns {string} Partition name in format appName:provider:profile
      */
     getPartitionName(providerName, profileName = 'default') {
         return `${app.getName()}:${providerName}:${profileName}`;
     }
 
     /**
-     * Create a new profile
+     * Create a new profile for a provider
+     * @method createProfile
      * @param {string} providerName - Provider name
-     * @param {string} profileName - Profile name
-     * @param {Object} options - Profile options
-     * @returns {string} Partition name
+     * @param {string} [profileName='default'] - Profile name
+     * @param {Object} [options={}] - Profile options
+     * @returns {string} Created partition name
+     * @throws {Error} If profile already exists
      */
     createProfile(providerName, profileName = 'default', options = {}) {
         const profiles = this.store.get('profiles');
@@ -106,9 +132,10 @@ class ProfileManager {
 
     /**
      * Get a profile by provider and name
+     * @method getProfile
      * @param {string} providerName - Provider name
-     * @param {string} profileName - Profile name
-     * @returns {Object|null} Profile data
+     * @param {string} [profileName='default'] - Profile name
+     * @returns {Object|null} Profile data or null if not found
      */
     getProfile(providerName, profileName = 'default') {
         const partitionName = this.getPartitionName(providerName, profileName);
@@ -118,16 +145,18 @@ class ProfileManager {
 
     /**
      * Get all profiles
-     * @returns {Object} All profiles
+     * @method getAllProfiles
+     * @returns {Object} Map of partition names to profile data
      */
     getAllProfiles() {
         return this.store.get('profiles');
     }
 
     /**
-     * Get all profiles for a provider
+     * Get all profiles for a specific provider
+     * @method getProfilesByProvider
      * @param {string} providerName - Provider name
-     * @returns {Object} Provider profiles
+     * @returns {Object} Map of partition names to profile data for provider
      */
     getProfilesByProvider(providerName) {
         const profiles = this.store.get('profiles');
@@ -141,8 +170,10 @@ class ProfileManager {
 
     /**
      * Delete a profile
+     * @method deleteProfile
      * @param {string} providerName - Provider name
-     * @param {string} profileName - Profile name
+     * @param {string} [profileName='default'] - Profile name
+     * @throws {Error} If profile does not exist
      */
     deleteProfile(providerName, profileName = 'default') {
         const partitionName = this.getPartitionName(providerName, profileName);
@@ -159,6 +190,7 @@ class ProfileManager {
 
     /**
      * Delete all profiles
+     * @method deleteAllProfiles
      */
     deleteAllProfiles() {
         this.store.set('profiles', {});
@@ -166,4 +198,5 @@ class ProfileManager {
     }
 }
 
+// Export a singleton instance
 module.exports = new ProfileManager();

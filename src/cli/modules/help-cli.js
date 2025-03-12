@@ -7,8 +7,6 @@
 
 const BaseCLI = require('../abstract/base-cli');
 const log = require('electron-log');
-const fs = require('fs-extra');
-const path = require('path');
 const { app } = require('electron');
 
 /**

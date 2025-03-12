@@ -1,33 +1,44 @@
+/**
+ * Main entry point for the application.
+ * Handles initialization and command line argument processing.
+ */
+
 const { app } = require('electron');
 const log = require('electron-log');
 const appManager = require('./services/app.manager');
-const cli = require('./cli');
 
 /**
- * Main application entry point
+ * Main function that initializes the application and processes command line arguments
+ * @returns {Promise<void>}
  */
 async function main() {
     try {
-        // Wait for app to be ready
-        await app.whenReady();
-
         log.info('Application starting...');
-
+        
         // Initialize CLI modules
-        cli.initCLI();
-
-        // Process command line arguments
-        // If it returns true, this is a CLI command that shouldn't register a PID
-        const isCliCommand = cli.processArgs();
-        if (isCliCommand) {
-            log.info('CLI command executed, exiting...');
+        log.info('Initializing CLI modules');
+        const cli = require('./cli');
+        
+        // Get command line arguments (skip electron/node executable and script path)
+        const args = process.argv;
+        
+        // Process arguments through CLI modules
+        const success = await cli.execute(args);
+        
+        // If CLI command was successful, exit
+        if (success) {
             app.exit(0);
             return;
         }
+        
+        // Continue with normal app initialization if not a CLI command
+        
+        // Wait for app to be ready
+        await app.whenReady();
 
         // Initialize app manager
-        const success = await appManager.init();
-        if (!success) {
+        const successInit = await appManager.init();
+        if (!successInit) {
             log.error('Failed to initialize application');
             app.exit(1);
             return;
@@ -37,7 +48,6 @@ async function main() {
 
         // Handle window-all-closed event
         app.on('window-all-closed', () => {
-            // Keep app running if there are active sessions
             if (process.platform !== 'darwin') {
                 app.quit();
             }
@@ -45,13 +55,18 @@ async function main() {
 
         // Handle activate event (macOS)
         app.on('activate', () => {
-            appManager.createWindow();
+            appManager.createMainWindow();
         });
     } catch (error) {
-        log.error('Fatal error during application startup:', error);
+        log.error('Application error:', error);
         app.exit(1);
     }
 }
 
-// Start the application
-main();
+// Handle app ready event
+app.on('ready', () => {
+    main().catch(error => {
+        log.error('Fatal error:', error);
+        app.exit(1);
+    });
+});

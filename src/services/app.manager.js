@@ -1,3 +1,8 @@
+/**
+ * @file Core application manager that handles lifecycle, initialization,
+ * and coordination between various services and providers.
+ */
+
 const { app } = require('electron');
 const log = require('electron-log');
 const { ipcMain } = require('electron');
@@ -9,18 +14,31 @@ const providerRegistry = require('../providers');
 const cliRegistry = require('../cli/cli.registry');
 
 /**
- * Application Manager
- * Handles core application functionality and lifecycle
+ * Core application manager that handles lifecycle and coordination.
+ * Responsible for:
+ * - Application initialization and shutdown
+ * - Window management
+ * - Provider initialization
+ * - Instance management
+ * - IPC communication
+ * @class AppManager
  */
 class AppManager {
+    /**
+     * Creates a new AppManager instance
+     * @constructor
+     */
     constructor() {
+        /** @property {boolean} isQuitting - Whether the app is in the process of quitting */
         this.isQuitting = false;
+        
         this.setupEventHandlers();
         log.info('App Manager initialized');
     }
 
     /**
-     * Setup application event handlers
+     * Set up core application event handlers for lifecycle management
+     * @method setupEventHandlers
      */
     setupEventHandlers() {
         // Handle window-all-closed event
@@ -52,7 +70,8 @@ class AppManager {
     }
 
     /**
-     * Setup IPC event handlers
+     * Set up IPC event handlers for renderer communication
+     * @method setupIpcHandlers
      */
     setupIpcHandlers() {
         ipcMain.handle('get-app-info', () => {
@@ -69,7 +88,9 @@ class AppManager {
     }
 
     /**
-     * Create the main application window
+     * Create the main application window with default configuration
+     * @method createMainWindow
+     * @returns {Electron.BrowserWindow} The created window instance
      */
     createMainWindow() {
         const config = {
@@ -86,37 +107,42 @@ class AppManager {
     }
 
     /**
-     * Initialize the application
+     * Initialize the application and its core services.
+     * Handles CLI commands, instance registration, and provider initialization.
+     * @method init
      * @returns {Promise<boolean>} True if initialization successful
+     * @throws {Error} If initialization fails
      */
     async init() {
         try {
             // Get parsed arguments from registry
             const args = cliRegistry.getLastParsedArgs();
-            if (!args) {
-                log.error('No CLI arguments parsed');
-                return false;
-            }
-
-            // Handle instance registration
-            if (!(await instanceManager.handleInstanceRegistration(args))) {
-                log.error('Failed to register instance');
-                return false;
-            }
-
-            // Initialize profile manager
+            
+            // Initialize profile manager first
             await profileManager.init();
 
-            // Handle provider initialization
-            if (args.providers && args.providers.length > 0) {
-                for (const { provider: providerName, profile } of args.providers) {
-                    const success = await this.initializeProvider(providerName, profile || 'default', args);
-                    if (!success) {
-                        log.error(`Failed to initialize provider: ${providerName}`);
-                        return false;
-                    }
+            // For CLI commands, we don't need full initialization
+            if (args && args.command) {
+                log.info('CLI command detected, skipping full initialization');
+                return true;
+            }
+
+            // Handle instance registration if needed
+            if (args && !args.cliCommand) {
+                if (!(await instanceManager.handleInstanceRegistration(args))) {
+                    log.error('Failed to register instance');
+                    return false;
                 }
-            } else if (!args.cliCommand) {
+            }
+
+            // Handle provider initialization
+            if (args && args.command) {
+                const success = await this.initializeProvider(args.command, args.profile || 'default', args);
+                if (!success) {
+                    log.error(`Failed to initialize provider: ${args.command}`);
+                    return false;
+                }
+            } else if (args && !args.cliCommand) {
                 // No providers specified and not a CLI command, create main window
                 this.createMainWindow();
             }
@@ -125,29 +151,28 @@ class AppManager {
             return true;
         } catch (error) {
             log.error('Failed to initialize application:', error);
-            return false;
+            throw error;
         }
     }
 
     /**
-     * Initialize a provider
+     * Initialize a provider with specified profile.
+     * Creates provider instance, window, and tray if needed.
+     * @method initializeProvider
      * @param {string} providerName - Name of the provider
      * @param {string} profile - Profile name
      * @param {Object} args - CLI arguments
      * @returns {Promise<boolean>} True if initialization successful
+     * @throws {Error} If provider initialization fails
      */
     async initializeProvider(providerName, profile, args) {
         try {
+            log.info(`Initializing provider: ${providerName} with profile: ${profile}`);
+
             // Create provider instance
             const provider = providerRegistry.createProvider(providerName);
             if (!provider) {
                 log.error(`Invalid provider: ${providerName}`);
-                return false;
-            }
-
-            // Add provider to instance
-            if (!(await instanceManager.addProviderToInstance(provider.getCommandArg(), profile))) {
-                log.error(`Failed to add provider ${providerName} to instance`);
                 return false;
             }
 
@@ -176,38 +201,30 @@ class AppManager {
     }
 
     /**
-     * Handle second instance launch
-     * @param {string[]} argv - Command line arguments
+     * Handle second instance of the application
+     * @method handleSecondInstance
+     * @param {Array<string>} argv - Command line arguments from second instance
      */
-    async handleSecondInstance(argv) {
-        try {
-            await instanceManager.handleSecondInstance(argv);
-        } catch (error) {
-            log.error('Failed to handle second instance:', error);
+    handleSecondInstance(argv) {
+        // Focus the main window if it exists
+        const mainWindow = windowService.getWindow('main');
+        if (mainWindow) {
+            if (mainWindow.isMinimized()) {
+                mainWindow.restore();
+            }
+            mainWindow.focus();
         }
     }
 
     /**
-     * Quit the application
+     * Quit the application gracefully
+     * @method quit
      */
     quit() {
-        try {
-            this.isQuitting = true;
-            
-            // Set quitting flag on window service
-            windowService.isQuitting = true;
-
-            // Cleanup services in order
-            trayService.cleanup();
-            windowService.cleanup();
-            instanceManager.cleanup();
-            
-            app.quit();
-        } catch (error) {
-            log.error('Failed to quit application:', error);
-            process.exit(1);
-        }
+        this.isQuitting = true;
+        app.quit();
     }
 }
 
+// Export singleton instance
 module.exports = new AppManager();
