@@ -1,9 +1,11 @@
-# Application Instance Management Rules
+# App Instance Rules
 
 ## Instance Uniqueness
-1. Each provider+profile combination (session) MUST be unique across all app instances
-2. ONLY ONE instance of a specific session is allowed across all running app instances
-3. Uniqueness rules MUST take precedence over ALL configuration overrides
+1. Each instance MUST have a unique ID (timestamp-based)
+2. Each instance MUST register its sessions in the lock file
+3. Each provider+profile combination MUST be unique across all instances
+4. Each provider+profile combination MUST be registered as a session
+5. Each instance MUST respect the process isolation rules
 
 ## Process Isolation Priority
 1. Process isolation MUST follow this priority order (highest to lowest):
@@ -11,6 +13,22 @@
    - Profile isolation (default behavior)
    - Shared process (least safe, via `--one-instance`)
 2. ALL process isolation rules MUST respect instance uniqueness requirements
+
+## Process Management
+1. Each instance MUST register its PID in `pids.json` in appdata:
+   - Add PID after successful instance initialization
+   - Remove PID on successful instance exit
+   - Handle process cleanup on abnormal termination
+2. `pids.json` MUST use OS-level file system locking:
+   - Use same locking mechanism as instance lock files
+   - Prevent concurrent access to PID file
+   - Handle stale locks appropriately
+   - Clean up invalid PIDs during read operations
+3. Process termination MUST:
+   - Clean up all child processes
+   - Remove PID from registry
+   - Release all held locks
+   - Clean up temporary files
 
 ## Instance Creation and Grouping
 1. Provider instances MUST group to the same app instance by default when using same profile
@@ -23,15 +41,6 @@
    - Use current process if no providers are running yet
    - Still enforce session uniqueness across instances
 
-## Profile Management
-1. Multiple providers with same profile MUST run in same process
-2. Multiple providers with different profiles MUST:
-   - Run in separate processes by default
-   - Run in existing profile process if that profile is already running
-   - Run in current process if specified via `--one-instance`
-   - Run in new process if specified via `--new-instance`
-3. ALL profile combinations MUST respect session uniqueness rules
-
 ## CLI Behavior
 1. CLI commands MUST:
    - Act as remote control when target instance exists
@@ -43,6 +52,19 @@
    - Allow provider+profile combinations (e.g. --whatsapp --facebook --whatsapp "work")
    - Follow profile isolation rules unless overridden
    - Enforce session uniqueness regardless of arguments
+
+## Instance CLI
+1. Instance CLI MUST support:
+   - Listing running instances with their PIDs
+   - Killing instances by ID, PID, or profile name
+   - Showing instance status and health
+   - Managing instance locks
+2. Instance CLI MUST verify process exists before operations
+3. Instance CLI MUST handle errors gracefully:
+   - Invalid PIDs
+   - Missing processes
+   - Corrupted lock files
+   - Permission issues
 
 ## Configuration Override
 1. `--one-instance` CLI parameter MUST:
@@ -66,8 +88,49 @@
 2. JSON config file path MUST be accepted via CLI parameter
 3. Configuration options MUST NOT override session uniqueness rules
 
+## Reset Lock
+1. `reset-lock` command MUST execute in order:
+   - Kill all processes listed in `pids.json`
+   - Remove `pids.json` file after processes are terminated
+   - Remove instance lock file
+   - Initialize fresh instance lock file
+2. `reset-lock` MUST handle error cases:
+   - Missing PID file
+   - Invalid PIDs
+   - Corrupted lock files
+   - Permission issues
+   - Zombie processes
+
+## Instance Delegation
+1. Second instances MUST delegate to first instance when:
+   - First instance has capacity (based on profile rules)
+   - Provider+profile combination doesn't exist yet
+2. Delegation rules:
+   - Use current process if no providers are running yet
+   - Still enforce session uniqueness across instances
+
+## Profile Management
+1. Multiple providers with same profile MUST run in same process
+2. Multiple providers with different profiles MUST:
+   - Run in separate processes
+   - Have separate window management
+   - Have separate tray icons
+
+## Lock File Management
+1. Lock files MUST be atomic:
+   - Use proper file system locks
+   - Handle concurrent access
+   - Prevent race conditions
+2. Lock files MUST be resilient:
+   - Handle corruption gracefully
+   - Maintain backup copies
+   - Support recovery operations
+
 ## Error Handling
-1. Instance creation failures MUST be logged with appropriate severity
+1. All operations MUST be atomic:
+   - Roll back on failure
+   - Clean up resources
+   - Log failures appropriately
 2. Duplicate session attempts MUST be rejected with clear error message
 3. Invalid configuration MUST fail gracefully with helpful feedback
 4. Uniqueness violations MUST be prevented, not just detected

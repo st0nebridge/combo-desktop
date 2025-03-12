@@ -68,7 +68,9 @@ class ProviderCLI {
             '--reset-lock',
             '--version',
             '--help',
-            '--manual'
+            '--manual',
+            '--profile',
+            '--config'
         ];
         return cliFlags.includes(arg);
     }
@@ -79,10 +81,10 @@ class ProviderCLI {
      */
     isCliCommand() {
         return this.args.some(arg => {
-            return arg === '--reset-lock' || 
-                   arg === '--version' || 
-                   arg === '--help' ||
-                   arg === '--manual';
+            return (arg === '--reset-lock') || 
+                   (arg === '--version') || 
+                   (arg === '--help') ||
+                   (arg === '--manual');
         });
     }
 
@@ -124,6 +126,25 @@ class ProviderCLI {
      */
     getConfigFile() {
         return this.configFile;
+    }
+
+    /**
+     * Get the target profile from CLI arguments
+     * @returns {string|null} Profile name or null if not specified
+     */
+    getProfile() {
+        const profileArg = this.args.findIndex(arg => arg === '--profile');
+        if (profileArg !== -1 && profileArg + 1 < this.args.length) {
+            return this.args[profileArg + 1];
+        }
+
+        // Check for profile in provider arguments
+        const providers = this.parseProviderArgs();
+        if (providers.length > 0 && providers[0].profile) {
+            return providers[0].profile;
+        }
+
+        return null;
     }
 }
 

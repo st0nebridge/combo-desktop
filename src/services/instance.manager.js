@@ -1,4 +1,4 @@
-const { app } = require('electron');
+const { app, ipcMain } = require('electron');
 const log = require('electron-log');
 const path = require('path');
 const fs = require('fs');
@@ -8,6 +8,12 @@ const properLock = require('proper-lockfile');
 
 class InstanceManager {
     constructor() {
+        // Ensure app name is set before getting userData path
+        if (!app.name) {
+            const packageJson = require('../../package.json');
+            app.name = packageJson.name;
+        }
+
         const userData = app.getPath('userData');
         this.instanceLockFile = path.join(userData, 'instance.lock');
         this.pidFile = path.join(userData, 'pids.json');
@@ -17,37 +23,65 @@ class InstanceManager {
         this.instanceId = null;
         this.isFirstInstance = false;
         this.currentProfile = null;
-    }
 
-    async acquireWriteLock() {
-        // Clear any existing lock timeout
-        if (this._lockTimeout) {
-            clearTimeout(this._lockTimeout);
-            this._lockTimeout = null;
+        // Ensure directories exist
+        this.ensureDirectories();
+        
+        // Set up IPC handlers for instance communication
+        if (ipcMain) {
+            ipcMain.handle('add-provider', async (event, { provider, profile }) => {
+                return await this.addProviderToInstance(provider, profile);
+            });
         }
 
-        let attempts = 0;
-        while (attempts < this.lockRetryCount) {
-            if (!this._writeLock) {
-                this._writeLock = true;
-                // Auto-release lock after 5 seconds to prevent deadlocks
-                this._lockTimeout = setTimeout(() => {
-                    this.releaseWriteLock();
-                }, 5000);
-                return true;
+        // Register cleanup handlers
+        this.registerCleanupHandlers();
+    }
+
+    async ensureDirectories() {
+        try {
+            // Ensure parent directories exist
+            const userDataDir = path.dirname(this.instanceLockFile);
+            await fs.promises.mkdir(userDataDir, { recursive: true });
+
+            // Create PID file if it doesn't exist
+            if (!fs.existsSync(this.pidFile)) {
+                await fs.promises.writeFile(this.pidFile, '[]', 'utf8');
             }
-            await setTimeout(this.lockRetryDelay);
-            attempts++;
+        } catch (error) {
+            log.error('Error creating directories:', error);
+            throw error;
         }
-        return false;
     }
 
-    releaseWriteLock() {
-        if (this._lockTimeout) {
-            clearTimeout(this._lockTimeout);
-            this._lockTimeout = null;
+    registerCleanupHandlers() {
+        const cleanup = async () => {
+            await this.cleanup();
+        };
+
+        process.on('exit', cleanup);
+        process.on('SIGINT', cleanup);
+        process.on('SIGTERM', cleanup);
+        process.on('uncaughtException', (error) => {
+            log.error('Uncaught exception:', error);
+            cleanup().then(() => process.exit(1));
+        });
+    }
+
+    async acquireWriteLock(file, options = {}) {
+        try {
+            return await properLock.lock(file, {
+                retries: this.lockRetryCount,
+                retryWait: this.lockRetryDelay,
+                stale: 10000, // Consider lock stale after 10s
+                ...options
+            });
+        } catch (error) {
+            if (error.code === 'ELOCKED') {
+                throw new Error(`Could not acquire write lock for ${file}`);
+            }
+            throw error;
         }
-        this._writeLock = false;
     }
 
     async initialize() {
@@ -58,13 +92,12 @@ class InstanceManager {
             const providerCLI = require('../cli/provider-cli');
             if (providerCLI.shouldResetLock()) {
                 await this.resetLock();
-                // Exit after reset since this is a CLI command
-                app.exit(0);
-                return false;
+                log.info('Reset lock command executed successfully');
+                return true; // Return true to allow proper exit
             }
 
-            // Get the target profile from CLI args
-            const profile = providerCLI.getProfile() || 'default';
+            // Get the target profile from CLI args, default to 'default' if not specified
+            const profile = providerCLI.getProfile() ?? 'default';
             this.currentProfile = profile;
 
             // Check if we should create a new instance based on process isolation rules
@@ -102,12 +135,12 @@ class InstanceManager {
         try {
             const providerCLI = require('../cli/provider-cli');
             
-            // --new-instance always creates new instance
+            // --new-instance always creates new instance (highest priority)
             if (providerCLI.shouldForceNewInstance()) {
                 return true;
             }
 
-            // --one-instance never creates new instance
+            // --one-instance never creates new instance (lowest priority)
             if (providerCLI.shouldUseOneInstance()) {
                 return false;
             }
@@ -120,18 +153,15 @@ class InstanceManager {
             }
 
             // Check if any instance is running the target profile
-            let profileExists = false;
-            for (const instance of Object.values(lockData.instances)) {
-                for (const sessionKey of instance.sessions) {
-                    if (sessionKey.includes(`:${profile}`)) {
-                        profileExists = true;
-                        break;
-                    }
+            for (const [instanceId, instance] of Object.entries(lockData.instances)) {
+                if (instance.profile === profile) {
+                    // Found an instance with the same profile, don't create new instance
+                    return false;
                 }
             }
 
-            // Create new instance if profile doesn't exist
-            return profileExists;
+            // Create new instance if no instance with this profile exists
+            return true;
         } catch (error) {
             log.error('Error checking if should create new instance:', error);
             return false;
@@ -139,30 +169,32 @@ class InstanceManager {
     }
 
     async registerPid() {
+        let release;
         try {
             const pid = process.pid;
             let pids = [];
 
-            // Read existing PIDs
+            // Ensure directory exists
+            await this.ensureDirectories();
+
+            // Acquire lock for PID file operations
+            release = await this.acquireWriteLock(this.pidFile);
+
+            // Read existing PIDs or create empty file
             if (fs.existsSync(this.pidFile)) {
                 try {
                     const data = await fs.promises.readFile(this.pidFile, 'utf8');
                     pids = JSON.parse(data);
                 } catch (error) {
-                    log.error('Error reading PID file:', error);
+                    log.error('Error parsing PID file, creating new one:', error);
                 }
+            } else {
+                // Create empty PID file
+                await fs.promises.writeFile(this.pidFile, '[]');
             }
 
             // Clean up stale PIDs
-            pids = pids.filter(pid => {
-                try {
-                    // Check if process exists
-                    process.kill(pid, 0);
-                    return true;
-                } catch (error) {
-                    return false;
-                }
-            });
+            pids = await this.cleanupStalePids(pids);
 
             // Add current PID if not already present
             if (!pids.includes(pid)) {
@@ -171,32 +203,63 @@ class InstanceManager {
 
             // Write updated PIDs
             await fs.promises.writeFile(this.pidFile, JSON.stringify(pids, null, 2));
-
-            // Register cleanup on exit
-            const cleanup = async () => {
-                await this.unregisterPid();
-            };
-
-            process.on('exit', cleanup);
-            process.on('SIGINT', cleanup);
-            process.on('SIGTERM', cleanup);
-            process.on('uncaughtException', cleanup);
-
             log.info(`Registered PID: ${pid}`);
         } catch (error) {
             log.error('Error registering PID:', error);
+            throw error;
+        } finally {
+            if (release) {
+                await release();
+            }
         }
     }
 
+    async cleanupStalePids(pids) {
+        const validPids = [];
+        for (const pid of pids) {
+            try {
+                if (process.platform === 'win32') {
+                    // Check if process exists AND is an electron process from our app
+                    const output = execSync(`wmic process where "processid='${pid}'" get commandline /format:value`, { stdio: 'pipe' }).toString();
+                    if (output.includes('desk-tray') || output.includes('combo-desktop')) {
+                        validPids.push(pid);
+                    }
+                } else {
+                    // On Unix, check process exists and verify it's our app
+                    process.kill(pid, 0);
+                    const cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+                    if (cmdline.includes('desk-tray') || cmdline.includes('combo-desktop')) {
+                        validPids.push(pid);
+                    }
+                }
+            } catch (error) {
+                // Process doesn't exist or we can't access it
+                log.info(`Removing stale PID: ${pid}`);
+            }
+        }
+        return validPids;
+    }
+
     async unregisterPid() {
+        let release;
         try {
             if (!fs.existsSync(this.pidFile)) {
                 return;
             }
 
+            // Acquire lock for PID file operations
+            release = await this.acquireWriteLock(this.pidFile);
+
             const pid = process.pid;
-            const data = await fs.promises.readFile(this.pidFile, 'utf8');
-            let pids = JSON.parse(data);
+            let pids = [];
+
+            try {
+                const data = await fs.promises.readFile(this.pidFile, 'utf8');
+                pids = JSON.parse(data);
+            } catch (error) {
+                log.error('Error reading PID file:', error);
+                return;
+            }
 
             // Remove current PID
             pids = pids.filter(p => p !== pid);
@@ -207,51 +270,87 @@ class InstanceManager {
             } else {
                 await fs.promises.unlink(this.pidFile);
             }
-
-            log.info(`Unregistered PID: ${pid}`);
         } catch (error) {
             log.error('Error unregistering PID:', error);
+        } finally {
+            if (release) {
+                await release();
+            }
         }
     }
 
     async killAllInstances() {
+        let release;
         try {
-            if (!fs.existsSync(this.pidFile)) {
-                return;
-            }
-
-            // Release any existing lock first
-            this.releaseWriteLock();
-
-            const data = await fs.promises.readFile(this.pidFile, 'utf8');
-            const pids = JSON.parse(data);
             const currentPid = process.pid;
+            log.info('Killing registered instances...');
 
-            // Kill all processes except current one
-            const killPromises = pids.map(async (pid) => {
-                if (pid !== currentPid) {
-                    try {
-                        if (process.platform === 'win32') {
-                            execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore' });
-                        } else {
-                            process.kill(pid, 'SIGTERM');
+            // Only kill processes listed in PID file
+            if (fs.existsSync(this.pidFile)) {
+                try {
+                    // Acquire lock for PID file operations
+                    release = await this.acquireWriteLock(this.pidFile);
+
+                    const data = await fs.promises.readFile(this.pidFile, 'utf8');
+                    let pids = JSON.parse(data);
+
+                    // Clean up stale PIDs first
+                    pids = await this.cleanupStalePids(pids);
+
+                    // Kill each registered process
+                    for (const pid of pids) {
+                        if (pid !== currentPid) {
+                            try {
+                                if (process.platform === 'win32') {
+                                    log.info(`Killing process by PID: ${pid}`);
+                                    execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore' });
+                                } else {
+                                    process.kill(pid, 'SIGTERM');
+                                }
+                                log.info(`Killed process: ${pid}`);
+                            } catch (error) {
+                                log.info(`Process ${pid} not found or already terminated`);
+                            }
                         }
-                        log.info(`Killed process: ${pid}`);
-                    } catch (error) {
-                        // Process might not exist anymore
-                        log.info(`Process ${pid} not found`);
                     }
+
+                    // Wait for processes to terminate
+                    await setTimeout(2000);
+
+                    // Verify PIDs are gone
+                    const remainingPids = await this.cleanupStalePids(pids);
+                    if (remainingPids.length > 1) {
+                        log.warn('Some registered processes could not be terminated');
+                        // Try one more time with force
+                        for (const pid of remainingPids) {
+                            if (pid !== currentPid) {
+                                try {
+                                    if (process.platform === 'win32') {
+                                        execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore' });
+                                    } else {
+                                        process.kill(pid, 'SIGKILL');
+                                    }
+                                } catch (error) {
+                                    // Process might be gone now
+                                }
+                            }
+                        }
+                    }
+
+                    // Reset PID file to only include current process if it exists
+                    const finalPids = await this.cleanupStalePids([currentPid]);
+                    await fs.promises.writeFile(this.pidFile, JSON.stringify(finalPids, null, 2), 'utf8');
+                } catch (error) {
+                    log.error('Error killing processes:', error);
+                    throw error;
                 }
-            });
-
-            // Wait for all kill operations to complete
-            await Promise.all(killPromises);
-
-            // Delete the PID file
-            await fs.promises.unlink(this.pidFile);
-            log.info('Removed PID file');
+            }
         } catch (error) {
-            log.error('Error killing instances:', error);
+            log.error('Error in killAllInstances:', error);
+        } finally {
+            if (release) {
+                await release();
+            }
         }
     }
 
@@ -259,11 +358,17 @@ class InstanceManager {
         try {
             log.info('Resetting instance lock file...');
 
-            // Release any existing lock first
-            this.releaseWriteLock();
-
-            // Kill all other instances using PIDs
+            // Kill all other instances first
             await this.killAllInstances();
+
+            // Delete the PID file
+            try {
+                if (fs.existsSync(this.pidFile)) {
+                    await fs.promises.unlink(this.pidFile);
+                }
+            } catch (error) {
+                log.error('Error deleting PID file:', error);
+            }
 
             // Delete the lock file
             try {
@@ -278,8 +383,8 @@ class InstanceManager {
             // Release the single instance lock
             app.releaseSingleInstanceLock();
 
-            // Wait a bit for the OS to clean up
-            await setTimeout(1000);
+            // Initialize a fresh lock file
+            await this.initializeLockFile();
 
             log.info('Instance lock has been reset');
             return true;
@@ -310,11 +415,7 @@ class InstanceManager {
             }
 
             // Try to acquire a lock for reading
-            const release = await properLock.lock(this.instanceLockFile, {
-                retries: this.lockRetryCount,
-                retryWait: this.lockRetryDelay,
-                stale: 10000 // Consider lock stale after 10s
-            });
+            const release = await this.acquireWriteLock(this.instanceLockFile, { read: true });
 
             try {
                 // Read the lock file
@@ -367,11 +468,7 @@ class InstanceManager {
             }
 
             // Acquire an exclusive lock for writing
-            const release = await properLock.lock(this.instanceLockFile, {
-                retries: this.lockRetryCount,
-                retryWait: this.lockRetryDelay,
-                stale: 10000 // Consider lock stale after 10s
-            });
+            const release = await this.acquireWriteLock(this.instanceLockFile);
 
             try {
                 // Write the file atomically by writing to temp file first
@@ -504,7 +601,7 @@ class InstanceManager {
             const providers = providerCLI.parseProviderArgs();
             const forceNewInstance = providerCLI.shouldForceNewInstance();
             const useOneInstance = providerCLI.shouldUseOneInstance();
-            const profile = providerCLI.getProfile() || 'default';
+            const profile = providerCLI.getProfile() ?? 'default';
 
             // --new-instance always creates new instance
             if (forceNewInstance) {
@@ -518,7 +615,21 @@ class InstanceManager {
 
             const lockData = await this.getLockFileData();
 
-            // Check if any requested session already exists
+            // Find instance running the target profile
+            let targetInstanceId = null;
+            for (const [instanceId, instance] of Object.entries(lockData.instances)) {
+                if (instance.profile === profile) {
+                    targetInstanceId = instanceId;
+                    break;
+                }
+            }
+
+            // If no instance exists for this profile, allow new instance
+            if (!targetInstanceId) {
+                return false;
+            }
+
+            // Check if any requested sessions already exist
             for (const { provider: providerArg } of providers) {
                 const providerRegistry = require('../providers/provider.registry');
                 const provider = providerRegistry.createProvider(['--' + providerArg]);
@@ -536,25 +647,68 @@ class InstanceManager {
                 }
             }
 
-            // Find instance running the target profile
-            let profileInstanceId = null;
-            for (const [instanceId, instance] of Object.entries(lockData.instances)) {
-                if (instance.profile === profile) {
-                    profileInstanceId = instanceId;
-                    break;
+            // Delegate providers to existing instance
+            for (const { provider: providerArg } of providers) {
+                const providerRegistry = require('../providers/provider.registry');
+                const provider = providerRegistry.createProvider(['--' + providerArg]);
+                
+                if (!provider) {
+                    continue;
                 }
+
+                await this.delegateProviderToInstance(provider, profile, targetInstanceId);
             }
 
-            // If profile exists, use that instance
-            if (profileInstanceId) {
-                return true;
-            }
-
-            // Allow new instance for new profile
-            return false;
+            // Exit this instance since we've delegated to existing one
+            log.info('Providers delegated to existing instance, exiting...');
+            app.exit(0);
+            return true;
         } catch (error) {
             log.error('Error handling second instance:', error);
             return true; // Default to preventing new instance on error
+        }
+    }
+
+    async delegateProviderToInstance(provider, profile, targetInstanceId) {
+        try {
+            const sessionKey = provider.getPartitionName(profile);
+            const lockData = await this.getLockFileData();
+
+            // Update lock file to register session with target instance
+            if (!lockData.instances[targetInstanceId]) {
+                log.error('Target instance no longer exists');
+                return false;
+            }
+
+            // Register session with target instance
+            lockData.sessions[sessionKey] = targetInstanceId;
+            if (!lockData.instances[targetInstanceId].sessions.includes(sessionKey)) {
+                lockData.instances[targetInstanceId].sessions.push(sessionKey);
+            }
+
+            await this.updateLockFile(lockData);
+            log.info(`Delegated provider ${provider.getName()} to instance ${targetInstanceId}`);
+            return true;
+        } catch (error) {
+            log.error('Error delegating provider:', error);
+            return false;
+        }
+    }
+
+    async addProviderToInstance(provider, profile = 'default') {
+        try {
+            // Register the session for this instance
+            const success = await this.registerSession(provider, profile);
+            if (!success) {
+                return false;
+            }
+
+            // Create window for the provider
+            await provider.spawnWindow(profile);
+            return true;
+        } catch (error) {
+            log.error('Error adding provider to instance:', error);
+            return false;
         }
     }
 

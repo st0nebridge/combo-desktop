@@ -8,11 +8,18 @@
     "start": "electron .",
     "whatsapp": "electron . --whatsapp",
     "facebook": "electron . --facebook",
-    "profiles": "electron . --profiles",
+    "profiles": "electron . --profiles list",
     "manual": "electron . --manual",
+    "help": "electron . --help",
+    "version": "electron . --version",
     "reset-lock": "electron . --reset-lock",
+    "instances": "electron . --instances list",
+    "instances:list": "electron . --instances list",
+    "instances:status": "electron . --instances status",
+    "instances:kill": "electron . --instances kill",
+    "build": "electron-builder",
+    "test": "echo \"Error: no test specified\" && exit 1",
     "lint": "eslint src/",
-    "test": "jest",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
     "postinstall": "electron-builder install-app-deps"
@@ -28,11 +35,13 @@
     "typescript": "^5.3.3"
   },
   "dependencies": {
+    "@electron/remote": "^2.1.2",
     "commander": "^12.0.0",
     "electron-localshortcut": "^3.2.1",
-    "electron-log": "^5.1.0",
+    "electron-log": "^5.1.1",
     "electron-store": "^8.1.0",
-    "proper-lockfile": "^4.1.2"
+    "proper-lockfile": "^4.1.2",
+    "yargs": "^17.7.2"
   },
   "build": {
     "appId": "com.techdyn.desk-tray",

@@ -32,25 +32,15 @@ class AppManager {
 
     async initialize() {
         try {
-            // Handle reset-lock command first
-            if (providerCLI.shouldResetLock()) {
-                const success = await instanceManager.resetLock();
-                if (success) {
-                    logger.info('Reset lock command executed successfully');
-                    app.exit(0);
-                } else {
-                    logger.error('Failed to reset lock');
-                    app.exit(1);
-                }
-                return;
-            }
-
-            // Initialize instance manager
+            // Initialize instance manager first
             const initialized = await instanceManager.initialize();
             if (!initialized) {
-                logger.info('Another instance is already running');
-                app.exit(1);
-                return;
+                return false;
+            }
+
+            // Handle CLI commands that should exit after execution
+            if (this.shouldExitAfterCommand()) {
+                return true;
             }
 
             // Parse config file if provided
@@ -58,7 +48,6 @@ class AppManager {
             if (configPath) {
                 this.configFile = providerCLI.parseConfig(configPath);
                 if (!this.configFile) {
-                    app.exit(1);
                     return false;
                 }
             }
@@ -85,16 +74,27 @@ class AppManager {
             // If no windows were created, quit the app
             if (windowService.getAllWindows().length === 0) {
                 logger.warn('No windows created, quitting application');
-                app.exit(1);
-                return;
+                return false;
             }
 
             // Setup app events
             this.setupAppEvents();
+            return true;
         } catch (error) {
             logger.error('Error initializing application:', error);
-            app.exit(1);
+            return false;
         }
+    }
+
+    shouldExitAfterCommand() {
+        if (providerCLI.shouldResetLock()) {
+            return true;
+        }
+
+        // Check for other CLI commands that should exit
+        const cliArgs = process.argv.slice(2);
+        const exitCommands = ['--profiles', '--manual', '--instances', '--help', '--version'];
+        return exitCommands.some(cmd => cliArgs.includes(cmd));
     }
 
     async initializeProvider(providerArg, profile = 'default') {
