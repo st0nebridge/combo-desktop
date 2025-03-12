@@ -1,48 +1,115 @@
-const log = require("electron-log");
+/**
+ * @file Abstract base provider that defines the core interface and functionality
+ * for all application service providers. Handles window management, notifications,
+ * and provider-specific configurations.
+ * 
+ * Required implementations by child classes:
+ * - getName(): Provider's display name
+ * - getCommandArg(): CLI argument that activates this provider
+ * - getUrl(): URL that this provider should load
+ * - getBaseIconPath(): Base icon path for this provider
+ */
+
+const loggingService = require('../services/logging.service');
 const userAgentConfig = require('../config/user-agent.config');
 const windowService = require('../services/window.service');
 const profileManager = require("../services/profile.manager");
 const electronLocalshortcut = require('electron-localshortcut');
 const { shell } = require('electron');
-const trayService = require('../services/tray.service'); // Added trayService import
+const trayService = require('../services/tray.service');
 
+/**
+ * Abstract base class for all application providers.
+ * Defines the core functionality and interface that all providers must implement.
+ * Handles window management, notifications, and provider-specific configurations.
+ * @class BaseProvider
+ * @abstract
+ */
 class BaseProvider {
+    /**
+     * Creates a new BaseProvider instance.
+     * @constructor
+     * @param {Object} [options={}] - Configuration options for the provider
+     * @param {string} [options.userAgent] - Custom user agent string
+     * @param {Object} [options.windowConfig] - Custom window configuration
+     * @throws {Error} If attempting to instantiate BaseProvider directly
+     */
     constructor(options = {}) {
         if (this.constructor === BaseProvider) {
             throw new Error('BaseProvider is abstract and cannot be instantiated directly');
         }
         
+        /** @property {boolean} eventsSetup - Whether event handlers have been initialized */
         this.eventsSetup = false;
+        
+        /** @property {Electron.BrowserWindow} window - The provider's browser window instance */
         this.window = null;
+        
+        /** @property {boolean} hasNotification - Whether the provider has active notifications */
         this.hasNotification = false;
+        
+        /** @property {Object} options - Provider configuration options */
+        this.options = options;
     }
 
-    // Return the name of this provider
+    /**
+     * Returns the display name of the provider.
+     * @abstract
+     * @method getName
+     * @returns {string} The provider's display name
+     * @throws {Error} If not implemented by child class
+     */
     getName() {
         throw new Error('getName() must be implemented by child class');
     }
 
-    // Return the command line argument that activates this provider
+    /**
+     * Returns the command line argument that activates this provider.
+     * @abstract
+     * @method getCommandArg
+     * @returns {string} The command line argument
+     * @throws {Error} If not implemented by child class
+     */
     getCommandArg() {
         throw new Error('getCommandArg() must be implemented by child class');
     }
 
-    // Return the URL that this provider should load
+    /**
+     * Returns the URL that this provider should load.
+     * @abstract
+     * @method getUrl
+     * @returns {string} The provider's URL
+     * @throws {Error} If not implemented by child class
+     */
     getUrl() {
         throw new Error('getUrl() must be implemented by child class');
     }
 
-    // Default notification blink interval in milliseconds
+    /**
+     * Returns the notification blink interval in milliseconds.
+     * @returns {number} The notification interval in milliseconds
+     */
     getNotificationInterval() {
         return 3000; // 3 seconds
     }
 
-    // Get the base icon path for this provider
+    /**
+     * Returns the base icon path for this provider.
+     * @abstract
+     * @method getBaseIconPath
+     * @returns {string} The base icon path
+     * @throws {Error} If not implemented by child class
+     */
     getBaseIconPath() {
         throw new Error('getBaseIconPath() must be implemented by child class');
     }
     
-    // Get window configuration
+    /**
+     * Returns the window configuration for this provider.
+     * @returns {Object} Window configuration object
+     * @property {number} width - Window width in pixels
+     * @property {number} height - Window height in pixels
+     */
     getWindowConfig() {
         return {
             width: 1000,
@@ -50,7 +117,13 @@ class BaseProvider {
         };
     }
 
-    // Get web preferences
+    /**
+     * Returns the web preferences configuration.
+     * @returns {Object} Web preferences configuration
+     * @property {boolean} nodeIntegration - Whether Node.js integration is enabled
+     * @property {boolean} contextIsolation - Whether context isolation is enabled
+     * @property {boolean} webSecurity - Whether web security is enabled
+     */
     getWebPreferences() {
         return {
             nodeIntegration: false,
@@ -59,7 +132,11 @@ class BaseProvider {
         };
     }
 
-    // Get electron profile name
+    /**
+     * Returns the Electron partition name for profile isolation.
+     * @param {string} [profile='default'] - Profile name
+     * @returns {string} The partition name
+     */
     getPartitionName(profile) {
         if (!profile || typeof profile !== 'string') {
             profile = 'default';
@@ -67,23 +144,34 @@ class BaseProvider {
         return profileManager.getPartitionName(this.getName(), profile);
     }
 
-    // Optional: Custom JS injection
+    /**
+     * Injects custom JavaScript into the provider's window.
+     * Override this method to add provider-specific JavaScript.
+     */
     injectCustomJS() {
         // Default implementation does nothing
     }
 
+    /**
+     * Sets up provider-specific event handlers.
+     * Override this method to add custom event handling.
+     */
     setupEventHandlers() {
         // Provider specific event handlers
     }
 
-    // Spawn new window
+    /**
+     * Spawns a new window for the provider.
+     * @param {string} profile - Profile name for window isolation
+     * @returns {Promise<Electron.BrowserWindow|null>} The created window or null if creation fails
+     */
     async spawnWindow(profile) {
         try {
             let windowConfig = this.getWindowConfig();
             let webPreferences = this.getWebPreferences();
 
             if (webPreferences.partition) {
-                log.warn('Partition property in web preferences will be ignored. Use profiles instead.');
+                loggingService.warn('Partition property in web preferences will be ignored. Use profiles instead.');
             }
 
             windowConfig.webPreferences = {
@@ -101,12 +189,17 @@ class BaseProvider {
 
             return this.window;
         } catch (error) {
-            log.error(`[${this.getName()}] Error spawning window:`, error);
+            loggingService.error(`[${this.getName()}] Error spawning window:`, error);
             return null;
         }
     }
 
-    // Initialize the window with provider-specific configuration
+    /**
+     * Initializes the provider's window with specific configuration.
+     * @param {string} profile - Profile name
+     * @returns {Promise<void>}
+     * @throws {Error} If window is not properly initialized
+     */
     async initializeWindow(profile) {
         if (!this.window || !this.window.webContents) {
             throw new Error('Window not properly initialized');
@@ -128,7 +221,7 @@ class BaseProvider {
             this.window.webContents.setWindowOpenHandler((details) => {
                 if (details.url) {
                     shell.openExternal(details.url).catch(err => {
-                        log.error(`[${this.getName()}] Error opening external URL:`, err);
+                        loggingService.error(`[${this.getName()}] Error opening external URL:`, err);
                     });
                 }
                 return { action: 'deny' };
@@ -140,7 +233,7 @@ class BaseProvider {
                 throw new Error('Provider URL not specified');
             }
             
-            log.info(`[${this.getName()}] Initializing window with URL: ${url}`);
+            loggingService.info(`[${this.getName()}] Initializing window with URL: ${url}`);
             await this.window.loadURL(url);
             
             // Inject any custom JS
@@ -149,19 +242,20 @@ class BaseProvider {
             // Call provider-specific initialization
             await this.initializeProvider(profile);
             
-            log.info(`[${this.getName()}] Window initialization complete`);
+            loggingService.info(`[${this.getName()}] Window initialization complete`);
         } catch (error) {
-            log.error(`[${this.getName()}] Error initializing window:`, error);
+            loggingService.error(`[${this.getName()}] Error initializing window:`, error);
             throw error;
         }
     }
 
     /**
-     * Initialize provider-specific functionality
-     * @param {string} profile Profile name
+     * Initializes provider-specific functionality.
+     * @param {string} profile - Profile name
+     * @returns {Promise<void>}
      */
     async initializeProvider(profile) {
-        log.info(`Initializing ${this.getName()} provider with profile:`, profile);
+        loggingService.info(`Initializing ${this.getName()} provider with profile:`, profile);
 
         if (!this.eventsSetup) {
             this.setupEventHandlers();
@@ -170,8 +264,33 @@ class BaseProvider {
     }
 
     /**
-     * Get the tray icon path for this provider
-     * @param {boolean} hasNotification - Whether there is a notification
+     * Configures the session for this provider.
+     * @param {string} partition - The session partition name
+     * @private
+     */
+    configureSession(partition) {
+        const session = require('electron').session;
+        const partitionSession = session.fromPartition(partition);
+        
+        // Set user agent if provided in options or get from config
+        const userAgent = this.options.userAgent || userAgentConfig.getUserAgentForProvider(this.getName());
+        if (userAgent) {
+            partitionSession.setUserAgent(userAgent);
+            loggingService.info(`[${this.getName()}] Set user agent for partition ${partition}: ${userAgent}`);
+        }
+    }
+
+    /**
+     * Gets the user agent string for this provider.
+     * @returns {string|null} The user agent string or null if not configured
+     */
+    getUserAgent() {
+        return this.options.userAgent || userAgentConfig.getUserAgentForProvider(this.getName());
+    }
+
+    /**
+     * Gets the tray icon path for this provider.
+     * @param {boolean} [hasNotification=false] - Whether there is a notification
      * @returns {Object} Object containing icon path and theme info
      */
     getTrayIcon(hasNotification = false) {
@@ -179,7 +298,10 @@ class BaseProvider {
         return getIconPath(this.getBaseIconPath(), hasNotification);
     }
 
-    // Start notification blinking
+    /**
+     * Starts the notification blinking effect.
+     * Triggers notification state change in the main process.
+     */
     startNotification() {
         if (!this.hasNotification) {
             this.hasNotification = true;
@@ -190,7 +312,10 @@ class BaseProvider {
         }
     }
 
-    // Stop notification blinking
+    /**
+     * Stops the notification blinking effect.
+     * Updates notification state in the main process.
+     */
     stopNotification() {
         if (this.hasNotification) {
             this.hasNotification = false;
@@ -198,14 +323,6 @@ class BaseProvider {
                 this.window.webContents.send('notification-state-changed', false);
             }
         }
-    }
-
-    /**
-     * Get the user agent string for this provider
-     * @returns {string} The user agent string
-     */
-    getUserAgent() {
-        return userAgentConfig.DEFAULT_USER_AGENT;
     }
 
     /**
@@ -219,51 +336,6 @@ class BaseProvider {
     /**
      * Configure the session for this provider
      * @param {string} partition - Session partition name
-     */
-    configureSession(partition) {
-        if (!partition || typeof partition !== 'string') {
-            throw new Error(`Invalid partition name: ${partition}`);
-        }
-
-        const { session } = require('electron');
-        const ses = session.fromPartition(partition);
-
-        // Set user agent
-        const userAgent = this.getUserAgent();
-        if (userAgent) {
-            ses.setUserAgent(userAgent);
-            log.info(`[${this.getName()}] Set user agent for partition ${partition}`);
-        }
-
-        // Set client hints
-        const clientHints = this.getClientHints();
-        if (clientHints) {
-            ses.webRequest.onBeforeSendHeaders((details, callback) => {
-                // Only modify headers for URLs from this provider
-                if (details.url.startsWith(this.getUrl())) {
-                    // Preserve existing headers
-                    const headers = { ...details.requestHeaders };
-
-                    // Add client hint headers
-                    for (const [key, value] of Object.entries(clientHints)) {
-                        headers[key] = value;
-                    }
-
-                    callback({ cancel: false, requestHeaders: headers });
-                } else {
-                    callback({ cancel: false });
-                }
-            });
-            log.info(`[${this.getName()}] Set client hints for partition ${partition}`);
-        }
-
-        // Allow provider-specific session configuration
-        this.configureProviderSession(ses);
-    }
-
-    /**
-     * Provider-specific session configuration
-     * @param {Electron.Session} session - Electron session object
      */
     configureProviderSession(session) {
         // Default implementation does nothing
@@ -293,13 +365,16 @@ class BaseProvider {
             await session.clearStorageData({
                 storages
             });
-            log.info(`[${this.getName()}] Session data cleared:`, storages);
+            loggingService.info(`[${this.getName()}] Session data cleared:`, storages);
         } catch (error) {
-            log.error(`[${this.getName()}] Error clearing session data:`, error);
+            loggingService.error(`[${this.getName()}] Error clearing session data:`, error);
         }
     }
 
-    // Get base context menu options that can be extended by providers
+    /**
+     * Get base context menu options that can be extended by providers
+     * @returns {Array<Object>} Array of context menu options
+     */
     getContextMenuOptions() {
         return [
             {
@@ -326,12 +401,16 @@ class BaseProvider {
         ];
     }
 
-    // Handle single click on tray icon - can be overridden by providers
+    /**
+     * Handle single click on tray icon - can be overridden by providers
+     */
     handleTrayClick() {
         // Empty handler for provider override
     }
 
-    // Handle double click on tray icon - can be overridden by providers
+    /**
+     * Handle double click on tray icon - can be overridden by providers
+     */
     handleTrayDoubleClick() {
         if (this.window) {
             windowService.toggleWindow(this.window);

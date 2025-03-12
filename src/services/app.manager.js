@@ -1,280 +1,211 @@
-const { app, dialog, nativeTheme } = require('electron');
-
-// Import services
-const instanceManager = require('./instance.manager');
-const profileManager = require('./profile.manager');
+const { app } = require('electron');
+const log = require('electron-log');
+const { ipcMain } = require('electron');
 const windowService = require('./window.service');
 const trayService = require('./tray.service');
-const logger = require('./logging.service');
+const profileManager = require('./profile.manager');
+const instanceManager = require('./instance.manager');
+const providerRegistry = require('../providers');
+const cliRegistry = require('../cli/cli.registry');
 
-// Import other modules
-const providerRegistry = require('../providers/provider.registry');
-const providerCLI = require('../cli/provider-cli');
-
+/**
+ * Application Manager
+ * Handles core application functionality and lifecycle
+ */
 class AppManager {
     constructor() {
-        // Initialize theme handling
-        nativeTheme.on('updated', () => {
-            this.handleThemeUpdate();
-        });
+        this.isQuitting = false;
+        this.setupEventHandlers();
+        log.info('App Manager initialized');
+    }
 
-        // Handle app quit
+    /**
+     * Setup application event handlers
+     */
+    setupEventHandlers() {
+        // Handle window-all-closed event
         app.on('window-all-closed', () => {
-            if (process.platform !== 'darwin') {
-                this.cleanup();
+            if (process.platform !== 'darwin' || this.isQuitting) {
+                this.quit();
             }
         });
 
-        app.on('before-quit', () => {
-            this.cleanup();
-        });
-    }
-
-    async initialize() {
-        try {
-            // Initialize instance manager first
-            const initialized = await instanceManager.initialize();
-            if (!initialized) {
-                return false;
-            }
-
-            // Handle CLI commands that should exit after execution
-            if (this.shouldExitAfterCommand()) {
-                return true;
-            }
-
-            // Parse config file if provided
-            const configPath = providerCLI.getConfigFile();
-            if (configPath) {
-                this.configFile = providerCLI.parseConfig(configPath);
-                if (!this.configFile) {
-                    return false;
-                }
-            }
-
-            // Get providers to initialize
-            const providers = this.configFile?.providers || providerCLI.parseProviderArgs();
-            if (providers.length === 0) {
-                this.showProviderRequiredError();
-                return false;
-            }
-
-            // Initialize each provider
-            for (const { provider: providerArg, profile } of providers) {
-                try {
-                    const success = await this.initializeProvider(providerArg, profile || 'default');
-                    if (!success) {
-                        logger.warn(`Failed to initialize provider: ${providerArg}`);
-                    }
-                } catch (error) {
-                    logger.error(`Error initializing provider ${providerArg}:`, error);
-                }
-            }
-
-            // If no windows were created, quit the app
+        // Handle activate event (macOS)
+        app.on('activate', () => {
             if (windowService.getAllWindows().length === 0) {
-                logger.warn('No windows created, quitting application');
+                this.createMainWindow();
+            }
+        });
+
+        // Handle second-instance event
+        app.on('second-instance', (event, argv) => {
+            this.handleSecondInstance(argv);
+        });
+
+        // Handle quit events
+        app.on('before-quit', () => {
+            this.isQuitting = true;
+        });
+
+        // Handle IPC messages
+        this.setupIpcHandlers();
+    }
+
+    /**
+     * Setup IPC event handlers
+     */
+    setupIpcHandlers() {
+        ipcMain.handle('get-app-info', () => {
+            return {
+                version: app.getVersion(),
+                name: app.getName(),
+                platform: process.platform
+            };
+        });
+
+        ipcMain.handle('get-user-data-path', () => {
+            return app.getPath('userData');
+        });
+    }
+
+    /**
+     * Create the main application window
+     */
+    createMainWindow() {
+        const config = {
+            width: 1200,
+            height: 800,
+            webPreferences: {
+                nodeIntegration: false,
+                contextIsolation: true,
+                webSecurity: true
+            }
+        };
+
+        return windowService.createWindow(config, 'main');
+    }
+
+    /**
+     * Initialize the application
+     * @returns {Promise<boolean>} True if initialization successful
+     */
+    async init() {
+        try {
+            // Get parsed arguments from registry
+            const args = cliRegistry.getLastParsedArgs();
+            if (!args) {
+                log.error('No CLI arguments parsed');
                 return false;
             }
 
-            // Setup app events
-            this.setupAppEvents();
-            return true;
-        } catch (error) {
-            logger.error('Error initializing application:', error);
-            return false;
-        }
-    }
-
-    shouldExitAfterCommand() {
-        if (providerCLI.shouldResetLock()) {
-            return true;
-        }
-
-        // Check for other CLI commands that should exit
-        const cliArgs = process.argv.slice(2);
-        const exitCommands = ['--profiles', '--manual', '--instances', '--help', '--version'];
-        return exitCommands.some(cmd => cliArgs.includes(cmd));
-    }
-
-    async initializeProvider(providerArg, profile = 'default') {
-        try {
-            // Initialize provider first to get proper provider name
-            const provider = providerRegistry.createProvider([providerArg]);
-            if (!provider) {
-                throw new Error(`Failed to initialize provider: ${providerArg}`);
+            // Handle instance registration
+            if (!(await instanceManager.handleInstanceRegistration(args))) {
+                log.error('Failed to register instance');
+                return false;
             }
 
-            // Get or create profile
-            try {
-                const existingProfile = profileManager.getProfile(provider.getName(), profile);
-                if (!existingProfile && profile !== 'default') {
-                    const response = await dialog.showMessageBox({
-                        type: 'question',
-                        buttons: ['Cancel', 'Create Profile'],
-                        defaultId: 1,
-                        title: 'Create New Profile',
-                        message: `Profile '${profile}' does not exist for ${provider.getName()}.`,
-                        detail: 'Would you like to create it?'
-                    });
+            // Initialize profile manager
+            await profileManager.init();
 
-                    if (response.response === 0) {
+            // Handle provider initialization
+            if (args.providers && args.providers.length > 0) {
+                for (const { provider: providerName, profile } of args.providers) {
+                    const success = await this.initializeProvider(providerName, profile || 'default', args);
+                    if (!success) {
+                        log.error(`Failed to initialize provider: ${providerName}`);
                         return false;
                     }
-
-                    profileManager.createProfile(provider.getName(), profile);
-                } else if (!existingProfile) {
-                    // Create default profile if it doesn't exist
-                    profileManager.createProfile(provider.getName(), profile);
                 }
-            } catch (error) {
-                logger.error('Error managing profile:', error);
-                throw error;
+            } else if (!args.cliCommand) {
+                // No providers specified and not a CLI command, create main window
+                this.createMainWindow();
             }
 
-            // Check if session can be registered
-            const canRegister = await instanceManager.registerSession(provider, profile);
-            if (!canRegister) {
-                if (!providerCLI.shouldForceNewInstance()) {
-                    logger.info(`Session ${provider.getName()}:${profile} already exists in another instance`);
-                    return false;
-                }
-            }
-
-            // Create window using the window service with session info
-            const windowName = `${provider.getName()}:${profile}`;
-            const window = await provider.spawnWindow(profile);
-            if (!window) {
-                throw new Error('Failed to create window');
-            }
-
-            // Create tray using TrayService
-            const tray = trayService.createTray(provider, windowName);
-            if (!tray) {
-                throw new Error('Failed to create tray icon');
-            }
-
-            // Setup window events
-            this.setupWindowEvents(provider, windowName);
-
-            // Start minimized if requested
-            if (providerCLI.shouldStartMinimized()) {
-                window.hide();
-            }
-
+            log.info('Application initialized successfully');
             return true;
         } catch (error) {
-            logger.error(`Error initializing provider ${providerArg}:`, error);
+            log.error('Failed to initialize application:', error);
             return false;
         }
     }
 
-    setupAppEvents() {
-        // Handle app-wide events
-        app.on('activate', () => {
-            // On macOS it's common to re-create a window when the dock icon is clicked
-            if (windowService.getAllWindows().length === 0) {
-                this.initialize();
-            }
-        });
-
-        // Handle system theme changes
-        nativeTheme.on('updated', () => {
-            this.handleThemeUpdate();
-        });
-    }
-
-    setupWindowEvents(provider, windowName) {
-        const window = windowService.getWindow(windowName);
-        if (!window) {
-            return;
-        }
-
-        // Prevent window close, hide instead
-        window.on('close', (event) => {
-            event.preventDefault();
-            this.hideWindow(windowName);
-        });
-
-        // Handle window-specific notifications using IPC
-        window.webContents.on('ipc-message', (event, channel, ...args) => {
-            if (channel === 'notification-state-changed') {
-                const [isActive] = args;
-                this.handleNotificationStateChange(windowName, isActive);
-            }
-        });
-    }
-
-    handleNotificationStateChange(windowName, hasNotification) {
+    /**
+     * Initialize a provider
+     * @param {string} providerName - Name of the provider
+     * @param {string} profile - Profile name
+     * @param {Object} args - CLI arguments
+     * @returns {Promise<boolean>} True if initialization successful
+     */
+    async initializeProvider(providerName, profile, args) {
         try {
-            trayService.setNotificationState(windowName, hasNotification);
+            // Create provider instance
+            const provider = providerRegistry.createProvider(providerName);
+            if (!provider) {
+                log.error(`Invalid provider: ${providerName}`);
+                return false;
+            }
+
+            // Add provider to instance
+            if (!(await instanceManager.addProviderToInstance(provider.getCommandArg(), profile))) {
+                log.error(`Failed to add provider ${providerName} to instance`);
+                return false;
+            }
+
+            // Create window for provider
+            const window = await provider.spawnWindow(profile);
+            if (!window) {
+                log.error(`Failed to create window for provider ${providerName}`);
+                return false;
+            }
+
+            // Create tray icon if needed
+            if (args.tray) {
+                const tray = trayService.createTray(provider, `${providerName}:${profile}`);
+                if (!tray) {
+                    log.error(`Failed to create tray for provider ${providerName}`);
+                    return false;
+                }
+            }
+
+            log.info(`Provider ${providerName} initialized successfully`);
+            return true;
         } catch (error) {
-            logger.error(`Error handling notification state change for ${windowName}:`, error);
+            log.error(`Error initializing provider ${providerName}:`, error);
+            return false;
         }
     }
 
-    showWindow(windowName) {
-        const window = windowService.getWindow(windowName);
-        if (window) {
-            window.show();
-        }
-    }
-
-    hideWindow(windowName) {
-        const window = windowService.getWindow(windowName);
-        if (window) {
-            window.hide();
-        }
-    }
-
-    async quitProvider(windowName) {
-        const window = windowService.getWindow(windowName);
-        if (!window) {
-            return;
-        }
-
-        // Unregister session
-        const [providerName, profile] = windowName.split(':');
-        await instanceManager.unregisterSession(providerName, profile);
-
-        // Close window
-        window.destroy();
-
-        // Quit app if no windows left
-        if (windowService.getAllWindows().length === 0) {
-            app.exit(0);
-        }
-    }
-
-    async cleanup() {
+    /**
+     * Handle second instance launch
+     * @param {string[]} argv - Command line arguments
+     */
+    async handleSecondInstance(argv) {
         try {
-            // Set window service to quitting mode first
+            await instanceManager.handleSecondInstance(argv);
+        } catch (error) {
+            log.error('Failed to handle second instance:', error);
+        }
+    }
+
+    /**
+     * Quit the application
+     */
+    quit() {
+        try {
+            this.isQuitting = true;
+            
+            // Set quitting flag on window service
             windowService.isQuitting = true;
 
-            // Cleanup services in order, but don't let errors stop the chain
-            try {
-                await trayService.cleanup();
-            } catch (error) {
-                logger.error('Error during tray cleanup:', error);
-            }
-
-            try {
-                await windowService.cleanup();
-            } catch (error) {
-                logger.error('Error during window cleanup:', error);
-            }
-
-            try {
-                await instanceManager.cleanup();
-            } catch (error) {
-                logger.warn('Error during instance cleanup:', error);
-            }
-
-            // Force quit the app
-            app.exit(0);
+            // Cleanup services in order
+            trayService.cleanup();
+            windowService.cleanup();
+            instanceManager.cleanup();
+            
+            app.quit();
         } catch (error) {
-            logger.error('Error during app cleanup:', error);
-            app.exit(1);
+            log.error('Failed to quit application:', error);
+            process.exit(1);
         }
     }
 }

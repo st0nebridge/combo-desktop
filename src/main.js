@@ -1,58 +1,57 @@
 const { app } = require('electron');
 const log = require('electron-log');
-
-// Import services
 const appManager = require('./services/app.manager');
+const cli = require('./cli');
 
-// Import CLI handlers
-const providerCLI = require('./cli/provider-cli');
-const instanceCLI = require('./cli/instance-cli');
-const profileCLI = require('./cli/profile-cli');
-const helpCLI = require('./cli/help-cli');
+/**
+ * Main application entry point
+ */
+async function main() {
+    try {
+        // Wait for app to be ready
+        await app.whenReady();
 
-// Initialize app
-app.whenReady().then(async () => {
-    log.info('Application starting...');
+        log.info('Application starting...');
 
-    // Handle CLI commands that don't need full app initialization
-    if (providerCLI.isCliCommand() || instanceCLI.isCliCommand()) {
-        if (instanceCLI.isCliCommand()) {
-            await instanceCLI.execute();
-        }
-        app.exit(0);
-        return;
-    }
+        // Initialize CLI modules
+        cli.initCLI();
 
-    // Handle help/manual command
-    if (process.argv.includes('--manual')) {
-        await helpCLI.showManual();
-        app.exit(0);
-        return;
-    }
-
-    // Handle profile commands
-    if (process.argv.includes('--list-profiles')) {
-        await profileCLI.listProfiles();
-        app.exit(0);
-        return;
-    }
-
-    // Initialize app for normal operation
-    const success = await appManager.initialize();
-    
-    // If initialization failed, exit
-    if (!success) {
-        app.exit(1);
-        return;
-    }
-
-    // Handle window-all-closed event
-    app.on('window-all-closed', () => {
-        // Keep app running if there are active sessions
-        const instanceManager = require('./services/instance.manager');
-        if (instanceManager.activeSessions.size > 0) {
+        // Process command line arguments
+        // If it returns true, this is a CLI command that shouldn't register a PID
+        const isCliCommand = cli.processArgs();
+        if (isCliCommand) {
+            log.info('CLI command executed, exiting...');
+            app.exit(0);
             return;
         }
-        app.quit();
-    });
-});
+
+        // Initialize app manager
+        const success = await appManager.init();
+        if (!success) {
+            log.error('Failed to initialize application');
+            app.exit(1);
+            return;
+        }
+
+        log.info('Application started successfully');
+
+        // Handle window-all-closed event
+        app.on('window-all-closed', () => {
+            // Keep app running if there are active sessions
+            if (process.platform !== 'darwin') {
+                app.quit();
+            }
+        });
+
+        // Handle activate event (macOS)
+        app.on('activate', () => {
+            appManager.createWindow();
+        });
+    } catch (error) {
+        log.error('Fatal error during application startup:', error);
+        app.exit(1);
+    }
+}
+
+// Start the application
+main();

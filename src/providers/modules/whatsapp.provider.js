@@ -1,31 +1,117 @@
-// WhatsApp provider functionality
+/**
+ * @module WhatsAppProvider
+ * @description WhatsApp web integration provider for the application.
+ * Handles browser compatibility, notification monitoring, and custom JavaScript injection
+ * for seamless WhatsApp Web functionality.
+ */
+
 const log = require('electron-log');
-const BaseProvider = require('./base.provider');
+const BaseProvider = require('../abstract/base.provider');
+const userAgentConfig = require('../../config/user-agent.config');
 
 /**
- * WhatsApp provider
+ * WhatsApp web integration provider implementation.
+ * Extends BaseProvider to provide WhatsApp-specific functionality:
+ * - Browser compatibility handling
+ * - Service worker management
+ * - Notification monitoring
+ * - External URL handling
+ * @class WhatsAppProvider
+ * @extends {BaseProvider}
  */
 class WhatsAppProvider extends BaseProvider {
+    /**
+     * Creates a new WhatsAppProvider instance
+     * @constructor
+     */
+    constructor() {
+        super();
+        
+        /** @property {boolean} initialized - Whether provider has been initialized */
+        this.initialized = false;
+    }
+
+    /**
+     * Initialize the provider with WhatsApp-specific configuration
+     * @method initialize
+     * @throws {Error} If no user agent is configured for WhatsApp
+     */
+    initialize() {
+        if (this.initialized) {
+            return;
+        }
+
+        try {
+            // Ensure we have the correct user agent
+            const userAgent = userAgentConfig.getProviderUserAgent('whatsapp');
+            if (!userAgent) {
+                throw new Error('No user agent configured for WhatsApp');
+            }
+
+            this.userAgent = userAgent;
+            this.initialized = true;
+            log.info('WhatsApp provider initialized');
+        } catch (error) {
+            log.error('Error initializing WhatsApp provider:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Get provider name
+     * @method getName
+     * @override
+     * @returns {string} Provider name 'WhatsApp'
+     */
     getName() {
         return 'WhatsApp';
     }
 
+    /**
+     * Get command line argument
+     * @method getCommandArg
+     * @override
+     * @returns {string} Command argument '--whatsapp'
+     */
     getCommandArg() {
         return '--whatsapp';
     }
 
+    /**
+     * Get base icon path
+     * @method getBaseIconPath
+     * @override
+     * @returns {string} Icon path 'whatsapp'
+     */
     getBaseIconPath() {
         return 'whatsapp';
     }
 
+    /**
+     * Get notification check interval
+     * @method getNotificationInterval
+     * @override
+     * @returns {number} Interval of 3000ms (3 seconds)
+     */
     getNotificationInterval() {
-        return 3000; // 3 seconds, using default
+        return 3000; // 3 seconds
     }
 
+    /**
+     * Get provider URL
+     * @method getUrl
+     * @override
+     * @returns {string} WhatsApp Web URL
+     */
     getUrl() {
         return 'https://web.whatsapp.com/';
     }
 
+    /**
+     * Set up WhatsApp-specific event handlers for notifications and external URLs
+     * @method setupEventHandlers
+     * @override
+     */
     setupEventHandlers() {
         if (!this.window || !this.window.webContents) {
             log.error('Window or webContents not available for setting up event handlers');
@@ -40,10 +126,30 @@ class WhatsAppProvider extends BaseProvider {
                 this.stopNotification();
             }
         });
+
+        // Handle new windows (open in default browser)
+        this.window.webContents.setWindowOpenHandler(({ url }) => {
+            if (url && url.startsWith('https://')) {
+                require('electron').shell.openExternal(url)
+                    .catch(err => log.error('Error opening external URL:', err));
+            }
+            return { action: 'deny' };
+        });
     }
 
+    /**
+     * Inject WhatsApp-specific JavaScript for browser compatibility and service worker management
+     * @method injectCustomJS
+     * @override
+     */
     injectCustomJS() {
+        if (!this.window || !this.window.webContents) {
+            log.error('Window or webContents not available for custom JS injection');
+            return;
+        }
+
         log.info('Injecting custom JavaScript for WhatsApp compatibility');
+        
         this.window.webContents.executeJavaScript(`
             // Clear service worker registrations to avoid caching issues
             window.navigator.serviceWorker.getRegistrations().then(registrations => {
@@ -105,11 +211,18 @@ class WhatsAppProvider extends BaseProvider {
         });
     }
 
-    // Check if the window title indicates notifications
+    /**
+     * Check if the window title indicates notifications
+     * @returns {boolean} True if notifications present
+     */
     hasNotifications() {
+        if (!this.window) {
+            return false;
+        }
         const title = this.window.getTitle();
         return title.includes('(') && title.includes(')');
     }
 }
 
+// Export the class instead of an instance
 module.exports = WhatsAppProvider;
