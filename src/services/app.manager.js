@@ -251,10 +251,24 @@ class AppManager {
             // Set window service to quitting mode first
             windowService.isQuitting = true;
 
-            // Cleanup services in order
-            await trayService.cleanup();
-            await windowService.cleanup();
-            await instanceManager.cleanup();
+            // Cleanup services in order, but don't let errors stop the chain
+            try {
+                await trayService.cleanup();
+            } catch (error) {
+                logger.error('Error during tray cleanup:', error);
+            }
+
+            try {
+                await windowService.cleanup();
+            } catch (error) {
+                logger.error('Error during window cleanup:', error);
+            }
+
+            try {
+                await instanceManager.cleanup();
+            } catch (error) {
+                logger.warn('Error during instance cleanup:', error);
+            }
 
             // Force quit the app
             app.exit(0);

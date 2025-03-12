@@ -10,19 +10,30 @@ class InstanceManager {
         const userData = app.getPath('userData');
         this.instanceLockFile = path.join(userData, 'instance.lock');
         this.pidFile = path.join(userData, 'pids.json');
-        this.lockRetryCount = 3;
-        this.lockRetryDelay = 100; // ms
+        this.lockRetryCount = 5;
+        this.lockRetryDelay = 200; // ms
         this.activeSessions = new Map();
         this.instanceId = null;
         this.isFirstInstance = false;
         this._writeLock = false;
+        this._lockTimeout = null;
     }
 
     async acquireWriteLock() {
+        // Clear any existing lock timeout
+        if (this._lockTimeout) {
+            clearTimeout(this._lockTimeout);
+            this._lockTimeout = null;
+        }
+
         let attempts = 0;
         while (attempts < this.lockRetryCount) {
             if (!this._writeLock) {
                 this._writeLock = true;
+                // Auto-release lock after 5 seconds to prevent deadlocks
+                this._lockTimeout = setTimeout(() => {
+                    this.releaseWriteLock();
+                }, 5000);
                 return true;
             }
             await setTimeout(this.lockRetryDelay);
@@ -32,6 +43,10 @@ class InstanceManager {
     }
 
     releaseWriteLock() {
+        if (this._lockTimeout) {
+            clearTimeout(this._lockTimeout);
+            this._lockTimeout = null;
+        }
         this._writeLock = false;
     }
 
@@ -469,26 +484,38 @@ class InstanceManager {
     }
 
     async cleanup() {
-        if (!this.instanceId) {
-            return;
-        }
-
         try {
+            // Force release any existing lock
+            this.releaseWriteLock();
+
+            // Get current data
             const lockData = await this.getLockFileData();
-            
-            // Remove all sessions for this instance
-            Object.entries(lockData.sessions).forEach(([sessionKey, instanceId]) => {
+
+            // Remove this instance's data
+            if (lockData.instances[this.instanceId]) {
+                delete lockData.instances[this.instanceId];
+            }
+
+            // Remove any sessions owned by this instance
+            for (const [sessionKey, instanceId] of Object.entries(lockData.sessions)) {
                 if (instanceId === this.instanceId) {
                     delete lockData.sessions[sessionKey];
                 }
-            });
+            }
 
-            // Remove instance data
-            delete lockData.instances[this.instanceId];
-            
-            await this.updateLockFile(lockData);
+            // Try to update lock file, but don't throw if we can't
+            try {
+                await this.updateLockFile(lockData);
+            } catch (error) {
+                log.warn('Could not update lock file during cleanup:', error);
+            }
+
+            // Clear active sessions
+            this.activeSessions.clear();
         } catch (error) {
-            log.error('Error during cleanup:', error);
+            log.error('Error during instance cleanup:', error);
+        } finally {
+            this.releaseWriteLock();
         }
     }
 }
