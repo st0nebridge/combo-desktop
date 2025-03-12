@@ -16,6 +16,7 @@ class InstanceManager {
         this.activeSessions = new Map();
         this.instanceId = null;
         this.isFirstInstance = false;
+        this.currentProfile = null;
     }
 
     async acquireWriteLock() {
@@ -62,10 +63,19 @@ class InstanceManager {
                 return false;
             }
 
-            // Request single instance lock
-            this.isFirstInstance = app.requestSingleInstanceLock();
-            if (!this.isFirstInstance && !providerCLI.shouldForceNewInstance()) {
-                return false;
+            // Get the target profile from CLI args
+            const profile = providerCLI.getProfile() || 'default';
+            this.currentProfile = profile;
+
+            // Check if we should create a new instance based on process isolation rules
+            const shouldCreateNewInstance = await this.shouldCreateNewInstance(profile);
+            
+            // Request single instance lock only if we're not forcing a new instance
+            if (!shouldCreateNewInstance) {
+                this.isFirstInstance = app.requestSingleInstanceLock();
+                if (!this.isFirstInstance) {
+                    return false;
+                }
             }
 
             // Initialize lock file if first instance
@@ -84,6 +94,46 @@ class InstanceManager {
             return true;
         } catch (error) {
             log.error('Error initializing instance manager:', error);
+            return false;
+        }
+    }
+
+    async shouldCreateNewInstance(profile) {
+        try {
+            const providerCLI = require('../cli/provider-cli');
+            
+            // --new-instance always creates new instance
+            if (providerCLI.shouldForceNewInstance()) {
+                return true;
+            }
+
+            // --one-instance never creates new instance
+            if (providerCLI.shouldUseOneInstance()) {
+                return false;
+            }
+
+            const lockData = await this.getLockFileData();
+            
+            // If this is the first instance and has no providers, use current process
+            if (Object.keys(lockData.instances).length === 0) {
+                return false;
+            }
+
+            // Check if any instance is running the target profile
+            let profileExists = false;
+            for (const instance of Object.values(lockData.instances)) {
+                for (const sessionKey of instance.sessions) {
+                    if (sessionKey.includes(`:${profile}`)) {
+                        profileExists = true;
+                        break;
+                    }
+                }
+            }
+
+            // Create new instance if profile doesn't exist
+            return profileExists;
+        } catch (error) {
+            log.error('Error checking if should create new instance:', error);
             return false;
         }
     }
@@ -369,24 +419,19 @@ class InstanceManager {
 
             const lockData = await this.getLockFileData();
 
+            // Check if session exists in any instance
+            if (lockData.sessions[sessionKey]) {
+                log.error(`Session ${sessionKey} already exists in another instance`);
+                return false;
+            }
+
             // Check if instance exists in lock file
             if (!lockData.instances[this.instanceId]) {
                 lockData.instances[this.instanceId] = {
                     startTime: Date.now(),
+                    profile: this.currentProfile,
                     sessions: []
                 };
-            }
-
-            // Check if session exists in another instance
-            if (lockData.sessions[sessionKey] && lockData.sessions[sessionKey] !== this.instanceId) {
-                // Check if the instance holding the session still exists
-                const instanceId = lockData.sessions[sessionKey];
-                if (!lockData.instances[instanceId]) {
-                    // Instance no longer exists, we can take over the session
-                    delete lockData.sessions[sessionKey];
-                } else {
-                    return false;
-                }
             }
 
             // Register session
@@ -459,17 +504,22 @@ class InstanceManager {
             const providers = providerCLI.parseProviderArgs();
             const forceNewInstance = providerCLI.shouldForceNewInstance();
             const useOneInstance = providerCLI.shouldUseOneInstance();
+            const profile = providerCLI.getProfile() || 'default';
 
+            // --new-instance always creates new instance
             if (forceNewInstance) {
-                return false; // Allow new instance
+                return false;
             }
 
+            // --one-instance forces all providers to current instance
             if (useOneInstance) {
-                return true; // Force single instance
+                return true;
             }
 
-            // For each provider+profile combination, check if it exists
-            for (const { provider: providerArg, profile } of providers) {
+            const lockData = await this.getLockFileData();
+
+            // Check if any requested session already exists
+            for (const { provider: providerArg } of providers) {
                 const providerRegistry = require('../providers/provider.registry');
                 const provider = providerRegistry.createProvider(['--' + providerArg]);
                 
@@ -477,17 +527,31 @@ class InstanceManager {
                     continue;
                 }
 
-                const sessionKey = provider.getPartitionName(profile || 'default');
-                const lockData = await this.getLockFileData();
-
-                // If this exact session doesn't exist, allow new instance
-                if (!lockData.sessions[sessionKey]) {
-                    return false;
+                const sessionKey = provider.getPartitionName(profile);
+                
+                // If session exists, reject new instance
+                if (lockData.sessions[sessionKey]) {
+                    log.warn(`Session ${sessionKey} already exists, rejecting new instance`);
+                    return true;
                 }
             }
 
-            // All sessions already exist, prevent new instance
-            return true;
+            // Find instance running the target profile
+            let profileInstanceId = null;
+            for (const [instanceId, instance] of Object.entries(lockData.instances)) {
+                if (instance.profile === profile) {
+                    profileInstanceId = instanceId;
+                    break;
+                }
+            }
+
+            // If profile exists, use that instance
+            if (profileInstanceId) {
+                return true;
+            }
+
+            // Allow new instance for new profile
+            return false;
         } catch (error) {
             log.error('Error handling second instance:', error);
             return true; // Default to preventing new instance on error
