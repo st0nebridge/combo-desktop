@@ -2,6 +2,7 @@
 const path = require('path');
 const fs = require('fs');
 const { nativeTheme, nativeImage } = require('electron');
+const logger = require('../services/logging.service');
 
 /**
  * Convert RGB to LAB color space for better perceptual processing
@@ -262,9 +263,14 @@ function invertImageColors(image) {
  */
 function getIconPath(serviceName, hasNotification = false) {
     const isDarkMode = nativeTheme.shouldUseDarkColors;
-    console.log('Theme check:', { isDarkMode, themeSource: nativeTheme.themeSource });
+    logger.info(`Getting icon for service: ${serviceName}`, { 
+        hasNotification, 
+        isDarkMode, 
+        themeSource: nativeTheme.themeSource 
+    });
     
     const baseDir = path.join(__dirname, '..', '..', 'assets', 'icons', serviceName);
+    logger.info(`Base icon directory: ${baseDir}`);
     
     // Check theme-specific folders first
     const themeFolder = isDarkMode ? 'dark' : 'light';
@@ -278,12 +284,14 @@ function getIconPath(serviceName, hasNotification = false) {
             : path.join(themeFolderPath, 'tray.ico');
             
         if (fs.existsSync(iconPath)) {
+            logger.info(`Found theme-specific icon: ${iconPath}`);
             return {
                 image: nativeImage.createFromPath(iconPath),
                 isDarkMode,
                 hasNotification
             };
         }
+        logger.warn(`Theme-specific icon not found: ${iconPath}`);
     }
     
     // Try opposite theme folder and invert
@@ -294,6 +302,7 @@ function getIconPath(serviceName, hasNotification = false) {
             : path.join(oppositeThemeFolderPath, 'tray.ico');
             
         if (fs.existsSync(iconPath)) {
+            logger.info(`Found opposite theme icon to invert: ${iconPath}`);
             let image = nativeImage.createFromPath(iconPath);
             return {
                 image: invertImageColors(image),
@@ -301,22 +310,26 @@ function getIconPath(serviceName, hasNotification = false) {
                 hasNotification
             };
         }
+        logger.warn(`Opposite theme icon not found: ${iconPath}`);
     }
     
     // Try theme-specific root icons
     const themeIcon = isDarkMode ? 'dark.ico' : 'light.ico';
     const themeIconPath = path.join(baseDir, themeIcon);
     if (fs.existsSync(themeIconPath)) {
+        logger.info(`Found root theme icon: ${themeIconPath}`);
         return {
             image: nativeImage.createFromPath(themeIconPath),
             isDarkMode,
             hasNotification
         };
     }
+    logger.warn(`Root theme icon not found: ${themeIconPath}`);
     
     // Try generic icon.ico with inversion if needed
     const defaultIconPath = path.join(baseDir, 'icon.ico');
     if (fs.existsSync(defaultIconPath)) {
+        logger.info(`Using default icon with auto-detection: ${defaultIconPath}`);
         let image = nativeImage.createFromPath(defaultIconPath);
         
         // Detect if icon is light or dark and invert if necessary
@@ -334,6 +347,12 @@ function getIconPath(serviceName, hasNotification = false) {
         const avgBrightness = totalBrightness / (size.width * size.height);
         const isLightIcon = avgBrightness > 128;
         
+        logger.info('Icon brightness analysis:', { 
+            avgBrightness, 
+            isLightIcon, 
+            needsInversion: (isDarkMode && isLightIcon) || (!isDarkMode && !isLightIcon) 
+        });
+        
         if ((isDarkMode && isLightIcon) || (!isDarkMode && !isLightIcon)) {
             image = invertImageColors(image);
         }
@@ -348,7 +367,7 @@ function getIconPath(serviceName, hasNotification = false) {
     // Final fallback to app.ico
     const appIconPath = path.join(__dirname, '..', '..', 'assets', 'icons', 'app.ico');
     if (fs.existsSync(appIconPath)) {
-        console.warn(`No service-specific icon found for ${serviceName}, falling back to app.ico`);
+        logger.warn(`No service-specific icon found for ${serviceName}, falling back to app.ico`);
         return {
             image: nativeImage.createFromPath(appIconPath),
             isDarkMode,
@@ -356,7 +375,7 @@ function getIconPath(serviceName, hasNotification = false) {
         };
     }
     
-    console.error(`No suitable icon found for ${serviceName} and app.ico fallback is missing`);
+    logger.error(`No suitable icon found for ${serviceName} and app.ico fallback is missing`);
     return null;
 }
 

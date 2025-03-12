@@ -35,11 +35,16 @@ class TrayService {
      * Create a new tray icon for a provider
      * @method createTray
      * @param {BaseProvider} provider - Provider instance to create tray for
-     * @param {string} windowName - Name of associated window
+     * @param {string} windowName - Name of associated window (format: providerName:profile)
      * @returns {Electron.Tray|null} Created tray instance or null if creation fails
      * @throws {Error} If provider returns invalid tray icon
      */
     createTray(provider, windowName) {
+        if (!windowName) {
+            logger.error('Window name is required for tray creation');
+            return null;
+        }
+
         if (this.trays.has(windowName)) {
             logger.warn(`Tray already exists for window: ${windowName}`);
             return this.trays.get(windowName).tray;
@@ -52,6 +57,7 @@ class TrayService {
             }
 
             const tray = new Tray(trayIcon.image);
+            tray.setToolTip(`${provider.getName()} - ${windowName.split(':')[1]}`);
 
             // Set up context menu
             this.updateContextMenu(tray, provider);
@@ -69,6 +75,7 @@ class TrayService {
             this.trays.set(windowName, { tray, provider });
             this.notificationStates.set(windowName, false);
 
+            logger.info(`Created tray icon for ${windowName}`);
             return tray;
         } catch (error) {
             logger.error(`Error creating tray for ${windowName}:`, error);
@@ -96,7 +103,7 @@ class TrayService {
     /**
      * Set notification state for a tray icon
      * @method setNotificationState
-     * @param {string} windowName - Name of window with tray
+     * @param {string} windowName - Name of window with tray (format: providerName:profile)
      * @param {boolean} hasNotification - Whether notification is active
      * @throws {Error} If notification state update fails
      */

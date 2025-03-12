@@ -3,10 +3,10 @@
  * Handles provider initialization, configuration, and command execution.
  */
 
-const log = require('electron-log');
 const BaseCLI = require('../abstract/base-cli');
 const providerRegistry = require('../../providers');
 const appManager = require('../../services/app.manager');
+const logger = require('../../services/logging.service');
 
 /**
  * CLI module for managing service providers.
@@ -66,12 +66,12 @@ class ProviderCLI extends BaseCLI {
             const arg = args[i];
             
             // Check for base flags first
-            const baseResult = this.parseCommonFlags(result, i);
-            if (baseResult.skipNext) {
+            const { handled, skipNext } = this.parseCommonFlags(result, i);
+            if (skipNext) {
                 i++;
                 continue;
             }
-            if (baseResult.handled) {
+            if (handled) {
                 continue;
             }
 
@@ -106,8 +106,8 @@ class ProviderCLI extends BaseCLI {
             }
         }
 
-        // Return null if no valid command found
-        if (!result.command) {
+        // Return null if no valid command found and not a version check
+        if (!result.command && !result.version) {
             return null;
         }
 
@@ -120,6 +120,10 @@ class ProviderCLI extends BaseCLI {
      * @returns {boolean} True if this is a CLI command
      */
     isCliCommand() {
+        // Version check is always a CLI command
+        if (this.currentArgs && this.currentArgs.version) {
+            return true;
+        }
         // Get the last parsed args from execute
         return this.currentArgs ? this.currentArgs.isCliCommand : true;
     }
@@ -132,18 +136,23 @@ class ProviderCLI extends BaseCLI {
      */
     async execute(args) {
         try {
-            if (!args || !args.command || !this.commands[args.command]) {
-                log.error('No valid provider or command specified');
-                return false;
-            }
-
             // Store current args for isCliCommand
             this.currentArgs = args;
 
-            log.info(`Executing provider command: ${args.command}`);
+            // Handle version flag first
+            if (args.version) {
+                return super.execute(args);
+            }
+
+            if (!args || !args.command || !this.commands[args.command]) {
+                logger.error('No valid provider or command specified');
+                return false;
+            }
+
+            logger.info(`Executing provider command: ${args.command}`);
             return await this.commands[args.command](args);
         } catch (error) {
-            log.error('Error executing provider command:', error);
+            logger.error('Error executing provider command:', error);
             return false;
         }
     }
@@ -158,20 +167,20 @@ class ProviderCLI extends BaseCLI {
     async initProvider(providerName, args) {
         try {
             if (!providerName) {
-                log.error('No provider specified');
+                logger.error('No provider specified');
                 return false;
             }
 
-            log.info(`Initializing provider: ${providerName} with profile: ${args.profile}`);
+            logger.info(`Initializing provider: ${providerName} with profile: ${args.profile}`);
             const success = await appManager.initializeProvider(providerName, args.profile, { tray: args.tray });
             if (!success) {
-                log.error(`Failed to initialize provider: ${providerName}`);
+                logger.error(`Failed to initialize provider: ${providerName}`);
                 return false;
             }
 
             return true;
         } catch (error) {
-            log.error('Error initializing provider:', error);
+            logger.error('Error initializing provider:', error);
             return false;
         }
     }
@@ -183,9 +192,9 @@ class ProviderCLI extends BaseCLI {
      */
     async listProviders() {
         const providers = providerRegistry.getAvailableProviders();
-        log.info('\nAvailable providers:');
+        logger.info('\nAvailable providers:');
         providers.forEach(provider => {
-            log.info(`  ${provider.name} (${provider.commandArg})`);
+            logger.info(`  ${provider.name} (${provider.commandArg})`);
         });
         return true;
     }
@@ -198,16 +207,19 @@ class ProviderCLI extends BaseCLI {
         const providers = providerRegistry.getAvailableProviders();
         const providerList = providers.map(p => `  ${p.commandArg}\t\t${p.name}`).join('\n');
         
-        log.info(`
-Provider Commands:
-  list\t\tList available providers
+        logger.info(`
+Usage: combo-desktop [options] [command]
+
+Commands:
+  list\t\t\tList available providers
 ${providerList}
 
 Options:
+  --help\t\t\tShow this help message
+  --manual\t\tShow detailed manual
+  --version\t\tShow version information
+  --tray\t\t\tStart provider in tray
   --profile <name>\tUse specific profile (default: default)
-  --tray\t\tStart in tray
-  --help\t\tShow this help
-  --manual\tShow detailed manual
 `);
     }
 }

@@ -3,7 +3,7 @@
  * Handles module registration, command detection, and argument parsing.
  */
 
-const log = require('electron-log');
+const logger = require('../services/logging.service');
 
 /**
  * Registry for CLI modules that handles registration and execution of commands.
@@ -25,7 +25,7 @@ class CLIRegistry {
         /** @property {Object|null} lastParsedArgs - Last successfully parsed arguments */
         this.lastParsedArgs = null;
         
-        log.info('CLI Registry initialized');
+        logger.info('CLI Registry initialized');
     }
 
     /**
@@ -39,23 +39,23 @@ class CLIRegistry {
     register(moduleName, ModuleClass, instance) {
         try {
             if (!moduleName || !ModuleClass || !instance) {
-                log.error('Invalid CLI module registration parameters');
+                logger.error('Invalid CLI module registration parameters');
                 return false;
             }
 
             // Validate module follows command mapping pattern
             if (!instance.parseArgs || !instance.execute || !instance.showUsage) {
-                log.error('Invalid CLI module class - missing required methods');
+                logger.error('Invalid CLI module class - missing required methods');
                 return false;
             }
 
             // Add to registry
             this.instances.push(instance);
             this.registeredModules.add(moduleName);
-            log.info(`Registered CLI module: ${instance.constructor.name}`);
+            logger.info(`Registered CLI module: ${instance.constructor.name}`);
             return true;
         } catch (error) {
-            log.error('Error registering CLI module:', error);
+            logger.error('Error registering CLI module:', error);
             return false;
         }
     }
@@ -69,13 +69,13 @@ class CLIRegistry {
     async execute(args) {
         try {
             if (!args || args.length === 0) {
-                log.warn('No arguments to execute');
+                logger.warn('No arguments to execute');
                 return { success: false, isCliCommand: true };
             }
 
             // Remove electron and script path from args if present
-            const cliArgs = args.slice(2);
-            log.debug('CLI arguments:', cliArgs);
+            const cliArgs = args.slice(process.defaultApp ? 2 : 1);
+            logger.debug('CLI arguments:', cliArgs);
 
             // Check for help flag first
             if (cliArgs.includes('--help') || cliArgs.includes('--manual')) {
@@ -88,7 +88,7 @@ class CLIRegistry {
                 try {
                     const result = await instance.parseArgs(cliArgs);
                     if (result) {
-                        log.info(`CLI command detected in module: ${instance.constructor.name}`);
+                        logger.info(`CLI command detected in module: ${instance.constructor.name}`);
                         
                         // Store parsed args for app initialization
                         this.lastParsedArgs = result;
@@ -97,23 +97,23 @@ class CLIRegistry {
                         if (instance.execute) {
                             const success = await instance.execute(result);
                             if (!success) {
-                                log.error(`Command execution failed in module: ${instance.constructor.name}`);
+                                logger.error(`Command execution failed in module: ${instance.constructor.name}`);
                                 return { success: false, isCliCommand: instance.isCliCommand() };
                             }
-                            log.info('CLI command completed successfully');
+                            logger.info('CLI command completed successfully');
                             return { success: true, isCliCommand: instance.isCliCommand() };
                         }
                     }
                 } catch (error) {
-                    log.error(`Error in module ${instance.constructor.name}:`, error);
+                    logger.error(`Error in module ${instance.constructor.name}:`, error);
                     throw error;
                 }
             }
 
-            log.warn('No module found to handle arguments:', cliArgs);
+            logger.warn('No module found to handle arguments:', cliArgs);
             return { success: false, isCliCommand: true };
         } catch (error) {
-            log.error('Error executing CLI arguments:', error);
+            logger.error('Error executing CLI arguments:', error);
             throw error;
         }
     }
@@ -135,7 +135,7 @@ class CLIRegistry {
         this.instances = [];
         this.registeredModules.clear();
         this.lastParsedArgs = null;
-        log.info('CLI Registry cleared');
+        logger.info('CLI Registry cleared');
     }
 
     /**
@@ -143,7 +143,7 @@ class CLIRegistry {
      * @method showHelp
      */
     showHelp() {
-        log.info('\nAvailable commands:');
+        logger.info('\nAvailable commands:');
         for (const instance of this.instances) {
             if (instance.showUsage) {
                 instance.showUsage();

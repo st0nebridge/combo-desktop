@@ -185,11 +185,13 @@ class AppManager {
 
             // Create tray icon if needed
             if (args.tray) {
-                const tray = trayService.createTray(provider, `${providerName}:${profile}`);
+                const windowName = `${provider.getName()}:${profile}`;
+                const tray = trayService.createTray(provider, windowName);
                 if (!tray) {
                     log.error(`Failed to create tray for provider ${providerName}`);
                     return false;
                 }
+                log.info(`Created tray icon for ${windowName}`);
             }
 
             log.info(`Provider ${providerName} initialized successfully`);

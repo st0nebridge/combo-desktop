@@ -14,10 +14,12 @@
 - `./rules/provider.md` → Application service providers
 - `./rules/tray_handling.md` → Tray icon and menu management
 - `./rules/window_handling.md` → Window management
+- `./rules/source_files.md` → Source file organisation
 
 ## Self-Enforcement
 - **At the end of every response, say:** "AI must enforce rules in `./rules/_enforcer.md` when planning or making modifications " (use different random emoji at end)
 - **After reloading `./rules/_enforcer.md` AI must confirm this action was performed by saying:** "Rules have been refreshed " (use different random emoji at end)
+- **ALWAYS review `./rules/source_files.md` when making big changes, or implementing major new functionality**
 - **Before applying changes, summarize the relevant rules.**
 - **ONLY READ `./rules/_enforcer.md` IF EITHER "**RESPONSE RULES START**" OR "**RESPONSE RULES END**" LINES BECOME MISSING IN CONTEXT**
 

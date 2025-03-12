@@ -6,7 +6,7 @@
  */
 
 const BaseCLI = require('../abstract/base-cli');
-const log = require('electron-log');
+const logger = require('../../services/logging.service');
 const { app } = require('electron');
 
 /**
@@ -58,9 +58,9 @@ class HelpCLI extends BaseCLI {
             }
 
             this.mode = process.env.NODE_ENV || 'development';
-            log.debug(`Help CLI initialized with mode: ${this.mode}`);
+            logger.debug(`Help CLI initialized with mode: ${this.mode}`);
         } catch (error) {
-            log.error('Error initializing help paths:', error);
+            logger.error('Error initializing help paths:', error);
             throw error;
         }
     }
@@ -112,7 +112,12 @@ class HelpCLI extends BaseCLI {
                     break;
                 }
                 default: {
-                    i = this.parseCommonFlags(result, i);
+                    const { handled, skipNext } = this.parseCommonFlags(result, i);
+                    if (skipNext) {
+                        i += 2;
+                    } else {
+                        i++;
+                    }
                 }
             }
         }
@@ -136,7 +141,7 @@ class HelpCLI extends BaseCLI {
             const args = this.parseArgs();
             return args && args.cliCommand;
         } catch (error) {
-            log.error('Error checking CLI command:', error);
+            logger.error('Error checking CLI command:', error);
             return false;
         }
     }
@@ -146,30 +151,33 @@ class HelpCLI extends BaseCLI {
      * @method execute
      * @override
      * @param {Object} args - Parsed arguments from parseArgs()
+     * @returns {boolean} True if command executed successfully
      * @throws {Error} If command execution fails
      */
     execute(args) {
         try {
             if (!args) {
-                return;
+                return false;
             }
 
             if (args.version && this.commands.version) {
                 this.commands.version();
-                return;
+                return true;
             }
 
             if (args.help && this.commands.help) {
                 this.commands.help();
-                return;
+                return true;
             }
 
             if (args.manual && this.commands.manual) {
                 this.commands.manual();
-                return;
+                return true;
             }
+
+            return false;
         } catch (error) {
-            log.error('Error executing help command:', error);
+            logger.error('Error executing help command:', error);
             throw error;
         }
     }
@@ -182,14 +190,15 @@ class HelpCLI extends BaseCLI {
     showVersion() {
         try {
             const packageJson = require('../../../package.json');
-            console.log(`\n${packageJson.name} v${packageJson.version}`);
-            console.log(`Mode: ${this.mode}`);
-            console.log(`Electron: ${process.versions.electron}`);
-            console.log(`Chrome: ${process.versions.chrome}`);
-            console.log(`Node: ${process.versions.node}\n`);
+            logger.info(`\n${packageJson.name} v${packageJson.version}`);
+            logger.info(`Mode: ${this.mode}`);
+            logger.info(`Electron: ${process.versions.electron}`);
+            logger.info(`Chrome: ${process.versions.chrome}`);
+            logger.info(`Node: ${process.versions.node}\n`);
+            process.exit(0);
         } catch (error) {
-            log.error('Error showing version:', error);
-            throw error;
+            logger.error('Error showing version:', error);
+            process.exit(1);
         }
     }
 
@@ -199,28 +208,50 @@ class HelpCLI extends BaseCLI {
      * @override
      */
     showUsage() {
-        console.log('\nHelp Commands:');
-        console.log('  --help           Show this help information');
-        console.log('  --manual         Show detailed manual');
-        console.log('  --version        Show version information\n');
+        logger.info(`
+Usage: ${app.name} [options] [command]
+
+Options:
+  --help\t\tShow this help message
+  --manual\tShow detailed manual
+  --version\tShow version information
+
+Commands:
+  help\t\tShow help information
+  manual\t\tShow detailed manual
+  version\t\tShow version information
+`);
     }
 
     /**
-     * Show detailed manual with overview and command descriptions
+     * Show detailed manual with examples
      * @method showManual
      */
     showManual() {
-        console.log('\nApplication Manual:');
-        console.log('\n1. Overview');
-        console.log('   This application provides a unified interface for');
-        console.log('   managing multiple messaging providers.');
-        console.log('\n2. Commands');
-        console.log('   --help: Show quick reference guide');
-        console.log('   --manual: Show this detailed manual');
-        console.log('   --version: Display version and environment info');
-        console.log('\n3. Environment');
-        console.log(`   Current mode: ${this.mode}`);
-        console.log('   The application behavior may vary based on mode.\n');
+        logger.info(`
+${app.name} Manual
+
+Description:
+  Desktop application for managing service providers.
+  
+Usage:
+  ${app.name} [options] [command]
+
+Options:
+  --help\t\tShow basic help information
+  --manual\tShow this detailed manual
+  --version\tShow version information
+
+Commands:
+  help\t\tShow help information
+  manual\t\tShow this detailed manual
+  version\t\tShow version information
+
+Examples:
+  ${app.name} --help\t\tShow help
+  ${app.name} --version\tShow version
+  ${app.name} --manual\tShow this manual
+`);
     }
 }
 

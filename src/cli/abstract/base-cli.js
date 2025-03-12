@@ -11,6 +11,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const logger = require('../../services/logging.service');
 
 /**
  * Abstract base class that provides common functionality for CLI modules.
@@ -30,12 +31,13 @@ class BaseCLI {
 
     /**
      * Get base result object structure containing universal flags
-     * @returns {Object} Base result object with structure { help: false, manual: false }
+     * @returns {Object} Base result object with structure { help: false, manual: false, version: false }
      */
     getBaseResultObject() {
         return {
             help: false,
-            manual: false
+            manual: false,
+            version: false
         };
     }
 
@@ -43,27 +45,51 @@ class BaseCLI {
      * Parse common flags shared by all CLI modules
      * @param {Object} result - Result object to update
      * @param {number} index - Current index in args array
-     * @returns {number} Next index to process
+     * @returns {Object} Result with handled and skipNext flags
      */
     parseCommonFlags(result, index) {
         if (!result || typeof index !== 'number') {
-            return index + 1;
+            return { handled: false, skipNext: false };
         }
 
         const arg = this.args[index];
+        let handled = true;
+        let skipNext = false;
         
         switch (arg) {
             case '--help': {
                 result.help = true;
-                return index + 1;
+                break;
             }
             case '--manual': {
                 result.manual = true;
-                return index + 1;
+                break;
+            }
+            case '--version': {
+                result.version = true;
+                break;
             }
             default: {
-                return index + 1;
+                handled = false;
             }
+        }
+
+        return { handled, skipNext };
+    }
+
+    /**
+     * Show version information
+     * @method showVersion
+     */
+    showVersion() {
+        try {
+            const packagePath = path.join(__dirname, '..', '..', '..', 'package.json');
+            const packageJson = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
+            logger.info(`Version: ${packageJson.version}`);
+            process.exit(0);
+        } catch (error) {
+            logger.error('Error reading package version:', error);
+            process.exit(1);
         }
     }
 
@@ -101,6 +127,13 @@ class BaseCLI {
         if (!args || typeof args !== 'object') {
             throw new Error('Invalid args parameter provided to execute()');
         }
+
+        // Handle version flag before module-specific execution
+        if (args.version) {
+            this.showVersion();
+            return true;
+        }
+
         throw new Error(`${this.constructor.name} must implement execute()`);
     }
 

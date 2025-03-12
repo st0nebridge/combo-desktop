@@ -5,9 +5,9 @@
  * for seamless WhatsApp Web functionality.
  */
 
-const log = require('electron-log');
 const BaseProvider = require('../abstract/base.provider');
 const userAgentConfig = require('../../config/user-agent.config');
+const logger = require('../../services/logging.service');
 
 /**
  * WhatsApp web integration provider implementation.
@@ -50,9 +50,9 @@ class WhatsAppProvider extends BaseProvider {
 
             this.userAgent = userAgent;
             this.initialized = true;
-            log.info('WhatsApp provider initialized');
+            logger.info('WhatsApp provider initialized');
         } catch (error) {
-            log.error('Error initializing WhatsApp provider:', error);
+            logger.error('Error initializing WhatsApp provider:', error);
             throw error;
         }
     }
@@ -124,7 +124,7 @@ class WhatsAppProvider extends BaseProvider {
      */
     setupEventHandlers() {
         if (!this.window || !this.window.webContents) {
-            log.error('Window or webContents not available for setting up event handlers');
+            logger.error('Window or webContents not available for setting up event handlers');
             return;
         }
         
@@ -141,7 +141,7 @@ class WhatsAppProvider extends BaseProvider {
         this.window.webContents.setWindowOpenHandler(({ url }) => {
             if (url && url.startsWith('https://')) {
                 require('electron').shell.openExternal(url)
-                    .catch(err => log.error('Error opening external URL:', err));
+                    .catch(err => logger.error('Error opening external URL:', err));
             }
             return { action: 'deny' };
         });
@@ -154,11 +154,11 @@ class WhatsAppProvider extends BaseProvider {
      */
     injectCustomJS() {
         if (!this.window || !this.window.webContents) {
-            log.error('Window or webContents not available for custom JS injection');
+            logger.error('Window or webContents not available for custom JS injection');
             return;
         }
 
-        log.info('Injecting custom JavaScript for WhatsApp compatibility');
+        logger.info('Injecting custom JavaScript for WhatsApp compatibility');
         
         this.window.webContents.executeJavaScript(`
             // Clear service worker registrations to avoid caching issues
@@ -199,37 +199,65 @@ class WhatsAppProvider extends BaseProvider {
             
             if (!initialCheckResult) {
                 // Set up an observer to watch for compatibility messages that might appear later
-                console.log('[WhatsApp Provider] Setting up MutationObserver for compatibility detection');
                 const observer = new MutationObserver((mutations) => {
                     if (handleBrowserCheck()) {
-                        console.log('[WhatsApp Provider] MutationObserver detected compatibility issue, disconnecting');
                         observer.disconnect();
                     }
                 });
                 
-                // Start observing the document body for changes
-                observer.observe(document.body || document.documentElement, {
+                observer.observe(document.body, {
                     childList: true,
                     subtree: true
                 });
             }
         `).then(() => {
-            log.info('Custom JavaScript injection completed');
+            logger.info('Custom JavaScript injection completed');
         }).catch(err => {
-            log.error('Error injecting custom JavaScript:', err);
+            logger.error('Error injecting custom JavaScript:', err);
         });
     }
 
     /**
-     * Check if the window title indicates notifications
-     * @returns {boolean} True if notifications present
+     * Check if there are unread notifications
+     * @method hasNotifications
+     * @returns {boolean} True if there are unread notifications
      */
     hasNotifications() {
-        if (!this.window) {
+        if (!this.window || !this.window.webContents) {
             return false;
         }
-        const title = this.window.getTitle();
-        return title.includes('(') && title.includes(')');
+
+        try {
+            const title = this.window.getTitle();
+            // WhatsApp shows number of unread messages in parentheses
+            return /\(\d+\)/.test(title);
+        } catch (error) {
+            logger.error('Error checking notifications:', error);
+            return false;
+        }
+    }
+
+    /**
+     * Get context menu options for the tray icon
+     * @method getContextMenuOptions
+     * @override
+     * @returns {Array<Object>} Menu template array
+     */
+    getContextMenuOptions() {
+        const baseOptions = super.getContextMenuOptions();
+        return [
+            {
+                label: 'Open WhatsApp',
+                click: () => {
+                    if (this.window) {
+                        this.window.show();
+                        this.window.focus();
+                    }
+                }
+            },
+            { type: 'separator' },
+            ...baseOptions
+        ];
     }
 }
 
