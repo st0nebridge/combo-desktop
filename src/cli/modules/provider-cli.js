@@ -37,6 +37,9 @@ class ProviderCLI extends BaseCLI {
             this.commands[commandName] = this.initProvider.bind(this, commandName);
             this.commands[provider.commandArg] = this.initProvider.bind(this, commandName);
         }
+
+        /** @property {Object|null} currentArgs - Current command arguments */
+        this.currentArgs = null;
     }
 
     /**
@@ -51,6 +54,7 @@ class ProviderCLI extends BaseCLI {
         result.tray = false;
         result.command = null;
         result.profile = 'default';
+        result.isCliCommand = true; // Default to true for utility commands
 
         // Handle no args case
         if (!args || args.length === 0) {
@@ -88,12 +92,16 @@ class ProviderCLI extends BaseCLI {
             // Check for provider commands
             if (this.commands[arg]) {
                 result.command = arg;
+                // If it's a provider command (not list), it's not a CLI command
+                result.isCliCommand = (arg === 'list');
                 continue;
             }
 
             // Check for provider commands without -- prefix
             if (this.commands[`--${arg}`]) {
                 result.command = `--${arg}`;
+                // Provider commands are not CLI commands
+                result.isCliCommand = false;
                 continue;
             }
         }
@@ -112,7 +120,8 @@ class ProviderCLI extends BaseCLI {
      * @returns {boolean} True if this is a CLI command
      */
     isCliCommand() {
-        return false;
+        // Get the last parsed args from execute
+        return this.currentArgs ? this.currentArgs.isCliCommand : true;
     }
 
     /**
@@ -127,6 +136,9 @@ class ProviderCLI extends BaseCLI {
                 log.error('No valid provider or command specified');
                 return false;
             }
+
+            // Store current args for isCliCommand
+            this.currentArgs = args;
 
             log.info(`Executing provider command: ${args.command}`);
             return await this.commands[args.command](args);

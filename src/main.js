@@ -23,10 +23,10 @@ async function main() {
         const args = process.argv;
         
         // Process arguments through CLI modules
-        const success = await cli.execute(args);
+        const { success, isCliCommand } = await cli.execute(args);
         
-        // If CLI command was successful, exit
-        if (success) {
+        // Only exit for one-shot CLI commands
+        if (success && isCliCommand) {
             app.exit(0);
             return;
         }

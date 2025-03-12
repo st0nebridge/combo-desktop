@@ -64,13 +64,13 @@ class CLIRegistry {
      * Execute CLI arguments through all registered modules
      * @method execute
      * @param {Array<string>} args - Command line arguments
-     * @returns {Promise<boolean>} True if command executed successfully
+     * @returns {Promise<{success: boolean, isCliCommand: boolean}>} Result object with success and command type
      */
     async execute(args) {
         try {
             if (!args || args.length === 0) {
                 log.warn('No arguments to execute');
-                return false;
+                return { success: false, isCliCommand: true };
             }
 
             // Remove electron and script path from args if present
@@ -80,7 +80,7 @@ class CLIRegistry {
             // Check for help flag first
             if (cliArgs.includes('--help') || cliArgs.includes('--manual')) {
                 this.showHelp();
-                return true;
+                return { success: true, isCliCommand: true };
             }
 
             // Find module that can handle these arguments
@@ -98,10 +98,10 @@ class CLIRegistry {
                             const success = await instance.execute(result);
                             if (!success) {
                                 log.error(`Command execution failed in module: ${instance.constructor.name}`);
-                                return false;
+                                return { success: false, isCliCommand: instance.isCliCommand() };
                             }
                             log.info('CLI command completed successfully');
-                            return true;
+                            return { success: true, isCliCommand: instance.isCliCommand() };
                         }
                     }
                 } catch (error) {
@@ -111,7 +111,7 @@ class CLIRegistry {
             }
 
             log.warn('No module found to handle arguments:', cliArgs);
-            return false;
+            return { success: false, isCliCommand: true };
         } catch (error) {
             log.error('Error executing CLI arguments:', error);
             throw error;
