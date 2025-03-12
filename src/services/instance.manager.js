@@ -3,26 +3,49 @@ const log = require('electron-log');
 const path = require('path');
 const fs = require('fs');
 const { execSync } = require('child_process');
+const { setTimeout } = require('timers/promises');
 
 class InstanceManager {
     constructor() {
         const userData = app.getPath('userData');
         this.instanceLockFile = path.join(userData, 'instance.lock');
         this.pidFile = path.join(userData, 'pids.json');
+        this.lockRetryCount = 3;
+        this.lockRetryDelay = 100; // ms
         this.activeSessions = new Map();
         this.instanceId = null;
         this.isFirstInstance = false;
+        this._writeLock = false;
+    }
+
+    async acquireWriteLock() {
+        let attempts = 0;
+        while (attempts < this.lockRetryCount) {
+            if (!this._writeLock) {
+                this._writeLock = true;
+                return true;
+            }
+            await setTimeout(this.lockRetryDelay);
+            attempts++;
+        }
+        return false;
+    }
+
+    releaseWriteLock() {
+        this._writeLock = false;
     }
 
     async initialize() {
         try {
             this.instanceId = Date.now().toString();
             
-            // Handle reset-lock command
+            // Handle reset-lock command first, before any other initialization
             const providerCLI = require('../cli/provider-cli');
             if (providerCLI.shouldResetLock()) {
                 await this.resetLock();
-                return true;
+                // Exit after reset since this is a CLI command
+                app.exit(0);
+                return false;
             }
 
             // Request single instance lock
@@ -133,12 +156,15 @@ class InstanceManager {
                 return;
             }
 
+            // Release any existing lock first
+            this.releaseWriteLock();
+
             const data = await fs.promises.readFile(this.pidFile, 'utf8');
             const pids = JSON.parse(data);
             const currentPid = process.pid;
 
             // Kill all processes except current one
-            for (const pid of pids) {
+            const killPromises = pids.map(async (pid) => {
                 if (pid !== currentPid) {
                     try {
                         if (process.platform === 'win32') {
@@ -152,7 +178,10 @@ class InstanceManager {
                         log.info(`Process ${pid} not found`);
                     }
                 }
-            }
+            });
+
+            // Wait for all kill operations to complete
+            await Promise.all(killPromises);
 
             // Delete the PID file
             await fs.promises.unlink(this.pidFile);
@@ -166,6 +195,9 @@ class InstanceManager {
         try {
             log.info('Resetting instance lock file...');
 
+            // Release any existing lock first
+            this.releaseWriteLock();
+
             // Kill all other instances using PIDs
             await this.killAllInstances();
 
@@ -173,7 +205,7 @@ class InstanceManager {
             try {
                 if (fs.existsSync(this.instanceLockFile)) {
                     log.info('Deleting lock file...');
-                    fs.unlinkSync(this.instanceLockFile);
+                    await fs.promises.unlink(this.instanceLockFile);
                 }
             } catch (error) {
                 log.error('Error deleting lock file:', error);
@@ -183,7 +215,7 @@ class InstanceManager {
             app.releaseSingleInstanceLock();
 
             // Wait a bit for the OS to clean up
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            await setTimeout(1000);
 
             log.info('Instance lock has been reset');
             return true;
@@ -213,34 +245,49 @@ class InstanceManager {
                 return { instances: {}, sessions: {} };
             }
 
-            // Read the lock file
-            const data = await fs.promises.readFile(this.instanceLockFile, 'utf8');
-            
+            // Wait for any pending writes
+            if (!await this.acquireWriteLock()) {
+                log.warn('Could not acquire read lock, using default data');
+                return { instances: {}, sessions: {} };
+            }
+
             try {
-                // Try to parse the JSON
-                return JSON.parse(data);
-            } catch (parseError) {
-                log.error('Lock file contains invalid JSON, attempting recovery...');
+                // Read the lock file
+                const data = await fs.promises.readFile(this.instanceLockFile, 'utf8');
                 
-                // Create backup of corrupted file
-                const backupPath = this.instanceLockFile + '.bak';
-                await fs.promises.writeFile(backupPath, data);
-                log.info(`Created backup of corrupted lock file: ${backupPath}`);
-                
-                // Reset to default state
-                const defaultData = { instances: {}, sessions: {} };
-                await this.updateLockFile(defaultData);
-                log.info('Reset lock file to default state');
-                
-                return defaultData;
+                try {
+                    // Try to parse the JSON
+                    return JSON.parse(data);
+                } catch (parseError) {
+                    log.error('Lock file contains invalid JSON, attempting recovery...');
+                    
+                    // Create backup of corrupted file
+                    const backupPath = this.instanceLockFile + '.bak';
+                    await fs.promises.writeFile(backupPath, data);
+                    log.info(`Created backup of corrupted lock file: ${backupPath}`);
+                    
+                    // Reset to default state
+                    const defaultData = { instances: {}, sessions: {} };
+                    await this.updateLockFile(defaultData);
+                    log.info('Reset lock file to default state');
+                    
+                    return defaultData;
+                }
+            } finally {
+                this.releaseWriteLock();
             }
         } catch (error) {
+            this.releaseWriteLock();
             log.error('Error reading lock file:', error);
             return { instances: {}, sessions: {} };
         }
     }
 
     async updateLockFile(data) {
+        if (!await this.acquireWriteLock()) {
+            throw new Error('Could not acquire write lock');
+        }
+
         try {
             // Validate data structure before writing
             if (!data || typeof data !== 'object') {
@@ -255,11 +302,15 @@ class InstanceManager {
                 data.sessions = {};
             }
 
-            // Write the file
-            await fs.promises.writeFile(this.instanceLockFile, JSON.stringify(data, null, 2));
+            // Write the file atomically by writing to temp file first
+            const tempFile = this.instanceLockFile + '.tmp';
+            await fs.promises.writeFile(tempFile, JSON.stringify(data, null, 2));
+            await fs.promises.rename(tempFile, this.instanceLockFile);
         } catch (error) {
             log.error('Error updating lock file:', error);
             throw error;
+        } finally {
+            this.releaseWriteLock();
         }
     }
 
