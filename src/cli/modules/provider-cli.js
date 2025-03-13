@@ -27,20 +27,21 @@ class ProviderCLI extends BaseCLI {
 
         /** @property {Object} commands - Map of command names to handler functions */
         this.commands = {
-            'list': this.listProviders.bind(this)
+            'list': this.listProviders.bind(this),
+            'status': this.getStatus.bind(this),
+            'stop': this.stopProvider.bind(this),
+            'restart': this.restartProvider.bind(this)
         };
 
         // Auto-register provider commands from registry
         const providers = providerRegistry.getAvailableProviders();
         for (const provider of providers) {
-            const commandName = provider.commandArg.startsWith('--') ? 
-                provider.commandArg : `--${provider.commandArg}`;
-            const cleanName = commandName.replace(/^--/, '');
-            
-            // Register both with and without -- prefix for flexibility
-            this.commands[cleanName] = this.initProvider.bind(this, cleanName);
-            this.commands[commandName] = this.initProvider.bind(this, cleanName);
+            const commandName = provider.commandArg.replace(/^--/, '');
+            this.commands[commandName] = this.initProvider.bind(this, commandName);
         }
+
+        /** @property {Array<string>} moduleFlags - List of module-specific flags */
+        this.moduleFlags = ['--provider'];
 
         /** @property {Object|null} currentArgs - Current command arguments */
         this.currentArgs = null;
@@ -49,97 +50,148 @@ class ProviderCLI extends BaseCLI {
     /**
      * Parse command line arguments
      * @method parseArgs
-     * @param {Array} args - Command line arguments
-     * @returns {Object|null} Parsed arguments or null if no match
+     * @param {Array<string>} args - Command line arguments
+     * @returns {Object} Parsed arguments
      */
     parseArgs(args) {
         if (!args || args.length === 0) {
             return null;
         }
 
-        const result = {
-            providers: [],
-            command: null,
-            profile: null,
-            tray: true,
-            version: false,
-            isCliCommand: true
-        };
+        const result = this.getBaseResultObject();
+        result.providers = [];
+        result.providerProfiles = {};
+        result.command = null;
+        result.tray = false;
+        result.profile = 'default';
 
-        // Log the arguments we're parsing
-        logger.debug(`ProviderCLI parsing arguments: ${JSON.stringify(args)}`);
-
+        // Parse common flags first
         for (let i = 0; i < args.length; i++) {
-            const arg = args[i];
-
-            // Skip empty arguments
-            if (!arg) {
-                continue;
-            }
-
-            // Handle version flag
-            if (arg === '--version' || arg === '-v') {
-                result.version = true;
-                continue;
-            }
-
-            // Handle --no-tray flag
-            if (arg === '--no-tray') {
-                result.tray = false;
-                continue;
-            }
-
-            // Handle --profile flag
-            if (arg === '--profile' || arg === '-p') {
-                if (i + 1 < args.length) {
-                    result.profile = args[++i];
+            const { handled, skipNext } = this.parseCommonFlags(result, i);
+            if (handled) {
+                if (skipNext) {
+                    i++;
                 }
                 continue;
             }
 
-            // Check for provider commands with -- prefix
-            const argWithPrefix = arg.startsWith('--') ? arg : `--${arg}`;
+            const arg = args[i];
             const cleanArg = arg.replace(/^--/, '');
-            
-            // Check if this is a provider command (either with or without -- prefix)
-            if ((this.commands[arg] || this.commands[argWithPrefix]) && cleanArg !== 'list') {
-                // If it's a provider command, add it to the providers array
-                logger.debug(`Found provider command: ${cleanArg}`);
-                result.providers.push(cleanArg);
-                result.isCliCommand = false;
+
+            // Check for command
+            if (this.commands[cleanArg]) {
+                result.command = cleanArg;
                 continue;
             }
 
-            // Handle list command separately
-            if (arg === 'list' || arg === '--list') {
-                result.command = 'list';
-                result.isCliCommand = true;
+            // Check for tray mode
+            if (arg === '--tray') {
+                result.tray = true;
                 continue;
+            }
+
+            // Check for profile flag
+            if (arg === '--profile' && i + 1 < args.length) {
+                result.profile = args[++i];
+                continue;
+            }
+
+            // Check for provider flags
+            if (this.commands[cleanArg] && cleanArg !== 'list') {
+                // Check if the next argument is a profile specification
+                if (i + 2 < args.length && args[i + 1] === '--profile') {
+                    const profileName = args[i + 2];
+                    result.providers.push(cleanArg);
+                    result.providerProfiles[cleanArg] = profileName;
+                    i += 2;
+                } else {
+                    result.providers.push(cleanArg);
+                    result.providerProfiles[cleanArg] = result.profile;
+                }
             }
         }
 
-        // Return null if no valid providers or commands found
-        if (result.providers.length === 0 && !result.command && !result.version) {
-            logger.debug('No valid providers or commands found in arguments');
-            return null;
-        }
-
-        logger.debug(`Parsed provider arguments: ${JSON.stringify(result)}`);
-        return result;
+        return result.providers.length > 0 || result.command || result.help || result.version ? result : null;
     }
 
     /**
-     * Check if this is a CLI command that needs a PID
-     * @method isCliCommand
-     * @returns {boolean} True if this is a CLI command
+     * Execute provider commands based on parsed arguments
+     * @method execute
+     * @param {Object} args - Parsed command line arguments
+     * @returns {Promise<boolean>} True if execution successful
      */
-    isCliCommand() {
-        // Version check is always a CLI command
-        if (this.currentArgs && this.currentArgs.version) {
-            return true;
+    async execute(args) {
+        try {
+            // Store current args for isCliCommand
+            this.currentArgs = args;
+
+            // Handle common flags first
+            if (args.help) {
+                this.showUsage();
+                return true;
+            }
+
+            if (args.version) {
+                return super.execute(args);
+            }
+
+            // Handle command if present
+            if (args.command && this.commands[args.command]) {
+                return await this.commands[args.command](args);
+            }
+
+            // Handle provider initialization
+            if (args.providers && args.providers.length > 0) {
+                logger.info(`Initializing ${args.providers.length} providers: ${args.providers.join(', ')}`);
+                
+                // Initialize each provider with its profile
+                for (const providerName of args.providers) {
+                    const profileName = args.providerProfiles[providerName] || args.profile;
+                    const success = await this.initProvider(providerName, { ...args, profile: profileName });
+                    if (!success) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            // No valid command or providers found
+            this.showUsage();
+            return false;
+        } catch (error) {
+            logger.error('Error executing provider command:', error);
+            this.showUsage();
+            return false;
         }
-        // Get the last parsed args from execute
-        return this.currentArgs ? this.currentArgs.isCliCommand : true;
+    }
+
+    /**
+     * Show usage information for the provider module
+     * @method showUsage
+     */
+    showUsage() {
+        console.log(`
+Provider Control Commands:
+  --whatsapp [--profile <name>]    Start WhatsApp provider with optional profile
+  --facebook [--profile <name>]    Start Facebook provider with optional profile
+  list                            List available providers
+  status                          Show provider status
+  stop <provider>                 Stop a running provider
+  restart <provider>              Restart a running provider
+
+Options:
+  --tray                          Start minimized to tray
+  --profile <name>                Use specified profile (default: 'default')
+  --help                          Show this help information
+  --version                       Show version information
+
+Examples:
+  yarn start --whatsapp                     Start WhatsApp with default profile
+  yarn start --whatsapp --profile work      Start WhatsApp with work profile
+  yarn start --whatsapp --facebook          Start both providers with default profile
+  yarn start list                           List available providers
+  yarn start status                         Show provider status
+`);
     }
 
     /**
@@ -183,64 +235,6 @@ class ProviderCLI extends BaseCLI {
     }
 
     /**
-     * Execute provider commands based on parsed arguments
-     * @method execute
-     * @param {Object} args - Parsed command line arguments
-     * @returns {Promise<boolean>} True if execution successful
-     */
-    async execute(args) {
-        try {
-            // Store current args for isCliCommand
-            this.currentArgs = args;
-
-            // Handle version flag first
-            if (args.version) {
-                return super.execute(args);
-            }
-
-            // Handle list command
-            if (args.command === 'list' && this.commands.list) {
-                return await this.commands.list(args);
-            }
-
-            // Handle provider initialization
-            if (args.providers && args.providers.length > 0) {
-                logger.info(`Initializing ${args.providers.length} providers: ${args.providers.join(', ')}`);
-                
-                // Process each provider separately
-                for (const providerName of args.providers) {
-                    try {
-                        // Get the provider instance
-                        const provider = providerRegistry.getProvider(providerName);
-                        if (!provider) {
-                            logger.error(`Provider not found: ${providerName}`);
-                            continue;
-                        }
-                        
-                        const profileName = args.profile || 'default';
-                        logger.info(`Starting initialization for provider: ${provider.getName()} with profile: ${profileName}`);
-                        
-                        // Start initialization without waiting for it to complete
-                        // This allows the app to continue running while providers initialize
-                        this.startProviderInitialization(providerName, profileName, args.tray);
-                    } catch (error) {
-                        logger.error(`Error starting provider ${providerName}:`, error);
-                    }
-                }
-                
-                // Return true to indicate we've started the initialization process
-                return true;
-            }
-
-            logger.error('No valid provider or command specified');
-            return false;
-        } catch (error) {
-            logger.error('Error executing provider command:', error);
-            return false;
-        }
-    }
-
-    /**
      * Start provider initialization without waiting for it to complete
      * @method startProviderInitialization
      * @param {string} providerName - Name of the provider to initialize
@@ -249,6 +243,34 @@ class ProviderCLI extends BaseCLI {
      * @private
      */
     startProviderInitialization(providerName, profileName, useTray) {
+        // Get the provider instance to check if it's valid
+        const provider = providerRegistry.getProvider(providerName);
+        if (!provider) {
+            logger.error(`Provider not found: ${providerName}`);
+            return;
+        }
+        
+        const providerDisplayName = provider.getName();
+        const sessionKey = `${providerDisplayName}:${profileName}`;
+        
+        // Check if session already exists in instance manager
+        const instanceManager = require('../../services/instance.manager');
+        if (instanceManager.hasSession(sessionKey)) {
+            logger.info(`Session ${sessionKey} already exists, skipping initialization`);
+            
+            // Check if window exists and show it if needed
+            const windowService = require('../../services/window.service');
+            const windowName = sessionKey;
+            const { window: existingWindow } = windowService.resolveWindow(windowName);
+            
+            if (existingWindow && !existingWindow.isDestroyed() && !existingWindow.isVisible()) {
+                logger.info(`Window ${windowName} already exists, showing without focus...`);
+                existingWindow.show();
+            }
+            
+            return;
+        }
+        
         // Start the initialization process in the background immediately
         // No delay between providers - all start concurrently
         logger.info(`Starting immediate initialization of ${providerName}`);
@@ -283,32 +305,87 @@ class ProviderCLI extends BaseCLI {
     }
 
     /**
-     * Show provider CLI usage
-     * @method showUsage
+     * Check if this is a CLI command that needs a PID
+     * @method isCliCommand
+     * @returns {boolean} True if this is a CLI command
      */
-    showUsage() {
-        const providers = providerRegistry.getAvailableProviders();
-        const providerList = providers.map(p => `  ${p.commandArg}\t\t${p.name}`).join('\n');
-        
-        logger.info(`
-Usage: combo-desktop [options] [command]
+    isCliCommand() {
+        // Version check is always a CLI command
+        if (this.currentArgs && this.currentArgs.version) {
+            return true;
+        }
+        // Get the last parsed args from execute
+        return this.currentArgs ? this.currentArgs.isCliCommand : true;
+    }
 
-Commands:
-  list\t\t\tList available providers
-${providerList}
+    /**
+     * Get the base result object for parsing command line arguments
+     * @method getBaseResultObject
+     * @returns {Object} Base result object
+     */
+    getBaseResultObject() {
+        return {
+            providers: [],
+            providerProfiles: {}, // Map of provider to profile
+            command: null,
+            tray: false,
+            profile: 'default',
+            version: false,
+            help: false
+        };
+    }
 
-Options:
-  --help\t\t\tShow this help message
-  --manual\t\tShow detailed manual
-  --version\t\tShow version information
-  --tray\t\t\tStart with window hidden (minimized to tray)
-  --profile <name>\tUse specific profile (default: default)
+    /**
+     * Parse common flags from command line arguments
+     * @method parseCommonFlags
+     * @param {Object} result - Parsed arguments
+     * @param {number} index - Current index in the arguments array
+     * @returns {Object} Object with handled and skipNext properties
+     */
+    parseCommonFlags(result, index) {
+        const arg = result.args[index];
+        if (arg === '--help') {
+            result.help = true;
+            return { handled: true, skipNext: false };
+        }
+        if (arg === '--version') {
+            result.version = true;
+            return { handled: true, skipNext: false };
+        }
+        return { handled: false, skipNext: false };
+    }
 
-Note: All provider sessions will have a tray icon for quick access.
-      Close button will hide window to tray instead of quitting.
-      Click tray icon to toggle window visibility.
-      Use 'Quit' from tray menu to fully close the application.
-`);
+    /**
+     * Get the status of a provider
+     * @method getStatus
+     * @param {Object} args - Command line arguments
+     * @returns {Promise<boolean>} True if successful
+     */
+    async getStatus(args) {
+        // TO DO: Implement getStatus logic
+        return true;
+    }
+
+    /**
+     * Stop a running provider
+     * @method stopProvider
+     * @param {Object} args - Command line arguments
+     * @returns {Promise<boolean>} True if successful
+     */
+    async stopProvider(args) {
+        // TO DO: Implement stopProvider logic
+        return true;
+    }
+
+    /**
+     * Restart a running provider
+     * @method restartProvider
+     * @param {Object} args - Command line arguments
+     * @returns {Promise<boolean>} True if successful
+     */
+    async restartProvider(args) {
+        // TO DO: Implement restartProvider logic
+        return true;
     }
 }
 

@@ -6,9 +6,7 @@
 
 const BaseCLI = require('../abstract/base-cli');
 const log = require('electron-log');
-const fs = require('fs-extra');
-const path = require('path');
-const { app } = require('electron');
+const profileManager = require('../../services/profile.manager');
 
 /**
  * CLI module for managing application profiles.
@@ -30,51 +28,13 @@ class ProfileCLI extends BaseCLI {
         /** @property {Array<string>} moduleFlags - Supported command flags */
         this.moduleFlags = ['--profiles'];
 
-        // Initialize paths
-        this.initializePaths();
-
         // Bind command functions using .bind() pattern for command mapping
         /** @property {Object} commands - Map of command names to handler functions */
         this.commands = {
             'list': this.listProfiles.bind(this),
             'create': this.createProfile.bind(this),
             'delete': this.deleteProfile.bind(this),
-            'delete-all': this.deleteAllProfiles.bind(this)
-        };
-    }
-
-    /**
-     * Initialize profile paths and ensure directories exist
-     * @method initializePaths
-     * @throws {Error} If initialization fails
-     */
-    initializePaths() {
-        try {
-            const userData = app.getPath('userData');
-            this.profilesDir = path.join(userData, 'profiles');
-            
-            // Ensure profiles directory exists
-            fs.ensureDirSync(this.profilesDir);
-        } catch (error) {
-            log.error('Error initializing profile paths:', error);
-            throw error;
-        }
-    }
-
-    /**
-     * Get profile-specific result object with additional fields
-     * @method getProfileResultObject
-     * @returns {Object} Result object with structure { help: false, manual: false, command: null, name: null, provider: null, options: null, cliCommand: false }
-     */
-    getProfileResultObject() {
-        const result = this.getBaseResultObject();
-        return {
-            ...result,
-            command: null,
-            name: null,
-            provider: null,
-            options: null,
-            cliCommand: false
+            'switch': this.switchProfile.bind(this)
         };
     }
 
@@ -85,55 +45,64 @@ class ProfileCLI extends BaseCLI {
      * @returns {Object|null} Parsed arguments or null if no profile flags found
      */
     parseArgs() {
-        const result = this.getProfileResultObject();
+        const result = this.getBaseResultObject();
+        result.command = null;
+        result.provider = null;
+        result.name = null;
+        result.options = null;
 
         let i = 0;
         while (i < this.args.length) {
             const arg = this.args[i];
 
-            if (arg === '--profiles') {
-                result.cliCommand = true;
+            // Parse common flags first
+            const { handled, skipNext } = this.parseCommonFlags(result, i);
+            if (handled) {
+                if (skipNext) {
+                    i++;
+                }
                 i++;
-                
+                continue;
+            }
+
+            if (arg === '--profiles') {
+                i++;
                 if (i < this.args.length) {
                     const subcommand = this.args[i];
                     if (this.commands[subcommand]) {
                         result.command = subcommand;
                         i++;
                         
-                        // Parse additional arguments for create/delete commands
-                        if (subcommand === 'create' || subcommand === 'delete') {
-                            while (i < this.args.length) {
-                                const flag = this.args[i];
-                                if (flag === '--provider' && i + 1 < this.args.length) {
-                                    result.provider = this.args[i + 1];
+                        // Parse additional arguments for commands
+                        while (i < this.args.length) {
+                            const flag = this.args[i];
+                            if (flag === '--provider' && i + 1 < this.args.length) {
+                                result.provider = this.args[i + 1];
+                                i += 2;
+                            } else if (flag === '--name' && i + 1 < this.args.length) {
+                                result.name = this.args[i + 1];
+                                i += 2;
+                            } else if (flag === '--options' && i + 1 < this.args.length) {
+                                try {
+                                    result.options = JSON.parse(this.args[i + 1]);
                                     i += 2;
-                                } else if (flag === '--name' && i + 1 < this.args.length) {
-                                    result.name = this.args[i + 1];
-                                    i += 2;
-                                } else if (flag === '--options' && i + 1 < this.args.length) {
-                                    try {
-                                        result.options = JSON.parse(this.args[i + 1]);
-                                        i += 2;
-                                    } catch (error) {
-                                        log.error('Invalid JSON options:', error);
-                                        i++;
-                                    }
-                                } else {
-                                    break;
+                                } catch (error) {
+                                    log.error('Invalid JSON options:', error);
+                                    i++;
                                 }
+                            } else {
+                                break;
                             }
                         }
                     }
                 }
                 continue;
             }
-
-            i = this.parseCommonFlags(result, i);
+            i++;
         }
 
         // Return null if no profile-specific command found
-        if (!result.command && !result.help && !result.manual) {
+        if (!result.command && !result.help && !result.version) {
             return null;
         }
 
@@ -141,192 +110,220 @@ class ProfileCLI extends BaseCLI {
     }
 
     /**
-     * Check if the current command is a CLI command
-     * @method isCliCommand
+     * Execute profile-specific commands based on parsed arguments
+     * @method execute
      * @override
-     * @returns {boolean} True if this is a CLI command
+     * @param {Object} args - Parsed arguments from parseArgs()
+     * @returns {Promise<boolean>} True if execution successful
+     * @throws {Error} If command execution fails or required args missing
      */
-    isCliCommand() {
+    async execute(args) {
         try {
-            const args = this.parseArgs();
-            return args && args.cliCommand;
+            if (!args) {
+                return false;
+            }
+
+            if (args.help) {
+                this.showUsage();
+                return true;
+            }
+
+            if (args.version) {
+                return super.execute(args);
+            }
+
+            if (args.command && this.commands[args.command]) {
+                // Validate required arguments for create/delete/switch commands
+                if ((args.command === 'create' || args.command === 'delete' || args.command === 'switch') && (!args.provider || !args.name)) {
+                    log.error('Error: --provider and --name are required');
+                    this.showUsage();
+                    return false;
+                }
+
+                const success = await this.commands[args.command](args);
+                
+                // Exit process after list command completes
+                if (args.command === 'list' && success) {
+                    process.exit(0);
+                }
+                
+                return success;
+            }
+
+            this.showUsage();
+            return false;
         } catch (error) {
-            log.error('Error checking CLI command:', error);
+            log.error('Error executing profile command:', error);
             return false;
         }
     }
 
     /**
-     * Execute profile-specific commands based on parsed arguments
-     * @method execute
-     * @override
-     * @param {Object} args - Parsed arguments from parseArgs()
-     * @throws {Error} If command execution fails or required args missing
-     */
-    execute(args) {
-        try {
-            if (!args) {
-                return;
-            }
-
-            if (args.help) {
-                this.showUsage();
-                return;
-            }
-
-            if (args.manual) {
-                this.showManual();
-                return;
-            }
-
-            if (args.command && this.commands[args.command]) {
-                if ((args.command === 'create' || args.command === 'delete') && (!args.provider || !args.name)) {
-                    console.error('Error: --provider and --name are required for create/delete commands');
-                    this.showUsage();
-                    return;
-                }
-                this.commands[args.command](args.provider, args.name, args.options);
-            } else {
-                this.showUsage();
-            }
-        } catch (error) {
-            log.error('Error executing profile command:', error);
-            throw error;
-        }
-    }
-
-    /**
-     * Show basic usage information and available commands
+     * Show usage information for the profile module
      * @method showUsage
      * @override
      */
     showUsage() {
-        console.log('\nProfile Management Commands:');
-        console.log('  --profiles list                     List all profiles');
-        console.log('  --profiles create --provider <n> --name <n> [--options <json>]');
-        console.log('                                      Create a new profile');
-        console.log('  --profiles delete --provider <n> --name <n>');
-        console.log('                                      Delete a profile');
-        console.log('  --profiles delete-all               Delete all profiles');
-        console.log('\nHelp Options:');
-        console.log('  --help                             Show help information');
-        console.log('  --manual                           Show detailed manual\n');
+        console.log(`
+Profile Management Commands:
+  --profiles list                                List available profiles
+  --profiles create --provider <n> --name <n> [--options <json>]
+                                                Create a new profile
+  --profiles delete --provider <n> --name <n>
+                                                Delete a profile
+  --profiles switch --provider <n> --name <n>
+                                                Switch to a different profile
+
+Options:
+  --provider <n>               Provider to associate with profile
+  --name <n>                   Profile name
+  --options <json>             Additional profile options as JSON string
+  --help                       Show this help information
+  --version                    Show version information
+
+Examples:
+  yarn start --profiles list
+  yarn start --profiles create --provider whatsapp --name work
+  yarn start --profiles delete --provider whatsapp --name old
+  yarn start --profiles switch --provider whatsapp --name personal
+`);
     }
 
     /**
-     * Show detailed manual with profile management information
-     * @method showManual
-     * @override
-     */
-    showManual() {
-        console.log('\nProfile Management Manual:');
-        console.log('\n1. Profile Management');
-        console.log('   Profiles store provider-specific settings and data.');
-        console.log('   Each profile is isolated from others.');
-        console.log('\n2. Commands');
-        console.log('   --profiles list: Show all available profiles');
-        console.log('   --profiles create: Create a new empty profile');
-        console.log('   --profiles delete: Remove a profile and its data');
-        console.log('   --profiles delete-all: Remove all profiles and their data');
-        console.log('\n3. Help');
-        console.log('   Use --help for quick reference');
-        console.log('   Use --manual for detailed documentation\n');
-    }
-
-    /**
-     * List all available profiles
+     * List available profiles
      * @method listProfiles
-     * @throws {Error} If unable to read profiles directory
+     * @param {Object} args - Command arguments
      */
-    async listProfiles() {
+    async listProfiles(args) {
         try {
-            const profiles = await fs.readdir(this.profilesDir);
-            
-            if (profiles.length === 0) {
+            const profiles = profileManager.getAllProfiles();
+            if (!profiles || Object.keys(profiles).length === 0) {
                 console.log('\nNo profiles found.\n');
+                process.exit(0);
                 return;
             }
 
-            console.log('\nAvailable profiles:');
-            for (const profile of profiles) {
-                console.log(`  - ${profile}`);
-            }
-            console.log();
+            console.log('\nAvailable Profiles:\n');
+            
+            // Group profiles by provider
+            const groupedProfiles = {};
+            Object.entries(profiles).forEach(([key, profile]) => {
+                const { providerName } = profile;
+                if (!groupedProfiles[providerName]) {
+                    groupedProfiles[providerName] = [];
+                }
+                groupedProfiles[providerName].push({ key, ...profile });
+            });
+
+            // Display profiles grouped by provider
+            Object.entries(groupedProfiles).forEach(([provider, providerProfiles]) => {
+                console.log(`${provider}:`);
+                providerProfiles.forEach(profile => {
+                    const createdAt = new Date(profile.createdAt).toLocaleString();
+                    console.log(`  - ${profile.profileName}`);
+                    if (profile.options && Object.keys(profile.options).length > 0) {
+                        console.log('    Options:', JSON.stringify(profile.options, null, 2));
+                    }
+                    console.log(`    Created: ${createdAt}\n`);
+                });
+            });
+
+            // Return true to indicate success and prevent showing usage
+            return true;
         } catch (error) {
             log.error('Error listing profiles:', error);
-            throw error;
+            return false;
         }
     }
 
     /**
      * Create a new profile
      * @method createProfile
-     * @param {string} provider - Provider name
-     * @param {string} name - Profile name
-     * @param {Object} [options] - Optional profile configuration
-     * @throws {Error} If profile creation fails
+     * @param {Object} args - Command line arguments
+     * @returns {Promise<boolean>} True if successful
      */
-    async createProfile(provider, name, options = {}) {
+    async createProfile(args) {
         try {
-            const profilePath = path.join(this.profilesDir, name);
-            
-            if (await fs.pathExists(profilePath)) {
-                console.error(`Error: Profile '${name}' already exists`);
-                return;
+            if (!args.provider || !args.name) {
+                log.error('Error: --provider and --name are required');
+                this.showUsage();
+                return false;
             }
 
-            await fs.ensureDir(profilePath);
-            await fs.writeJson(path.join(profilePath, 'config.json'), {
-                provider,
-                name,
-                options,
-                created: new Date().toISOString()
-            }, { spaces: 2 });
+            const success = await profileManager.createProfile(args.provider, args.name, args.options);
+            if (success) {
+                console.log(`\nCreated profile '${args.name}' for provider '${args.provider}'`);
+                return true;
+            }
 
-            console.log(`\nCreated profile '${name}' for provider '${provider}'\n`);
+            return false;
         } catch (error) {
             log.error('Error creating profile:', error);
-            throw error;
+            return false;
         }
     }
 
     /**
      * Delete an existing profile
      * @method deleteProfile
-     * @param {string} provider - Provider name
-     * @param {string} name - Profile name
-     * @throws {Error} If profile deletion fails
+     * @param {Object} args - Command line arguments
+     * @returns {Promise<boolean>} True if successful
      */
-    async deleteProfile(provider, name) {
+    async deleteProfile(args) {
         try {
-            const profilePath = path.join(this.profilesDir, name);
-            
-            if (!await fs.pathExists(profilePath)) {
-                console.error(`Error: Profile '${name}' not found`);
-                return;
+            if (!args.provider || !args.name) {
+                log.error('Error: --provider and --name are required');
+                this.showUsage();
+                return false;
             }
 
-            await fs.remove(profilePath);
-            console.log(`\nDeleted profile '${name}'\n`);
+            const success = await profileManager.deleteProfile(args.provider, args.name);
+            if (success) {
+                console.log(`\nDeleted profile '${args.name}' for provider '${args.provider}'`);
+                return true;
+            }
+
+            return false;
         } catch (error) {
             log.error('Error deleting profile:', error);
-            throw error;
+            return false;
         }
     }
 
     /**
-     * Delete all profiles
-     * @method deleteAllProfiles
-     * @throws {Error} If profile deletion fails
+     * Switch to a different profile
+     * @method switchProfile
+     * @param {Object} args - Command line arguments
+     * @returns {Promise<boolean>} True if successful
      */
-    async deleteAllProfiles() {
+    async switchProfile(args) {
         try {
-            await fs.emptyDir(this.profilesDir);
-            console.log('\nDeleted all profiles\n');
+            if (!args.provider || !args.name) {
+                log.error('Error: --provider and --name are required');
+                this.showUsage();
+                return false;
+            }
+
+            const success = await profileManager.switchProfile(args.provider, args.name);
+            if (success) {
+                console.log(`\nSwitched to profile '${args.name}' for provider '${args.provider}'`);
+                return true;
+            }
+
+            return false;
         } catch (error) {
-            log.error('Error deleting all profiles:', error);
-            throw error;
+            log.error('Error switching profile:', error);
+            return false;
         }
+    }
+
+    /**
+     * Check if this is a CLI command
+     * @method isCliCommand
+     * @returns {boolean} True if this is a CLI command
+     */
+    isCliCommand() {
+        return true;
     }
 }
 

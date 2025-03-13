@@ -3,6 +3,7 @@
  */
 
 const log = require('../services/logging.service');
+const instanceManager = require('../services/instance.manager');
 
 /**
  * CLI Registry that manages CLI modules and command execution
@@ -59,6 +60,12 @@ class CLIRegistry {
                 return false;
             }
 
+            // Check if module is already registered
+            if (this.modules.has(name)) {
+                log.debug(`CLI module ${name} already registered, skipping duplicate registration`);
+                return true;
+            }
+
             this.modules.set(name, module);
             log.info(`Registered CLI module: ${name}`);
             return true;
@@ -76,8 +83,9 @@ class CLIRegistry {
      */
     async execute(args) {
         if (!args || args.length === 0) {
-            log.warn('No arguments to process');
-            return { success: false, isCliCommand: true, processedProviders: [] };
+            log.info('No arguments provided, showing help');
+            this.showHelp();
+            return { success: true, isCliCommand: true, processedProviders: [] };
         }
 
         try {
@@ -92,15 +100,34 @@ class CLIRegistry {
             }
 
             // Initialize instance manager
-            const instanceManager = require('../services/instance.manager');
             await instanceManager.ensureDirectories();
+
+            // Handle special flags first
+            const hasResetLock = cliArgs.includes('--reset-lock');
+            const hasNewInstance = cliArgs.includes('--new-instance');
+            const hasOneInstance = cliArgs.includes('--one-instance');
+
+            // Handle reset-lock command first
+            if (hasResetLock) {
+                log.info('Resetting instance locks');
+                await instanceManager.resetLock();
+                return { success: true, isCliCommand: true, processedProviders: [] };
+            }
+
+            // Check if this is a CLI command that should be delegated
+            const shouldDelegate = !hasNewInstance && !hasOneInstance && await this.shouldDelegateCommand(cliArgs);
+            if (shouldDelegate) {
+                log.info('Delegating command to existing instance');
+                await instanceManager.delegateCommand(cliArgs);
+                return { success: true, isCliCommand: true, processedProviders: [] };
+            }
 
             // Track if any module successfully handled arguments
             let anySuccess = false;
             let isCliCommand = true;
             let processedProviders = [];
             
-            // Process all provider flags by checking all modules
+            // Try each module until one successfully handles the command
             for (const [name, module] of this.modules) {
                 try {
                     const result = await module.parseArgs(cliArgs);
@@ -119,31 +146,100 @@ class CLIRegistry {
                                 isCliCommand = isCliCommand && module.isCliCommand();
                             }
                             
-                            // Track processed providers
-                            if (result.providers && Array.isArray(result.providers)) {
+                            // If this is a provider module, track processed providers
+                            if (name === 'ProviderCLI' && result.providers && result.providers.length > 0) {
                                 processedProviders = processedProviders.concat(result.providers);
                             }
+                            
+                            // Stop processing other modules since this one handled the command
+                            break;
                         } else {
                             log.error(`Command execution failed in module: ${name}`);
+                            module.showUsage();
                         }
                     }
                 } catch (error) {
                     log.error(`Error in module ${name}:`, error);
-                    // Continue with other modules instead of throwing
-                    log.warn(`Continuing with other modules after error in ${name}`);
+                    module.showUsage();
                 }
             }
 
-            if (anySuccess) {
-                log.info('CLI commands completed successfully');
-                return { success: true, isCliCommand, processedProviders };
+            if (!anySuccess) {
+                log.warn('No module found to handle arguments:', cliArgs);
+                this.showHelp();
+                return { success: false, isCliCommand: true, processedProviders: [] };
             }
 
-            log.warn('No module found to handle arguments:', cliArgs);
-            return { success: false, isCliCommand: true, processedProviders: [] };
+            return { success: true, isCliCommand, processedProviders };
         } catch (error) {
             log.error('Error executing CLI command:', error);
+            this.showHelp();
             throw error;
+        }
+    }
+
+    /**
+     * Check if command should be delegated to existing instance
+     * @method shouldDelegateCommand
+     * @param {Array<string>} args - Command line arguments
+     * @returns {Promise<boolean>} True if command should be delegated
+     */
+    async shouldDelegateCommand(args) {
+        try {
+            // Never delegate help or manual commands
+            if (args.includes('--help') || args.includes('--manual')) {
+                return false;
+            }
+
+            // Never delegate if --new-instance flag is present
+            if (args.includes('--new-instance')) {
+                return false;
+            }
+
+            // Never delegate if --one-instance flag is present
+            if (args.includes('--one-instance')) {
+                return false;
+            }
+
+            // Never delegate if --reset-lock flag is present
+            if (args.includes('--reset-lock')) {
+                return false;
+            }
+
+            // Never delegate instance management commands
+            if (args.includes('--instances')) {
+                return false;
+            }
+
+            // Check if this is a profile command
+            if (args.includes('--profiles')) {
+                // Only delegate if it's not a list/create/delete command
+                const profileCommands = ['list', 'create', 'delete', 'delete-all'];
+                const hasProfileCommand = profileCommands.some(cmd => args.includes(cmd));
+                return !hasProfileCommand;
+            }
+
+            // Check if there's an existing instance that can handle this command
+            const hasExistingInstance = await instanceManager.hasRunningInstance();
+            if (!hasExistingInstance) {
+                return false;
+            }
+
+            // Get profile from command line arguments
+            const profileIndex = args.findIndex(arg => arg.startsWith('--') && arg !== '--profiles');
+            const profile = profileIndex >= 0 && profileIndex + 1 < args.length ? args[profileIndex + 1] : 'default';
+
+            // Check if existing instance can handle this profile
+            const canHandleProfile = await instanceManager.canHandleProfile(profile);
+            if (!canHandleProfile) {
+                return false;
+            }
+
+            // By default, delegate to existing instance if one exists and can handle the profile
+            return true;
+        } catch (error) {
+            log.error('Error checking command delegation:', error);
+            return false;
         }
     }
 
@@ -161,12 +257,26 @@ class CLIRegistry {
      * @method showHelp
      */
     showHelp() {
-        log.info('\nAvailable commands:');
-        for (const [name, module] of this.modules) {
-            if (module.showUsage) {
-                module.showUsage();
-            }
-        }
+        console.log(`
+Combo Desktop - Multi-Provider Chat Client
+
+Usage:
+  yarn start [options] [command]
+
+Standard Flags:
+  --help                    Show this help information
+  --version                 Show version information
+  --manual [topic]         Show detailed help (topics: providers, profiles, flags)
+  --tray                   Start application minimized to tray
+  --new-instance           Force new instance creation
+  --one-instance           Allow only one instance to run
+  --reset-lock             Reset instance locks
+  --config <path>          Specify config file path
+
+For more information on specific commands, use:
+  yarn start --help
+  yarn start --manual [topic]
+`);
     }
 }
 
