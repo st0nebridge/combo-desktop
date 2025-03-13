@@ -376,10 +376,14 @@ class BaseProvider {
     /**
      * Get user agent for this provider
      * @method getUserAgent
-     * @returns {string|null} User agent string or null if not configured
+     * @returns {string} User agent string for this provider
      */
     getUserAgent() {
-        return userAgentConfig.getUserAgent(this.getName());
+        const { DEFAULT_USER_AGENT } = userAgentConfig;
+        
+        // By default, return the default user agent
+        // Child classes should override this method to provide provider-specific user agents
+        return DEFAULT_USER_AGENT;
     }
 
     /**
