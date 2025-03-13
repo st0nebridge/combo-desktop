@@ -260,7 +260,7 @@ function invertImageColors(image) {
  * @param {string} serviceName - The name of the service (e.g., 'whatsapp', 'facebook')
  * @param {boolean} hasNotification - Whether there is a notification
  * @param {boolean} isMinimized - Whether the window is minimized to tray
- * @returns {Object} Object containing icon path and theme info
+ * @returns {Electron.NativeImage} The icon image
  */
 function getIconPath(serviceName, hasNotification = false, isMinimized = false) {
     if (!serviceName) {
@@ -316,12 +316,7 @@ function getIconPath(serviceName, hasNotification = false, isMinimized = false) 
     for (const iconPath of iconVariants) {
         if (fs.existsSync(iconPath)) {
             logger.info(`Using icon: ${iconPath}`);
-            return {
-                image: nativeImage.createFromPath(iconPath),
-                isDarkMode,
-                hasNotification,
-                isMinimized
-            };
+            return nativeImage.createFromPath(iconPath);
         }
     }
 
@@ -329,12 +324,7 @@ function getIconPath(serviceName, hasNotification = false, isMinimized = false) 
     const appIconPath = path.resolve(__dirname, '..', '..', 'assets', 'icons', 'app.ico');
     if (fs.existsSync(appIconPath)) {
         logger.warn(`No service-specific icon found for ${serviceName}, falling back to app.ico`);
-        return {
-            image: nativeImage.createFromPath(appIconPath),
-            isDarkMode,
-            hasNotification,
-            isMinimized
-        };
+        return nativeImage.createFromPath(appIconPath);
     }
 
     logger.error(`No suitable icon found for ${serviceName} and app.ico fallback is missing`);

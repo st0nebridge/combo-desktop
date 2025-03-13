@@ -6,7 +6,6 @@
  */
 
 const BaseProvider = require('../abstract/base.provider');
-const userAgentConfig = require('../../config/user-agent.config');
 const logger = require('../../services/logging.service');
 
 /**
@@ -23,38 +22,13 @@ class WhatsAppProvider extends BaseProvider {
     /**
      * Creates a new WhatsAppProvider instance
      * @constructor
+     * @throws {Error} If BaseProvider is not properly extended
      */
     constructor() {
         super();
         
         /** @property {boolean} initialized - Whether provider has been initialized */
         this.initialized = false;
-    }
-
-    /**
-     * Initialize the provider with WhatsApp-specific configuration
-     * @method initialize
-     * @throws {Error} If no user agent is configured for WhatsApp
-     */
-    initialize() {
-        if (this.initialized) {
-            return;
-        }
-
-        try {
-            // Ensure we have the correct user agent
-            const userAgent = userAgentConfig.getUserAgent('WhatsApp');
-            if (!userAgent) {
-                throw new Error('No user agent configured for WhatsApp');
-            }
-
-            this.userAgent = userAgent;
-            this.initialized = true;
-            logger.info('WhatsApp provider initialized');
-        } catch (error) {
-            logger.error('Error initializing WhatsApp provider:', error);
-            throw error;
-        }
     }
 
     /**
@@ -91,10 +65,10 @@ class WhatsAppProvider extends BaseProvider {
      * Get base icon path
      * @method getBaseIconPath
      * @override
-     * @returns {string} Icon path 'whatsapp'
+     * @returns {string} Icon path
      */
     getBaseIconPath() {
-        return 'whatsapp';
+        return super.getBaseIconPath();
     }
 
     /**
@@ -118,22 +92,62 @@ class WhatsAppProvider extends BaseProvider {
     }
 
     /**
+     * Get window configuration for WhatsApp
+     * @method getWindowConfig
+     * @override
+     * @returns {Object} Window configuration object
+     */
+    getWindowConfig() {
+        return {
+            width: 1200,
+            height: 900,
+            minWidth: 800,
+            minHeight: 600,
+            webPreferences: {
+                ...this.getWebPreferences(),
+                partition: this.getPartitionName()
+            }
+        };
+    }
+
+    /**
+     * Get web preferences configuration for WhatsApp
+     * @method getWebPreferences
+     * @override
+     * @returns {Object} Web preferences configuration
+     */
+    getWebPreferences() {
+        return {
+            ...super.getWebPreferences(),
+            spellcheck: true,
+            webgl: true,
+            plugins: true
+        };
+    }
+
+    /**
      * Set up WhatsApp-specific event handlers for notifications and external URLs
      * @method setupEventHandlers
      * @override
+     * @throws {Error} If window or webContents are not available
+     * @returns {void}
      */
     setupEventHandlers() {
         if (!this.window || !this.window.webContents) {
-            logger.error('Window or webContents not available for setting up event handlers');
-            return;
+            const error = new Error('Window or webContents not available for setting up event handlers');
+            logger.error(error.message);
+            throw error;
         }
         
         // Monitor for notifications
         this.window.webContents.on('page-title-updated', (event, title) => {
+            const windowName = this.getWindowName(this.profile || 'default');
             if (this.hasNotifications()) {
-                this.startNotification();
+                const trayService = require('../../services/tray.service');
+                trayService.setNotificationState(windowName, true);
             } else {
-                this.stopNotification();
+                const trayService = require('../../services/tray.service');
+                trayService.setNotificationState(windowName, false);
             }
         });
 
@@ -148,14 +162,52 @@ class WhatsAppProvider extends BaseProvider {
     }
 
     /**
+     * Check if window title indicates notifications
+     * @method hasNotifications
+     * @returns {boolean} True if window title indicates notifications
+     */
+    hasNotifications() {
+        if (!this.window) {
+            return false;
+        }
+        const title = this.window.getTitle();
+        return title && title.includes('(');
+    }
+
+    /**
+     * Start notification state
+     * @method startNotification
+     * @returns {void}
+     */
+    startNotification() {
+        const windowName = this.getWindowName(this.profile || 'default');
+        const trayService = require('../../services/tray.service');
+        trayService.setNotificationState(windowName, true);
+    }
+
+    /**
+     * Stop notification state
+     * @method stopNotification
+     * @returns {void}
+     */
+    stopNotification() {
+        const windowName = this.getWindowName(this.profile || 'default');
+        const trayService = require('../../services/tray.service');
+        trayService.setNotificationState(windowName, false);
+    }
+
+    /**
      * Inject WhatsApp-specific JavaScript for browser compatibility and service worker management
      * @method injectCustomJS
      * @override
+     * @throws {Error} If window or webContents are not available
+     * @returns {void}
      */
     injectCustomJS() {
         if (!this.window || !this.window.webContents) {
-            logger.error('Window or webContents not available for custom JS injection');
-            return;
+            const error = new Error('Window or webContents not available for custom JS injection');
+            logger.error(error.message);
+            throw error;
         }
 
         logger.info('Injecting custom JavaScript for WhatsApp compatibility');
@@ -193,48 +245,23 @@ class WhatsAppProvider extends BaseProvider {
                 return false;
             };
 
-            // Run check immediately
-            const initialCheckResult = handleBrowserCheck();
-            console.log('[WhatsApp Provider] Initial compatibility check result:', initialCheckResult);
-            
-            if (!initialCheckResult) {
-                // Set up an observer to watch for compatibility messages that might appear later
+            // Run initial check and set up observer
+            if (!handleBrowserCheck()) {
+                // Set up observer to watch for compatibility messages
                 const observer = new MutationObserver((mutations) => {
                     if (handleBrowserCheck()) {
                         observer.disconnect();
                     }
                 });
-                
+
                 observer.observe(document.body, {
                     childList: true,
                     subtree: true
                 });
             }
-        `).then(() => {
-            logger.info('Custom JavaScript injection completed');
-        }).catch(err => {
+        `).catch(err => {
             logger.error('Error injecting custom JavaScript:', err);
         });
-    }
-
-    /**
-     * Check if there are unread notifications
-     * @method hasNotifications
-     * @returns {boolean} True if there are unread notifications
-     */
-    hasNotifications() {
-        if (!this.window || !this.window.webContents) {
-            return false;
-        }
-
-        try {
-            const title = this.window.getTitle();
-            // WhatsApp shows number of unread messages in parentheses
-            return /\(\d+\)/.test(title);
-        } catch (error) {
-            logger.error('Error checking notifications:', error);
-            return false;
-        }
     }
 
     /**

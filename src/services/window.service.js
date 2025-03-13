@@ -101,6 +101,9 @@ class WindowService {
         window.once('ready-to-show', () => {
             if (!window.isDestroyed() && (!window.metadata || !window.metadata.startHidden)) {
                 window.show();
+                // Update tray icon state
+                const trayService = require('./tray.service');
+                trayService.updateTrayIcon(windowName, true);
             }
         });
 
@@ -112,6 +115,9 @@ class WindowService {
                 if (shouldPreventClose) {
                     event.preventDefault();
                     window.hide();
+                    // Update tray icon state
+                    const trayService = require('./tray.service');
+                    trayService.updateTrayIcon(windowName, false);
                     return;
                 }
 
@@ -131,6 +137,10 @@ class WindowService {
 
         // Handle window hide event
         window.on('hide', () => {
+            // Update tray icon state
+            const trayService = require('./tray.service');
+            trayService.updateTrayIcon(windowName, false);
+
             if (window.metadata && window.metadata.provider) {
                 const { provider } = window.metadata;
                 if (provider.onWindowHide) {
@@ -141,6 +151,10 @@ class WindowService {
 
         // Handle window show event
         window.on('show', () => {
+            // Update tray icon state
+            const trayService = require('./tray.service');
+            trayService.updateTrayIcon(windowName, true);
+
             if (window.metadata && window.metadata.provider) {
                 const { provider } = window.metadata;
                 if (provider.onWindowShow) {

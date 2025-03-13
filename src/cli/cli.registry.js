@@ -1,14 +1,11 @@
 /**
- * @file CLI Registry that manages registration and execution of CLI modules.
- * Handles module registration, command detection, and argument parsing.
+ * @file CLI Registry that manages CLI modules and command execution
  */
 
-const logger = require('../services/logging.service');
+const log = require('../services/logging.service');
 
 /**
- * Registry for CLI modules that handles registration and execution of commands.
- * Follows the command mapping pattern for CLI modules.
- * @class CLIRegistry
+ * CLI Registry that manages CLI modules and command execution
  */
 class CLIRegistry {
     /**
@@ -16,66 +13,77 @@ class CLIRegistry {
      * @constructor
      */
     constructor() {
-        /** @property {Array<Object>} instances - Array of registered module instances */
-        this.instances = [];
-        
-        /** @property {Set<string>} registeredModules - Set of registered module names */
-        this.registeredModules = new Set();
-
-        /** @property {Object|null} lastParsedArgs - Last successfully parsed arguments */
+        /** @type {Map<string, Object>} */
+        this.modules = new Map();
+        this.initialized = false;
         this.lastParsedArgs = null;
-        
-        logger.info('CLI Registry initialized');
+        log.info('CLI Registry initialized');
+    }
+
+    /**
+     * Clear all registered modules
+     * @method clear
+     */
+    clear() {
+        this.modules.clear();
+        this.lastParsedArgs = null;
+        log.info('CLI Registry cleared');
     }
 
     /**
      * Register a CLI module
      * @method register
-     * @param {string} moduleName - Name of the module to register
-     * @param {Function} ModuleClass - Module class constructor
-     * @param {Object} instance - Module instance
-     * @returns {boolean} True if registration was successful
+     * @param {Object} module - CLI module to register
+     * @returns {boolean} True if registration successful
      */
-    register(moduleName, ModuleClass, instance) {
+    register(module) {
         try {
-            if (!moduleName || !ModuleClass || !instance) {
-                logger.error('Invalid CLI module registration parameters');
+            if (!module || typeof module !== 'object') {
+                log.error('Invalid CLI module: module must be an object');
                 return false;
             }
 
-            // Validate module follows command mapping pattern
-            if (!instance.parseArgs || !instance.execute || !instance.showUsage) {
-                logger.error('Invalid CLI module class - missing required methods');
+            const requiredMethods = ['execute', 'parseArgs', 'showUsage'];
+            const missingMethods = requiredMethods.filter(
+                method => !module[method] || typeof module[method] !== 'function'
+            );
+
+            if (missingMethods.length > 0) {
+                log.error(`Invalid CLI module: missing required methods: ${missingMethods.join(', ')}`);
                 return false;
             }
 
-            // Add to registry
-            this.instances.push(instance);
-            this.registeredModules.add(moduleName);
-            logger.info(`Registered CLI module: ${instance.constructor.name}`);
+            const name = module.constructor.name;
+            if (!name) {
+                log.error('Invalid CLI module: missing constructor name');
+                return false;
+            }
+
+            this.modules.set(name, module);
+            log.info(`Registered CLI module: ${name}`);
             return true;
         } catch (error) {
-            logger.error('Error registering CLI module:', error);
+            log.error('Error registering CLI module:', error);
             return false;
         }
     }
 
     /**
-     * Execute CLI arguments through all registered modules
+     * Execute CLI command with given arguments
      * @method execute
      * @param {Array<string>} args - Command line arguments
-     * @returns {Promise<{success: boolean, isCliCommand: boolean}>} Result object with success and command type
+     * @returns {Promise<{success: boolean, isCliCommand: boolean}>}
      */
     async execute(args) {
-        try {
-            if (!args || args.length === 0) {
-                logger.warn('No arguments to execute');
-                return { success: false, isCliCommand: true };
-            }
+        if (!args || args.length === 0) {
+            log.warn('No arguments to process');
+            return { success: false, isCliCommand: true };
+        }
 
+        try {
             // Remove electron and script path from args if present
             const cliArgs = args.slice(process.defaultApp ? 2 : 1);
-            logger.debug('CLI arguments:', cliArgs);
+            log.debug('CLI arguments:', cliArgs);
 
             // Check for help flag first
             if (cliArgs.includes('--help') || cliArgs.includes('--manual')) {
@@ -83,64 +91,46 @@ class CLIRegistry {
                 return { success: true, isCliCommand: true };
             }
 
-            // Initialize instance manager first
+            // Initialize instance manager
             const instanceManager = require('../services/instance.manager');
-            try {
-                await instanceManager.ensureDirectories();
-            } catch (error) {
-                logger.error('Failed to initialize instance directories:', error);
-                throw error;
-            }
+            await instanceManager.ensureDirectories();
 
             // Find module that can handle these arguments
-            for (const instance of this.instances) {
+            for (const [name, module] of this.modules) {
                 try {
-                    const result = await instance.parseArgs(cliArgs);
+                    const result = await module.parseArgs(cliArgs);
                     if (result) {
-                        logger.info(`CLI command detected in module: ${instance.constructor.name}`);
+                        log.info(`CLI command detected in module: ${name}`);
                         
                         // Store parsed args for app initialization
                         this.lastParsedArgs = result;
 
-                        // Handle instance registration before execution
-                        try {
-                            const registered = await instanceManager.handleInstanceRegistration(result);
-                            if (!registered) {
-                                logger.error('Failed to register instance');
-                                return { success: false, isCliCommand: instance.isCliCommand() };
-                            }
-                        } catch (error) {
-                            logger.error('Instance registration error:', error);
-                            throw error;
+                        // Execute command
+                        const success = await module.execute(result);
+                        if (!success) {
+                            log.error(`Command execution failed in module: ${name}`);
+                            return { success: false, isCliCommand: true };
                         }
 
-                        // Execute command if module has execute method
-                        if (instance.execute) {
-                            const success = await instance.execute(result);
-                            if (!success) {
-                                logger.error(`Command execution failed in module: ${instance.constructor.name}`);
-                                return { success: false, isCliCommand: instance.isCliCommand() };
-                            }
-                            logger.info('CLI command completed successfully');
-                            return { success: true, isCliCommand: instance.isCliCommand() };
-                        }
+                        log.info('CLI command completed successfully');
+                        return { success: true, isCliCommand: true };
                     }
                 } catch (error) {
-                    logger.error(`Error in module ${instance.constructor.name}:`, error);
+                    log.error(`Error in module ${name}:`, error);
                     throw error;
                 }
             }
 
-            logger.warn('No module found to handle arguments:', cliArgs);
+            log.warn('No module found to handle arguments:', cliArgs);
             return { success: false, isCliCommand: true };
         } catch (error) {
-            logger.error('Error executing CLI arguments:', error);
+            log.error('Error executing CLI command:', error);
             throw error;
         }
     }
 
     /**
-     * Get the last parsed CLI arguments
+     * Get last successfully parsed arguments
      * @method getLastParsedArgs
      * @returns {Object|null} Last parsed arguments or null if none
      */
@@ -149,25 +139,14 @@ class CLIRegistry {
     }
 
     /**
-     * Clear all registered modules
-     * @method clear
-     */
-    clear() {
-        this.instances = [];
-        this.registeredModules.clear();
-        this.lastParsedArgs = null;
-        logger.info('CLI Registry cleared');
-    }
-
-    /**
      * Show help for all registered modules
      * @method showHelp
      */
     showHelp() {
-        logger.info('\nAvailable commands:');
-        for (const instance of this.instances) {
-            if (instance.showUsage) {
-                instance.showUsage();
+        log.info('\nAvailable commands:');
+        for (const [name, module] of this.modules) {
+            if (module.showUsage) {
+                module.showUsage();
             }
         }
     }

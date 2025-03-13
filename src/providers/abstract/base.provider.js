@@ -156,40 +156,28 @@ class BaseProvider {
     }
 
     /**
+     * Get the window name for a profile
+     * @method getWindowName
+     * @param {string} profile - Profile name
+     * @returns {string} Window name in format providerName:profile
+     */
+    getWindowName(profile = 'default') {
+        return `${this.getName()}:${profile}`;
+    }
+
+    /**
      * Initialize the provider window
      * @method initializeProvider
      * @param {string} profile - Profile name
      * @returns {Promise<void>}
      */
-    async initializeProvider(profile) {
+    async initializeProvider(profile = 'default') {
         try {
+            const windowName = this.getWindowName(profile);
             log.info(`Initializing ${this.getName()} provider with profile: ${profile}`);
 
-            // Create window with metadata
-            const windowName = `${this.getName()}:${profile}`;
-            const metadata = {
-                provider: this,
-                profile,
-                startHidden: false // Default to visible
-            };
-
-            // Get window configuration
-            const windowConfig = this.getWindowConfig();
-            const webPreferences = {
-                ...this.getWebPreferences(),
-                contextIsolation: true, // Required for security
-                webSecurity: true,      // Required for security
-                nodeIntegration: false, // Required for security
-                enableRemoteModule: false,
-                partition: this.getPartitionName(profile)
-            };
-
-            windowConfig.webPreferences = webPreferences;
-
-            // Create window through WindowService
-            const windowService = require('../../services/window.service');
-            const window = windowService.createWindow(windowConfig, windowName, metadata);
-            
+            // Create window first
+            const window = await this.spawnWindow(profile);
             if (!window) {
                 throw new Error(`Failed to create window for ${this.getName()}`);
             }
@@ -200,20 +188,13 @@ class BaseProvider {
             // Initialize window content
             await this.initializeWindow(profile);
 
-            // Create tray icon
-            const trayService = require('../../services/tray.service');
-            const tray = trayService.createTray(this, windowName);
-            
-            if (!tray) {
-                throw new Error(`Failed to create tray for ${this.getName()}`);
+            // Now that window exists, set up event handlers
+            if (!this.eventsSetup) {
+                this.setupEventHandlers();
+                this.eventsSetup = true;
             }
-
-            // Register session
-            const instanceManager = require('../../services/instance.manager');
-            await instanceManager.registerSession(this, profile);
-
         } catch (error) {
-            log.error(`Error initializing provider ${this.getName()}:`, error);
+            log.error(`Error initializing ${this.getName()} provider:`, error);
             throw error;
         }
     }
@@ -247,6 +228,9 @@ class BaseProvider {
             // Setup window events after load
             this.setupWindowEvents();
 
+            // Inject custom JS after load
+            this.injectCustomJS();
+
             log.info(`Window initialized for ${this.getName()}`);
         } catch (error) {
             log.error(`Error initializing window for ${this.getName()}:`, error);
@@ -260,21 +244,23 @@ class BaseProvider {
      * @private
      */
     setupWindowEvents() {
-        if (!this.window || !this.window.webContents) {
-            log.error('Window or webContents not available for setting up event handlers');
+        if (!this.window) {
+            log.error(`Cannot setup events - no window for ${this.getName()}`);
             return;
         }
 
         // Handle window show event
         this.window.on('show', () => {
             log.debug(`Window shown for ${this.getName()}`);
-            this.updateTrayIcon();
+            const trayService = require('../../services/tray.service');
+            trayService.updateTrayIcon(this.getWindowName(this.profile), true);
         });
 
         // Handle window hide event
         this.window.on('hide', () => {
             log.debug(`Window hidden for ${this.getName()}`);
-            this.updateTrayIcon();
+            const trayService = require('../../services/tray.service');
+            trayService.updateTrayIcon(this.getWindowName(this.profile), false);
         });
 
         // Handle window close event
@@ -282,7 +268,8 @@ class BaseProvider {
             if (!this.isQuitting) {
                 event.preventDefault();
                 this.window.hide();
-                this.updateTrayIcon();
+                const trayService = require('../../services/tray.service');
+                trayService.updateTrayIcon(this.getWindowName(this.profile), false);
             }
         });
 
@@ -316,7 +303,7 @@ class BaseProvider {
                 partition: this.getPartitionName(profile)
             };
             
-            const windowName = `${this.getName()}:${profile}`;
+            const windowName = this.getWindowName(profile);
             this.window = windowService.createWindow(windowConfig, windowName, {
                 ...metadata,
                 provider: this,
@@ -327,26 +314,10 @@ class BaseProvider {
                 throw new Error('Failed to create window');
             }
 
-            await this.initializeWindow(profile);
-
             return this.window;
         } catch (error) {
             log.error(`[${this.getName()}] Error spawning window:`, error);
             return null;
-        }
-    }
-
-    /**
-     * Initializes provider-specific functionality.
-     * @param {string} profile - Profile name
-     * @returns {Promise<void>}
-     */
-    async initializeProvider(profile) {
-        log.info(`Initializing ${this.getName()} provider with profile:`, profile);
-
-        if (!this.eventsSetup) {
-            this.setupEventHandlers();
-            this.eventsSetup = true;
         }
     }
 
@@ -360,7 +331,7 @@ class BaseProvider {
         const partitionSession = session.fromPartition(partition);
         
         // Set user agent
-        const userAgent = userAgentConfig.getUserAgent(this.getName());
+        const userAgent = this.getUserAgent();
         if (userAgent) {
             partitionSession.setUserAgent(userAgent);
             log.info(`[${this.getName()}] Set user agent for partition ${partition}: ${userAgent}`);
@@ -368,14 +339,161 @@ class BaseProvider {
     }
 
     /**
-     * Gets the tray icon path for this provider.
-     * @param {boolean} [hasNotification=false] - Whether there is a notification
-     * @param {boolean} [isMinimized=false] - Whether window is minimized to tray
-     * @returns {Object} Object containing icon path and theme info
+     * Get user agent for this provider
+     * @method getUserAgent
+     * @returns {string|null} User agent string or null if not configured
+     */
+    getUserAgent() {
+        return userAgentConfig.getUserAgent(this.getName());
+    }
+
+    /**
+     * Handle tray click event
+     * @method handleTrayClick
+     * @returns {void}
+     */
+    handleTrayClick() {
+        try {
+            if (!this.window) {
+                log.error(`Cannot handle tray click - no window for ${this.getName()}`);
+                return;
+            }
+
+            // Default behavior: Toggle window visibility
+            if (this.window.isVisible()) {
+                this.window.hide();
+            } else {
+                this.window.show();
+                this.window.focus();
+            }
+        } catch (error) {
+            log.error(`Error handling tray click for ${this.getName()}:`, error);
+        }
+    }
+
+    /**
+     * Handle tray double click event
+     * @method handleTrayDoubleClick
+     * @returns {void}
+     */
+    handleTrayDoubleClick() {
+        try {
+            if (!this.window) {
+                log.error(`Cannot handle tray double click - no window for ${this.getName()}`);
+                return;
+            }
+
+            // Default behavior: Show and focus window
+            this.window.show();
+            this.window.focus();
+        } catch (error) {
+            log.error(`Error handling tray double click for ${this.getName()}:`, error);
+        }
+    }
+
+    /**
+     * Get tray icon configuration
+     * @method getTrayIcon
+     * @param {boolean} [hasNotification=false] - Whether to show notification state
+     * @param {boolean} [isMinimized=false] - Whether window is minimized
+     * @returns {Object} Tray icon configuration
      */
     getTrayIcon(hasNotification = false, isMinimized = false) {
-        const { getIconPath } = require('../../utils/icons');
-        return getIconPath(this.getName(), hasNotification, isMinimized);
+        try {
+            const { getIconPath } = require('../../utils/icons');
+            const image = getIconPath(this.getName(), hasNotification, isMinimized);
+            
+            if (!image) {
+                throw new Error('Invalid tray icon returned from icon utils');
+            }
+
+            return {
+                image,
+                isDarkMode: true, // TODO: Get from theme service
+                hasNotification,
+                isMinimized
+            };
+        } catch (error) {
+            log.error(`Error getting tray icon for ${this.getName()}:`, error);
+            return null;
+        }
+    }
+
+    /**
+     * Get context menu options for the tray
+     * @method getContextMenuOptions
+     * @returns {Array<Object>} Menu template array
+     */
+    getContextMenuOptions() {
+        const windowName = this.getWindowName(this.profile || 'default');
+        return [
+            {
+                label: 'Show',
+                click: () => {
+                    const { window } = windowService.resolveWindow(windowName);
+                    if (window && !window.isDestroyed()) {
+                        window.show();
+                        window.focus();
+                    }
+                }
+            },
+            {
+                label: 'Hide',
+                click: () => {
+                    const { window } = windowService.resolveWindow(windowName);
+                    if (window && !window.isDestroyed()) {
+                        window.hide();
+                    }
+                }
+            },
+            { type: 'separator' },
+            {
+                label: 'Quit',
+                click: () => {
+                    // Remove tray icon first
+                    trayService.destroyTray(windowName);
+                    
+                    // Then close window with force flag
+                    const { window } = windowService.resolveWindow(windowName);
+                    if (window && !window.isDestroyed()) {
+                        window.forceClose = true;
+                        window.close();
+                    }
+                }
+            }
+        ];
+    }
+
+    /**
+     * Get tray menu template
+     * @returns {Array<Object>} Menu template
+     */
+    getTrayMenuTemplate() {
+        return [
+            {
+                label: 'Show/Hide',
+                click: () => this.handleTrayClick()
+            },
+            {
+                label: 'Profile',
+                submenu: [
+                    {
+                        label: this.profile || 'default',
+                        enabled: false
+                    }
+                ]
+            },
+            { type: 'separator' },
+            {
+                label: 'Quit',
+                click: () => {
+                    if (this.window) {
+                        this.window.forceClose = true;
+                        this.window.close();
+                    }
+                }
+            }
+        ];
     }
 
     /**
@@ -452,100 +570,6 @@ class BaseProvider {
     }
 
     /**
-     * Get base context menu options that can be extended by providers
-     * @returns {Array<Object>} Array of context menu options
-     */
-    getContextMenuOptions() {
-        const windowState = this.window?.isVisible() ? 'Hide' : 'Show';
-        return [
-            {
-                label: `${windowState} Window`,
-                click: () => {
-                    if (this.window) {
-                        windowService.toggleWindow(this.window);
-                    }
-                }
-            },
-            { type: 'separator' },
-            {
-                label: 'Profile',
-                submenu: [
-                    {
-                        label: this.profile || 'default',
-                        enabled: false
-                    }
-                ]
-            },
-            { type: 'separator' },
-            {
-                label: 'Quit',
-                click: () => {
-                    if (this.window) {
-                        const windowName = `${this.getName()}:${this.profile || 'default'}`;
-                        // Remove tray icon first
-                        trayService.destroyTray(windowName);
-                        // Then close window with force flag
-                        this.window.forceClose = true;
-                        this.window.close();
-                    }
-                }
-            }
-        ];
-    }
-
-    /**
-     * Get tray menu template
-     * @returns {Array<Object>} Menu template
-     */
-    getTrayMenuTemplate() {
-        return [
-            {
-                label: 'Show/Hide',
-                click: () => this.handleTrayClick()
-            },
-            {
-                label: 'Profile',
-                submenu: [
-                    {
-                        label: this.profile || 'default',
-                        enabled: false
-                    }
-                ]
-            },
-            { type: 'separator' },
-            {
-                label: 'Quit',
-                click: () => {
-                    if (this.window) {
-                        this.window.forceClose = true;
-                        this.window.close();
-                    }
-                }
-            }
-        ];
-    }
-
-    /**
-     * Handle single click on tray icon
-     * Empty handler for provider override
-     */
-    handleTrayClick() {
-        if (this.window) {
-            windowService.toggleWindow(this.window);
-        }
-    }
-
-    /**
-     * Handle double click on tray icon
-     * Shows and focuses the window
-     */
-    handleTrayDoubleClick() {
-        if (this.window) {
-            windowService.showWindow(this.window);
-        }
-    }
-
-    /**
      * Handle window hide event
      * @method onWindowHide
      */
@@ -553,7 +577,7 @@ class BaseProvider {
         try {
             // Update tray icon state
             const trayService = require('../../services/tray.service');
-            const windowName = `${this.getName()}:${this.profile}`;
+            const windowName = this.getWindowName(this.profile);
             trayService.updateTrayIcon(windowName, false);
 
             // Log window state
@@ -571,7 +595,7 @@ class BaseProvider {
         try {
             // Update tray icon state
             const trayService = require('../../services/tray.service');
-            const windowName = `${this.getName()}:${this.profile}`;
+            const windowName = this.getWindowName(this.profile);
             trayService.updateTrayIcon(windowName, true);
 
             // Clear notifications when window is shown

@@ -36,19 +36,17 @@ class TrayService {
      * @method createTray
      * @param {BaseProvider} provider - Provider instance to create tray for
      * @param {string} windowName - Name of associated window (format: providerName:profile)
-     * @returns {Electron.Tray|null} Created tray instance or null if creation fails
+     * @returns {Promise<Electron.Tray|null>} Created tray instance or null if creation fails
      * @throws {Error} If provider returns invalid tray icon
      */
-    createTray(provider, windowName) {
+    async createTray(provider, windowName) {
         if (!windowName) {
             logger.error('Window name is required for tray creation');
             return null;
         }
 
-        if (this.trays.has(windowName)) {
-            logger.warn(`Tray already exists for window: ${windowName}`);
-            return this.trays.get(windowName).tray;
-        }
+        // Cleanup existing tray if any
+        await this.destroyTray(windowName);
 
         try {
             const trayIcon = provider.getTrayIcon();
@@ -56,20 +54,21 @@ class TrayService {
                 throw new Error('Invalid tray icon returned from provider');
             }
 
+            logger.info('Creating tray with icon from provider');
             const tray = new Tray(trayIcon.image);
-            tray.setToolTip(`${provider.getName()} - ${windowName.split(':')[1]}`);
+            
+            // Set initial tooltip
+            const profile = windowName.split(':')[1] || 'default';
+            tray.setToolTip(`${provider.getName()} (${profile}) - Starting...`);
 
             // Set up context menu
-            this.updateContextMenu(tray, provider);
+            const template = provider.getContextMenuOptions();
+            const menu = Menu.buildFromTemplate(template);
+            tray.setContextMenu(menu);
 
             // Set up click handlers
-            tray.on('click', () => {
-                provider.handleTrayClick();
-            });
-
-            tray.on('double-click', () => {
-                provider.handleTrayDoubleClick();
-            });
+            tray.on('click', () => provider.handleTrayClick());
+            tray.on('double-click', () => provider.handleTrayDoubleClick());
 
             // Store tray and provider reference
             this.trays.set(windowName, { tray, provider });
@@ -115,13 +114,18 @@ class TrayService {
 
         try {
             const { tray, provider } = trayInfo;
-            const trayIcon = provider.getTrayIcon(false, !isVisible);
+            
+            // Get correct icon based on state
+            const hasNotification = this.notificationStates.get(windowName) || false;
+            const trayIcon = provider.getTrayIcon(hasNotification, !isVisible);
+            
             if (trayIcon && trayIcon.image) {
+                logger.info('Updating tray icon from provider');
                 tray.setImage(trayIcon.image);
             }
 
             // Update tooltip to show window state
-            const profile = windowName.split(':')[1];
+            const profile = windowName.split(':')[1] || 'default';
             const state = isVisible ? 'Running' : 'Minimized to tray';
             tray.setToolTip(`${provider.getName()} (${profile}) - ${state}`);
 
@@ -162,18 +166,22 @@ class TrayService {
                 // Start notification blinking
                 const interval = provider.getNotificationInterval();
                 let blinkState = false;
+                
                 const timer = setInterval(() => {
                     blinkState = !blinkState;
                     const trayIcon = provider.getTrayIcon(blinkState);
                     if (trayIcon && trayIcon.image) {
+                        logger.info('Blinking tray icon from provider');
                         tray.setImage(trayIcon.image);
                     }
                 }, interval);
+                
                 this.notificationTimers.set(windowName, timer);
             } else {
                 // Reset to normal icon
                 const trayIcon = provider.getTrayIcon(false);
                 if (trayIcon && trayIcon.image) {
+                    logger.info('Resetting tray icon from provider');
                     tray.setImage(trayIcon.image);
                 }
             }
@@ -234,23 +242,30 @@ class TrayService {
     /**
      * Destroy tray icon for a window
      * @method destroyTray
-     * @param {string} windowName - Name of window
-     * @throws {Error} If tray destruction fails
+     * @param {string} windowName - Name of window with tray
+     * @returns {Promise<void>}
      */
-    destroyTray(windowName) {
+    async destroyTray(windowName) {
         const trayInfo = this.trays.get(windowName);
-        if (!trayInfo) {
-            return;
-        }
+        if (trayInfo) {
+            try {
+                const { tray } = trayInfo;
+                
+                // Clear notification state
+                this.clearNotificationTimer(windowName);
+                this.notificationStates.delete(windowName);
 
-        try {
-            const { tray } = trayInfo;
-            this.clearNotificationTimer(windowName);
-            tray.destroy();
-            this.trays.delete(windowName);
-            this.notificationStates.delete(windowName);
-        } catch (error) {
-            logger.error(`Error destroying tray for ${windowName}:`, error);
+                // Remove all listeners and destroy
+                tray.removeAllListeners();
+                tray.destroy();
+
+                // Remove from maps
+                this.trays.delete(windowName);
+
+                logger.info(`Destroyed tray icon for ${windowName}`);
+            } catch (error) {
+                logger.error(`Error destroying tray for ${windowName}:`, error);
+            }
         }
     }
 

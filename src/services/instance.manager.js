@@ -43,8 +43,8 @@ class InstanceManager {
         /** @property {number} lockRetryDelay - Delay in ms between lock retries */
         this.lockRetryDelay = 200;
         
-        /** @property {Map<string, Object>} activeSessions - Map of active provider sessions */
-        this.activeSessions = new Map();
+        /** @property {Map<string, Object>} providerSessions - Map of provider sessions */
+        this.providerSessions = new Map();
         
         /** @property {string|null} instanceId - Unique ID for this instance */
         this.instanceId = null;
@@ -61,7 +61,7 @@ class InstanceManager {
         // Set up IPC handlers for instance communication
         if (ipcMain) {
             ipcMain.handle('add-provider', async (event, { provider, profile }) => {
-                return await this.addProviderToInstance(provider, profile);
+                return await this.registerSession(provider, profile);
             });
         }
 
@@ -142,42 +142,105 @@ class InstanceManager {
     }
 
     /**
-     * Register this instance's PID in the PID file
-     * @method registerPid
-     * @throws {Error} If PID registration fails
+     * Register a provider session
+     * @method registerSession
+     * @param {BaseProvider} provider - Provider instance
+     * @param {string} profile - Profile name
+     * @returns {Promise<void>}
+     * @throws {Error} If no active instance or session registration fails
      */
-    async registerPid() {
+    async registerSession(provider, profile) {
+        if (!this.instanceId) {
+            throw new Error('No active instance');
+        }
+
+        const providerName = provider.getName();
+        const sessionKey = `${providerName}:${profile}`;
+
+        // Check if session already exists
+        if (this.providerSessions.has(sessionKey)) {
+            log.warn(`Session already exists for ${sessionKey}`);
+            return;
+        }
+
+        try {
+            // Add to memory
+            this.providerSessions.set(sessionKey, {
+                provider: providerName,
+                profile,
+                timestamp: Date.now()
+            });
+
+            // Update lock file
+            await this.updateLockFile();
+
+            log.info(`Added provider ${providerName} with profile ${profile} to instance ${this.instanceId}`);
+        } catch (error) {
+            log.error(`Error registering session for ${sessionKey}:`, error);
+            throw error;
+        }
+    }
+
+    /**
+     * Unregister a provider session
+     * @method unregisterSession
+     * @param {BaseProvider} provider - Provider instance
+     * @param {string} profile - Profile name
+     * @returns {Promise<void>}
+     * @throws {Error} If no active instance or session unregistration fails
+     */
+    async unregisterSession(provider, profile) {
+        if (!this.instanceId) {
+            throw new Error('No active instance');
+        }
+
+        const providerName = provider.getName();
+        const sessionKey = `${providerName}:${profile}`;
+
+        try {
+            // Remove from memory
+            if (this.providerSessions.has(sessionKey)) {
+                this.providerSessions.delete(sessionKey);
+                log.info(`Removed session ${sessionKey} from instance ${this.instanceId}`);
+            }
+
+            // Update lock file
+            await this.updateLockFile();
+        } catch (error) {
+            log.error(`Error unregistering session for ${sessionKey}:`, error);
+            throw error;
+        }
+    }
+
+    /**
+     * Update the instance lock file
+     * @method updateLockFile
+     * @throws {Error} If lock file update fails
+     */
+    async updateLockFile() {
         let release;
         try {
-            const pid = process.pid;
-            let pids = [];
+            // Acquire lock for file operations
+            release = await this.acquireWriteLock(this.instanceLockFile);
 
-            // Ensure directory exists
-            await this.ensureDirectories();
+            // Read existing lock data
+            const data = await fs.promises.readFile(this.instanceLockFile, 'utf8');
+            const lockData = JSON.parse(data);
 
-            // Acquire lock for PID file operations
-            release = await this.acquireWriteLock(this.pidFile);
-
-            // Read existing PIDs or create empty file
-            if (fs.existsSync(this.pidFile)) {
-                try {
-                    const data = await fs.promises.readFile(this.pidFile, 'utf8');
-                    pids = JSON.parse(data);
-                } catch (error) {
-                    log.error('Error parsing PID file, creating new one:', error);
-                }
+            // Update this instance's providers
+            if (!lockData.instances[this.instanceId]) {
+                throw new Error('Instance not found in lock file');
             }
 
-            // Add current PID if not already present
-            if (!pids.includes(pid)) {
-                pids.push(pid);
-            }
+            // Convert provider sessions to array format
+            const providers = Array.from(this.providerSessions.values());
+            lockData.instances[this.instanceId].providers = providers;
 
-            // Write updated PIDs
-            await fs.promises.writeFile(this.pidFile, JSON.stringify(pids, null, 2));
-            log.info(`Registered PID: ${pid}`);
+            // Write updated lock data
+            await fs.promises.writeFile(this.instanceLockFile, JSON.stringify(lockData, null, 2));
+            log.info(`Updated lock file for instance ${this.instanceId}`);
         } catch (error) {
-            log.error('Error registering PID:', error);
+            log.error('Error updating lock file:', error);
             throw error;
         } finally {
             if (release) {
@@ -212,9 +275,6 @@ class InstanceManager {
 
             // Store instance ID
             this.instanceId = instanceId;
-
-            // Initialize provider sessions map
-            this.providerSessions = new Map();
 
             return true;
         } catch (error) {
@@ -257,45 +317,6 @@ class InstanceManager {
         } catch (error) {
             log.error('Error checking instance creation:', error);
             return true;
-        }
-    }
-
-    /**
-     * Register a provider session
-     * @method registerSession
-     * @param {BaseProvider} provider - Provider instance
-     * @param {string} profile - Profile name
-     * @returns {Promise<void>}
-     */
-    async registerSession(provider, profile) {
-        if (!this.instanceId) {
-            throw new Error('No active instance');
-        }
-
-        const providerName = provider.getName();
-        const sessionKey = `${providerName}:${profile}`;
-
-        // Check if session already exists
-        if (this.providerSessions.has(sessionKey)) {
-            log.warn(`Session already exists for ${sessionKey}`);
-            return;
-        }
-
-        try {
-            // Add to memory
-            this.providerSessions.set(sessionKey, {
-                provider: providerName,
-                profile,
-                timestamp: Date.now()
-            });
-
-            // Update lock file
-            await this.updateLockFile();
-
-            log.info(`Added provider ${providerName} with profile ${profile} to instance ${this.instanceId}`);
-        } catch (error) {
-            log.error(`Error registering session for ${sessionKey}:`, error);
-            throw error;
         }
     }
 
@@ -343,30 +364,42 @@ class InstanceManager {
     }
 
     /**
-     * Update the instance lock file
-     * @method updateLockFile
-     * @throws {Error} If lock file update fails
+     * Register this instance's PID in the PID file
+     * @method registerPid
+     * @throws {Error} If PID registration fails
      */
-    async updateLockFile() {
+    async registerPid(instanceId) {
         let release;
         try {
-            // Acquire lock for file operations
-            release = await this.acquireWriteLock(this.instanceLockFile);
+            const pid = process.pid;
+            let pids = [];
 
-            // Read existing lock data
-            const data = await fs.promises.readFile(this.instanceLockFile, 'utf8');
-            const lockData = JSON.parse(data);
+            // Ensure directory exists
+            await this.ensureDirectories();
 
-            // Update this instance
-            if (!lockData.instances[this.instanceId]) {
-                throw new Error('Instance not found in lock file');
+            // Acquire lock for PID file operations
+            release = await this.acquireWriteLock(this.pidFile);
+
+            // Read existing PIDs or create empty file
+            if (fs.existsSync(this.pidFile)) {
+                try {
+                    const data = await fs.promises.readFile(this.pidFile, 'utf8');
+                    pids = JSON.parse(data);
+                } catch (error) {
+                    log.error('Error parsing PID file, creating new one:', error);
+                }
             }
 
-            // Write updated lock data
-            await fs.promises.writeFile(this.instanceLockFile, JSON.stringify(lockData, null, 2));
-            log.info(`Updated lock file for instance ${this.instanceId}`);
+            // Add current PID if not already present
+            if (!pids.includes(pid)) {
+                pids.push(pid);
+            }
+
+            // Write updated PIDs
+            await fs.promises.writeFile(this.pidFile, JSON.stringify(pids, null, 2));
+            log.info(`Registered PID: ${pid}`);
         } catch (error) {
-            log.error('Error updating lock file:', error);
+            log.error('Error registering PID:', error);
             throw error;
         } finally {
             if (release) {
@@ -512,6 +545,69 @@ class InstanceManager {
             log.info(`Cleaned up instance ${this.instanceId}`);
         } catch (error) {
             log.error('Error during cleanup:', error);
+        } finally {
+            if (release) {
+                await release();
+            }
+        }
+    }
+
+    /**
+     * Initialize instance manager and create instance ID
+     * @method initialize
+     * @returns {Promise<void>}
+     * @throws {Error} If initialization fails
+     */
+    async initialize() {
+        try {
+            // Generate unique instance ID
+            const timestamp = Date.now();
+            const random = Math.floor(Math.random() * 1000000);
+            this.instanceId = `${timestamp}-${random}`;
+
+            // Initialize lock file with instance data
+            await this.initializeLockFile(this.instanceId);
+
+            // Register PID
+            await this.registerPid();
+
+            log.info(`Instance manager initialized with ID: ${this.instanceId}`);
+        } catch (error) {
+            log.error('Error initializing instance manager:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Initialize the instance lock file
+     * @method initializeLockFile
+     * @param {string} instanceId - Unique ID for this instance
+     * @returns {Promise<void>}
+     * @throws {Error} If lock file initialization fails
+     */
+    async initializeLockFile(instanceId) {
+        let release;
+        try {
+            // Acquire lock for file operations
+            release = await this.acquireWriteLock(this.instanceLockFile);
+
+            // Read existing lock data
+            const data = await fs.promises.readFile(this.instanceLockFile, 'utf8');
+            const lockData = JSON.parse(data);
+
+            // Add new instance
+            lockData.instances[instanceId] = {
+                pid: process.pid,
+                timestamp: Date.now(),
+                providers: []
+            };
+
+            // Write updated lock data
+            await fs.promises.writeFile(this.instanceLockFile, JSON.stringify(lockData, null, 2));
+            log.info(`Lock file initialized for instance ${instanceId}`);
+        } catch (error) {
+            log.error('Error initializing lock file:', error);
+            throw error;
         } finally {
             if (release) {
                 await release();
