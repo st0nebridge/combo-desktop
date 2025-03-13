@@ -12,6 +12,8 @@ const profileManager = require('./profile.manager');
 const instanceManager = require('./instance.manager');
 const providerRegistry = require('../providers');
 const cliRegistry = require('../cli/cli.registry');
+const path = require('path');
+const fs = require('fs');
 
 /**
  * Core application manager that handles lifecycle and coordination.
@@ -31,6 +33,8 @@ class AppManager {
     constructor() {
         /** @property {boolean} isQuitting - Whether the app is in the process of quitting */
         this.isQuitting = false;
+        this.initialized = false;
+        this.cliInitialized = false;
         
         this.setupEventHandlers();
         logger.info('App Manager initialized');
@@ -107,135 +111,165 @@ class AppManager {
     }
 
     /**
-     * Initialize the application and its core services.
-     * Handles CLI commands, instance registration, and provider initialization.
-     * @method init
-     * @returns {Promise<boolean>} True if initialization successful
-     * @throws {Error} If initialization fails
+     * Initialize the application
+     * @method initializeApp
+     * @param {Array<string>} args - CLI arguments
+     * @returns {Promise<void>}
      */
-    async init() {
+    async initializeApp(args) {
+        if (this.initialized) {
+            logger.warn('App already initialized');
+            return;
+        }
+
         try {
-            // Get parsed arguments from registry
-            const args = cliRegistry.getLastParsedArgs();
+            logger.info('Application starting...');
+
+            // Initialize instance management
+            const instanceManager = require('./instance.manager');
+            const shouldContinue = await instanceManager.handleInstanceRegistration(args);
             
-            // Initialize profile manager first
-            await profileManager.init();
-            logger.info('Profile Manager initialization complete');
-
-            // For non-provider CLI commands (like --version), we don't need full initialization
-            if (args && args.isCliCommand && !args.command) {
-                logger.info('CLI utility command detected, skipping full initialization');
-                return true;
+            if (!shouldContinue) {
+                logger.info('Another instance is handling this request');
+                return;
             }
 
-            // Handle instance registration if needed
-            if (args && !args.isCliCommand) {
-                if (!(await instanceManager.handleInstanceRegistration(args))) {
-                    logger.error('Failed to register instance');
-                    return false;
-                }
-            }
+            // Initialize CLI modules
+            await this.initializeCLI();
 
-            // Handle provider initialization
-            if (args && args.command) {
-                const success = await this.initializeProvider(args.command, args.profile || 'default', args);
-                if (!success) {
-                    logger.error(`Failed to initialize provider: ${args.command}`);
-                    return false;
-                }
-            } else if (args && !args.isCliCommand) {
-                // No providers specified and not a CLI command, create main window
-                this.createMainWindow();
-            }
+            // Process CLI arguments
+            await this.processCLIArguments(args);
 
+            this.initialized = true;
             logger.info('Application initialized successfully');
-            return true;
         } catch (error) {
-            logger.error('Failed to initialize application:', error);
+            logger.error('Error initializing application:', error);
             throw error;
         }
     }
 
     /**
-     * Initialize a provider with specified profile.
-     * Creates provider instance, window, and tray.
-     * @method initializeProvider
-     * @param {string} providerName - Name of the provider
-     * @param {string} profile - Profile name
-     * @param {Object} args - CLI arguments
-     * @returns {Promise<boolean>} True if initialization successful
-     * @throws {Error} If provider initialization fails
+     * Process CLI arguments
+     * @method processCLIArguments
+     * @param {Array<string>} args - CLI arguments
+     * @returns {Promise<void>}
      */
-    async initializeProvider(providerName, profile, args) {
+    async processCLIArguments(args) {
+        if (!args || args.length === 0) {
+            logger.info('No CLI arguments to process');
+            return;
+        }
+
+        logger.debug('CLI arguments:', args);
+
+        // Execute CLI command if present
+        const cli = require('../cli');
+        await cli.execute(args);
+    }
+
+    /**
+     * Initialize CLI modules
+     * @method initializeCLI
+     * @returns {Promise<void>}
+     */
+    async initializeCLI() {
+        if (this.cliInitialized) {
+            logger.warn('CLI already initialized');
+            return;
+        }
+
         try {
-            logger.info(`Initializing provider: ${providerName} with profile: ${profile}`);
-
-            // Remove leading -- from provider name if present
-            const cleanProviderName = providerName.replace(/^--/, '');
-
-            // Create provider instance
-            const provider = providerRegistry.createProvider(cleanProviderName);
-            if (!provider) {
-                logger.error(`Invalid provider: ${cleanProviderName}`);
-                return false;
-            }
-
-            // Set provider profile
-            provider.profile = profile;
-
-            // Create window for provider with metadata
-            const windowName = `${provider.getName()}:${profile}`;
-            const metadata = {
-                provider,
-                profile,
-                startHidden: args.tray // Set initial window visibility based on --tray flag
-            };
-
-            // Create window with security settings
-            const windowConfig = provider.getWindowConfig();
-            const webPreferences = {
-                ...provider.getWebPreferences(),
-                contextIsolation: true,
-                webSecurity: true,
-                nodeIntegration: false,
-                enableRemoteModule: false,
-                partition: provider.getPartitionName(profile)
-            };
-
-            windowConfig.webPreferences = webPreferences;
+            logger.info('Initializing CLI modules');
             
-            // Create window through WindowService
-            const window = windowService.createWindow(windowConfig, windowName, metadata);
-            if (!window) {
-                logger.error(`Failed to create window for provider ${cleanProviderName}`);
-                return false;
+            // Clear existing modules
+            cliRegistry.clear();
+            logger.info('CLI Registry cleared');
+
+            // Auto-register CLI modules
+            await this.registerCLIModules();
+
+            this.cliInitialized = true;
+            logger.info('CLI modules initialized');
+        } catch (error) {
+            logger.error('Error initializing CLI:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Register CLI modules
+     * @method registerCLIModules
+     * @returns {Promise<void>}
+     */
+    async registerCLIModules() {
+        try {
+            const cliDir = path.join(__dirname, '..', 'cli', 'modules');
+            const files = await fs.promises.readdir(cliDir);
+
+            for (const file of files) {
+                if (!file.endsWith('.js')) {
+                    continue;
+                }
+
+                try {
+                    const modulePath = path.join(cliDir, file);
+                    const CLIModule = require(modulePath);
+                    
+                    // Skip non-class exports
+                    if (typeof CLIModule !== 'function' || !CLIModule.prototype) {
+                        logger.debug(`Skipping non-class module: ${file}`);
+                        continue;
+                    }
+
+                    // Create instance and validate
+                    const instance = new CLIModule();
+                    if (!instance.execute || typeof instance.execute !== 'function') {
+                        logger.error(`CLI module ${file} missing required execute() method`);
+                        continue;
+                    }
+
+                    // Register valid module
+                    cliRegistry.register(instance);
+                    logger.info(`Registered CLI module: ${instance.constructor.name}`);
+                } catch (moduleError) {
+                    logger.error(`Error loading CLI module ${file}:`, moduleError);
+                }
+            }
+        } catch (error) {
+            logger.error('Error registering CLI modules:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Initialize a provider
+     * @method initializeProvider
+     * @param {string} providerName - Name of the provider to initialize
+     * @returns {Promise<void>}
+     */
+    async initializeProvider(providerName) {
+        try {
+            const provider = providerRegistry.getProvider(providerName);
+            if (!provider) {
+                logger.error(`Provider not found: ${providerName}`);
+                return;
             }
 
-            // Store window reference in provider
-            provider.window = window;
+            logger.info(`Initializing provider: ${provider.getName()} with profile: default`);
 
-            // Initialize provider window
-            try {
-                await provider.initializeWindow(profile);
-            } catch (error) {
-                logger.error(`Failed to initialize window for provider ${cleanProviderName}:`, error);
-                return false;
+            // Check if provider window already exists
+            const windowName = `${provider.getName()}:default`;
+            const existingWindow = windowService.getWindow(windowName);
+            
+            if (existingWindow) {
+                logger.info(`Window ${windowName} already exists, focusing...`);
+                windowService.showWindow(existingWindow);
+                return;
             }
 
-            // Always create tray icon for the provider
-            const tray = trayService.createTray(provider, windowName);
-            if (!tray) {
-                logger.error(`Failed to create tray for provider ${cleanProviderName}`);
-                return false;
-            }
-            logger.info(`Created tray icon for ${windowName}`);
-
-            // Register provider session
-            const instanceManager = require('./instance.manager');
-            await instanceManager.registerSession(provider, profile);
-
-            logger.info(`Provider ${cleanProviderName} initialized successfully`);
-            return true;
+            // Initialize provider with default profile
+            await provider.initializeProvider('default');
+            logger.info(`Provider ${providerName} initialized successfully`);
         } catch (error) {
             logger.error(`Error initializing provider ${providerName}:`, error);
             throw error;

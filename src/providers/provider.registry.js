@@ -51,80 +51,113 @@ class ProviderRegistry {
     }
 
     /**
-     * Auto-register all providers in the modules directory
+     * Get a provider instance by name
+     * @method getProvider
+     * @param {string} providerName - Name of the provider to get
+     * @returns {BaseProvider|null} Provider instance or null if not found
+     */
+    getProvider(providerName) {
+        if (!providerName) {
+            log.error('Provider name is required');
+            return null;
+        }
+
+        // Remove leading -- if present
+        const cleanName = providerName.replace(/^--/, '');
+        
+        // Try to find existing provider
+        for (const [key, Provider] of this.providers) {
+            const instance = new Provider();
+            if (instance.getCommandArg().replace(/^--/, '') === cleanName) {
+                log.debug(`Found provider for command: ${cleanName}`);
+                return instance;
+            }
+        }
+
+        log.error(`No provider found for command: ${cleanName}`);
+        return null;
+    }
+
+    /**
+     * Create a new provider instance
+     * @method createProvider
+     * @param {string} providerName - Name of the provider to create
+     * @returns {BaseProvider|null} New provider instance or null if invalid
+     * @deprecated Use getProvider instead
+     */
+    createProvider(providerName) {
+        return this.getProvider(providerName);
+    }
+
+    /**
+     * Auto-register all provider modules
      * @method autoRegisterProviders
-     * @throws {Error} If provider registration fails
+     * @private
      */
     autoRegisterProviders() {
-        const providersDir = path.join(__dirname, 'modules');
-        
         try {
-            const files = fs.readdirSync(providersDir);
-            
-            files.forEach(file => {
-                // Skip non-provider files
-                if (file === 'base.provider.js' || 
-                    !file.endsWith('.provider.js')) {
-                    return;
-                }
+            const providersDir = __dirname;
+            const providerFiles = this.findProviderFiles(providersDir);
 
+            for (const file of providerFiles) {
                 try {
-                    const ProviderClass = require(path.join(providersDir, file));
-                    // Only register if it extends BaseProvider
-                    const tempProvider = new ProviderClass();
-                    if (tempProvider.getCommandArg && tempProvider.getName && tempProvider.getPartitionName) {
-                        this.register(ProviderClass);
-                    } else {
-                        log.error(`Provider ${file} does not implement required methods`);
+                    const Provider = require(file);
+                    const instance = new Provider();
+
+                    // Validate required methods
+                    const requiredMethods = [
+                        'getName',
+                        'getCommandArg',
+                        'getPartitionName',
+                        'getUrl'
+                    ];
+
+                    const missingMethods = requiredMethods.filter(
+                        method => !instance[method] || typeof instance[method] !== 'function'
+                    );
+
+                    if (missingMethods.length > 0) {
+                        log.error(`Provider ${file} missing required methods: ${missingMethods.join(', ')}`);
+                        continue;
                     }
+
+                    // Register valid provider
+                    const name = instance.getName();
+                    this.providers.set(name, Provider);
+                    log.info(`Auto-registered provider: ${name}`);
                 } catch (error) {
-                    log.error(`Error loading provider from ${file}:`, error);
+                    log.error(`Error loading provider ${file}:`, error);
                 }
-            });
+            }
+
+            log.info(`Registered ${this.providers.size} providers`);
         } catch (error) {
-            log.error('Error reading providers directory:', error);
+            log.error('Error auto-registering providers:', error);
+            throw error;
         }
     }
 
     /**
-     * Create a provider instance by command arg
-     * @method createProvider
-     * @param {string} providerArg - Command line argument for the provider
-     * @returns {Object|null} Provider instance or null if not found
-     * @throws {Error} If provider creation fails
+     * Find all provider files recursively
+     * @method findProviderFiles
+     * @param {string} dir - Directory to search in
+     * @returns {string[]} Array of provider file paths
+     * @private
      */
-    createProvider(providerArg) {
-        try {
-            // Convert arg to lowercase for case-insensitive lookup
-            const normalizedArg = providerArg.toLowerCase();
-            
-            // Add -- prefix if not present
-            const arg = normalizedArg.startsWith('--') ? normalizedArg : `--${normalizedArg}`;
-
-            // Get provider class
-            const ProviderClass = this.providers.get(arg);
-            if (!ProviderClass) {
-                const available = Array.from(this.providers.keys())
-                    .map(key => `${key} (${new this.providers.get(key)().getName()})`)
-                    .join(', ');
-                log.error(`Provider ${arg} not found. Available: ${available}`);
-                return null;
+    findProviderFiles(dir) {
+        let results = [];
+        const items = fs.readdirSync(dir);
+        
+        for (const item of items) {
+            const fullPath = path.join(dir, item);
+            if (fs.statSync(fullPath).isDirectory()) {
+                results = results.concat(this.findProviderFiles(fullPath));
+            } else if (item.endsWith('.provider.js') && 
+                      item !== 'base.provider.js') {
+                results.push(fullPath);
             }
-
-            // Create and validate provider instance
-            const provider = new ProviderClass();
-            if (!this.validateProvider(provider)) {
-                log.error(`Provider ${arg} failed validation`);
-                return null;
-            }
-
-            // Initialize provider
-            provider.initialize();
-            return provider;
-        } catch (error) {
-            log.error('Error creating provider:', error);
-            return null;
         }
+        return results;
     }
 
     /**

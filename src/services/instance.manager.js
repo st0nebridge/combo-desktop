@@ -189,99 +189,66 @@ class InstanceManager {
     /**
      * Handle instance registration based on CLI arguments
      * @method handleInstanceRegistration
-     * @param {Object} args - Parsed CLI arguments
-     * @returns {Promise<boolean>} True if registration successful
-     * @throws {Error} If registration fails
+     * @param {Array<string>} args - CLI arguments
+     * @returns {Promise<boolean>} Whether registration was successful
      */
     async handleInstanceRegistration(args) {
         try {
-            if (!args) {
-                log.info('No CLI arguments to process');
-                return true;
-            }
-
-            // Ensure directories exist first
-            await this.ensureDirectories();
-
-            // Handle reset-lock command first
-            if (args.resetLock) {
-                await this.resetLock();
-                log.info('Reset lock command executed successfully');
-                return true;
-            }
-
-            // Get profile from args
-            const profile = args.profile ?? 'default';
-            this.currentProfile = profile;
-
             // Check if we should create a new instance
             const shouldCreateNew = await this.shouldCreateNewInstance(args);
             if (!shouldCreateNew) {
-                log.info('Another instance is already running with this profile');
+                // Pass args to existing instance and exit
+                await this.notifyExistingInstance(args);
                 return false;
             }
 
-            // Initialize lock file
-            await this.initializeLockFile();
+            // Initialize instance lock file
+            const instanceId = Date.now();
+            await this.initializeLockFile(instanceId);
 
-            // Register this instance's PID if not a CLI command
-            if (!args.cliCommand) {
-                await this.registerPid();
-            }
+            // Register PID
+            await this.registerPid(instanceId);
+            log.info(`Instance ${instanceId} initialized successfully`);
 
-            this.isFirstInstance = true;
-            log.info(`Instance ${this.instanceId} initialized successfully`);
+            // Store instance ID
+            this.instanceId = instanceId;
+
+            // Initialize provider sessions map
+            this.providerSessions = new Map();
+
             return true;
         } catch (error) {
-            log.error('Failed to handle instance registration:', error);
-            throw error; // Re-throw to allow proper error handling
+            log.error('Error handling instance registration:', error);
+            return false;
         }
     }
 
     /**
      * Check if we should create a new instance
      * @method shouldCreateNewInstance
-     * @param {Object} args - CLI arguments
-     * @returns {Promise<boolean>} True if we should create a new instance
-     * @throws {Error} If check fails
+     * @param {Array<string>} args - CLI arguments
+     * @returns {Promise<boolean>} Whether to create new instance
      */
     async shouldCreateNewInstance(args) {
         try {
-            // Always create new instance if forced
-            if (args.newInstance) {
-                log.info('Forcing new instance creation');
+            // Get existing instances
+            const instances = await this.getRunningInstances();
+            if (instances.length === 0) {
                 return true;
             }
 
-            // Check if lock file exists
-            if (!fs.existsSync(this.instanceLockFile)) {
-                log.info('No lock file found, creating new instance');
-                return true;
-            }
-
-            // Try to read lock file
-            let lockData;
-            try {
-                const data = await fs.promises.readFile(this.instanceLockFile, 'utf8');
-                lockData = JSON.parse(data);
-            } catch (error) {
-                log.warn('Error reading lock file, creating new instance:', error);
-                return true;
-            }
-
-            // Check if lock file is valid
-            if (!lockData || !lockData.instances || typeof lockData.instances !== 'object') {
-                log.warn('Invalid lock file format, creating new instance');
-                return true;
-            }
-
-            // Check if any instance is running with the same profile
-            const profile = args.profile ?? 'default';
-            for (const instance of Object.values(lockData.instances)) {
-                if (instance.profile === profile && this.isProcessRunning(instance.pid)) {
-                    if (args.oneInstance) {
-                        log.info(`Found running instance with profile ${profile}, enforcing single instance`);
-                        return false;
+            // Check if any instance has this provider active
+            for (const arg of args) {
+                if (!arg.startsWith('--')) continue;
+                const provider = arg.substring(2);
+                
+                for (const instance of instances) {
+                    const sessions = await this.getInstanceSessions(instance);
+                    for (const session of sessions) {
+                        if (session.provider === provider) {
+                            log.info(`Provider ${provider} already active in instance ${instance}`);
+                            return false;
+                        }
                     }
                 }
             }
@@ -294,11 +261,51 @@ class InstanceManager {
     }
 
     /**
+     * Register a provider session
+     * @method registerSession
+     * @param {BaseProvider} provider - Provider instance
+     * @param {string} profile - Profile name
+     * @returns {Promise<void>}
+     */
+    async registerSession(provider, profile) {
+        if (!this.instanceId) {
+            throw new Error('No active instance');
+        }
+
+        const providerName = provider.getName();
+        const sessionKey = `${providerName}:${profile}`;
+
+        // Check if session already exists
+        if (this.providerSessions.has(sessionKey)) {
+            log.warn(`Session already exists for ${sessionKey}`);
+            return;
+        }
+
+        try {
+            // Add to memory
+            this.providerSessions.set(sessionKey, {
+                provider: providerName,
+                profile,
+                timestamp: Date.now()
+            });
+
+            // Update lock file
+            await this.updateLockFile();
+
+            log.info(`Added provider ${providerName} with profile ${profile} to instance ${this.instanceId}`);
+        } catch (error) {
+            log.error(`Error registering session for ${sessionKey}:`, error);
+            throw error;
+        }
+    }
+
+    /**
      * Initialize the instance lock file
      * @method initializeLockFile
+     * @param {string} instanceId - Unique ID for this instance
      * @throws {Error} If lock file initialization fails
      */
-    async initializeLockFile() {
+    async initializeLockFile(instanceId) {
         let release;
         try {
             // Acquire lock for file operations
@@ -316,8 +323,7 @@ class InstanceManager {
             }
 
             // Add this instance
-            this.instanceId = Date.now().toString();
-            lockData.instances[this.instanceId] = {
+            lockData.instances[instanceId] = {
                 pid: process.pid,
                 profile: this.currentProfile,
                 providers: []
@@ -325,7 +331,7 @@ class InstanceManager {
 
             // Write updated lock data
             await fs.promises.writeFile(this.instanceLockFile, JSON.stringify(lockData, null, 2));
-            log.info(`Initialized lock file for instance ${this.instanceId}`);
+            log.info(`Initialized lock file for instance ${instanceId}`);
         } catch (error) {
             log.error('Error initializing lock file:', error);
             throw error;
@@ -337,123 +343,116 @@ class InstanceManager {
     }
 
     /**
-     * Reset the instance lock file and terminate all running instances
-     * @method resetLock
-     * @throws {Error} If lock reset fails
-     * @returns {Promise<void>} Resolves when lock is reset and instances are terminated
+     * Update the instance lock file
+     * @method updateLockFile
+     * @throws {Error} If lock file update fails
      */
-    async resetLock() {
+    async updateLockFile() {
         let release;
         try {
-            // Try to acquire lock to ensure we have exclusive access
-            try {
-                release = await this.acquireWriteLock(this.pidFile);
-            } catch (lockError) {
-                log.warn('Could not acquire lock, proceeding with force reset:', lockError.message);
+            // Acquire lock for file operations
+            release = await this.acquireWriteLock(this.instanceLockFile);
+
+            // Read existing lock data
+            const data = await fs.promises.readFile(this.instanceLockFile, 'utf8');
+            const lockData = JSON.parse(data);
+
+            // Update this instance
+            if (!lockData.instances[this.instanceId]) {
+                throw new Error('Instance not found in lock file');
             }
 
-            // Read and handle PIDs
-            let pids = [];
-            if (fs.existsSync(this.pidFile)) {
-                try {
-                    const data = await fs.promises.readFile(this.pidFile, 'utf8');
-                    pids = JSON.parse(data);
-                    log.debug('Found PIDs:', pids);
-                } catch (readError) {
-                    log.warn('Error reading PIDs file:', readError.message);
-                }
-            }
-
-            // Terminate running processes
-            let terminatedCount = 0;
-            for (const pid of pids) {
-                if (this.isProcessRunning(pid)) {
-                    try {
-                        process.kill(pid);
-                        terminatedCount++;
-                        log.info(`Terminated process ${pid}`);
-                    } catch (killError) {
-                        log.warn(`Failed to terminate process ${pid}:`, killError.message);
-                    }
-                } else {
-                    log.debug(`Process ${pid} is not running`);
-                }
-            }
-
-            // Remove lock and PID files
-            const filesToRemove = [this.instanceLockFile, this.pidFile];
-            for (const file of filesToRemove) {
-                if (fs.existsSync(file)) {
-                    try {
-                        await fs.promises.unlink(file);
-                        log.info(`Removed file: ${file}`);
-                    } catch (unlinkError) {
-                        log.error(`Failed to remove ${file}:`, unlinkError.message);
-                        throw unlinkError;
-                    }
-                }
-            }
-
-            if (terminatedCount > 0) {
-                console.log(`\nTerminated ${terminatedCount} running instance${terminatedCount !== 1 ? 's' : ''}.`);
-            } else {
-                console.log('\nNo running instances found.');
-            }
-            console.log('Instance lock reset successfully.\n');
-
+            // Write updated lock data
+            await fs.promises.writeFile(this.instanceLockFile, JSON.stringify(lockData, null, 2));
+            log.info(`Updated lock file for instance ${this.instanceId}`);
         } catch (error) {
-            log.error('Error resetting instance lock:', error);
+            log.error('Error updating lock file:', error);
             throw error;
         } finally {
             if (release) {
-                try {
-                    await release();
-                } catch (releaseError) {
-                    log.warn('Error releasing lock:', releaseError.message);
-                }
+                await release();
             }
         }
     }
 
     /**
-     * Add a provider to this instance
-     * @method addProviderToInstance
-     * @param {string} provider - Provider command argument
-     * @param {string} profile - Profile name
-     * @returns {Promise<boolean>} True if provider added successfully
-     * @throws {Error} If provider addition fails
+     * Notify an existing instance
+     * @method notifyExistingInstance
+     * @param {Array<string>} args - CLI arguments
+     * @throws {Error} If notification fails
      */
-    async addProviderToInstance(provider, profile) {
-        let release;
+    async notifyExistingInstance(args) {
         try {
-            if (!this.instanceId) {
-                throw new Error('Instance not initialized');
+            // Get existing instances
+            const instances = await this.getRunningInstances();
+            if (instances.length === 0) {
+                throw new Error('No running instances found');
             }
 
-            // Acquire lock for file operations
-            release = await this.acquireWriteLock(this.instanceLockFile);
+            // Send notification to first instance
+            const instance = instances[0];
+            // TODO: Implement IPC notification
+            log.info(`Notifying instance ${instance} with args: ${args.join(' ')}`);
+        } catch (error) {
+            log.error('Error notifying existing instance:', error);
+            throw error;
+        }
+    }
 
+    /**
+     * Get running instances
+     * @method getRunningInstances
+     * @returns {Promise<Array<string>>} List of running instance IDs
+     */
+    async getRunningInstances() {
+        try {
             // Read lock data
+            if (!fs.existsSync(this.instanceLockFile)) {
+                return [];
+            }
+
             const data = await fs.promises.readFile(this.instanceLockFile, 'utf8');
             const lockData = JSON.parse(data);
 
-            // Add provider to instance
-            if (!lockData.instances[this.instanceId].providers) {
-                lockData.instances[this.instanceId].providers = [];
-            }
-            lockData.instances[this.instanceId].providers.push({ provider, profile });
+            // Filter running instances
+            const instances = Object.keys(lockData.instances).filter(instanceId => {
+                const instance = lockData.instances[instanceId];
+                return this.isProcessRunning(instance.pid);
+            });
 
-            // Write updated lock data
-            await fs.promises.writeFile(this.instanceLockFile, JSON.stringify(lockData, null, 2));
-            log.info(`Added provider ${provider} to instance ${this.instanceId}`);
-            return true;
+            return instances;
         } catch (error) {
-            log.error('Error adding provider to instance:', error);
-            return false;
-        } finally {
-            if (release) {
-                await release();
+            log.error('Error getting running instances:', error);
+            return [];
+        }
+    }
+
+    /**
+     * Get sessions for an instance
+     * @method getInstanceSessions
+     * @param {string} instanceId - Instance ID
+     * @returns {Promise<Array<Object>>} List of sessions for the instance
+     */
+    async getInstanceSessions(instanceId) {
+        try {
+            // Read lock data
+            if (!fs.existsSync(this.instanceLockFile)) {
+                return [];
             }
+
+            const data = await fs.promises.readFile(this.instanceLockFile, 'utf8');
+            const lockData = JSON.parse(data);
+
+            // Get sessions for instance
+            const instance = lockData.instances[instanceId];
+            if (!instance) {
+                return [];
+            }
+
+            return instance.providers;
+        } catch (error) {
+            log.error('Error getting instance sessions:', error);
+            return [];
         }
     }
 
@@ -474,142 +473,6 @@ class InstanceManager {
             }
         } catch (error) {
             return false;
-        }
-    }
-
-    /**
-     * Register a provider session with this instance
-     * @method registerSession
-     * @param {BaseProvider} provider - Provider instance
-     * @param {string} profile - Profile name
-     * @returns {Promise<boolean>} True if registration successful
-     * @throws {Error} If registration fails
-     */
-    async registerSession(provider, profile) {
-        if (!provider || !profile) {
-            log.error('Invalid provider or profile for session registration');
-            throw new Error('Invalid provider or profile');
-        }
-
-        let release;
-        try {
-            // Acquire lock for file operations
-            release = await this.acquireWriteLock(this.instanceLockFile);
-
-            // Read current lock data
-            let lockData;
-            try {
-                const data = await fs.promises.readFile(this.instanceLockFile, 'utf8');
-                lockData = JSON.parse(data);
-            } catch (error) {
-                log.error('Error reading lock file:', error);
-                throw error;
-            }
-
-            // Ensure instance exists in lock file
-            if (!lockData.instances[this.instanceId]) {
-                log.error('Instance not found in lock file');
-                throw new Error('Instance not found');
-            }
-
-            // Add provider to instance's providers list if not already present
-            const providerData = {
-                name: provider.getName(),
-                profile,
-                timestamp: Date.now()
-            };
-
-            const instance = lockData.instances[this.instanceId];
-            const existingProvider = instance.providers.find(p => 
-                p.name === providerData.name && p.profile === providerData.profile
-            );
-
-            if (!existingProvider) {
-                instance.providers.push(providerData);
-                log.info(`Added provider ${provider.getName()} with profile ${profile} to instance ${this.instanceId}`);
-            } else {
-                log.info(`Provider ${provider.getName()} with profile ${profile} already registered`);
-            }
-
-            // Write updated lock data
-            await fs.promises.writeFile(this.instanceLockFile, JSON.stringify(lockData, null, 2));
-
-            // Store session in memory
-            const sessionKey = `${provider.getName()}:${profile}`;
-            this.activeSessions.set(sessionKey, {
-                provider,
-                profile,
-                timestamp: Date.now()
-            });
-
-            return true;
-        } catch (error) {
-            log.error('Failed to register provider session:', error);
-            throw error;
-        } finally {
-            if (release) {
-                await release();
-            }
-        }
-    }
-
-    /**
-     * Unregister a provider session from this instance
-     * @method unregisterSession
-     * @param {BaseProvider} provider - Provider instance
-     * @param {string} profile - Profile name
-     * @returns {Promise<boolean>} True if unregistration successful
-     */
-    async unregisterSession(provider, profile) {
-        if (!provider || !profile) {
-            log.error('Invalid provider or profile for session unregistration');
-            return false;
-        }
-
-        let release;
-        try {
-            // Acquire lock for file operations
-            release = await this.acquireWriteLock(this.instanceLockFile);
-
-            // Read current lock data
-            let lockData;
-            try {
-                const data = await fs.promises.readFile(this.instanceLockFile, 'utf8');
-                lockData = JSON.parse(data);
-            } catch (error) {
-                log.error('Error reading lock file:', error);
-                return false;
-            }
-
-            // Ensure instance exists in lock file
-            if (!lockData.instances[this.instanceId]) {
-                log.warn('Instance not found in lock file during unregister');
-                return false;
-            }
-
-            // Remove provider from instance's providers list
-            const instance = lockData.instances[this.instanceId];
-            const providerName = provider.getName();
-            instance.providers = instance.providers.filter(p => 
-                !(p.name === providerName && p.profile === profile)
-            );
-
-            // Write updated lock data
-            await fs.promises.writeFile(this.instanceLockFile, JSON.stringify(lockData, null, 2));
-
-            // Remove session from memory
-            const sessionKey = `${providerName}:${profile}`;
-            this.activeSessions.delete(sessionKey);
-
-            log.info(`Unregistered provider ${providerName} with profile ${profile}`);
-            return true;
-        } catch (error) {
-            log.error('Failed to unregister provider session:', error);
-            return false;
-        } finally {
-            if (release) {
-                await release();
-            }
         }
     }
 

@@ -156,6 +156,147 @@ class BaseProvider {
     }
 
     /**
+     * Initialize the provider window
+     * @method initializeProvider
+     * @param {string} profile - Profile name
+     * @returns {Promise<void>}
+     */
+    async initializeProvider(profile) {
+        try {
+            log.info(`Initializing ${this.getName()} provider with profile: ${profile}`);
+
+            // Create window with metadata
+            const windowName = `${this.getName()}:${profile}`;
+            const metadata = {
+                provider: this,
+                profile,
+                startHidden: false // Default to visible
+            };
+
+            // Get window configuration
+            const windowConfig = this.getWindowConfig();
+            const webPreferences = {
+                ...this.getWebPreferences(),
+                contextIsolation: true, // Required for security
+                webSecurity: true,      // Required for security
+                nodeIntegration: false, // Required for security
+                enableRemoteModule: false,
+                partition: this.getPartitionName(profile)
+            };
+
+            windowConfig.webPreferences = webPreferences;
+
+            // Create window through WindowService
+            const windowService = require('../../services/window.service');
+            const window = windowService.createWindow(windowConfig, windowName, metadata);
+            
+            if (!window) {
+                throw new Error(`Failed to create window for ${this.getName()}`);
+            }
+
+            // Store window reference
+            this.window = window;
+
+            // Initialize window content
+            await this.initializeWindow(profile);
+
+            // Create tray icon
+            const trayService = require('../../services/tray.service');
+            const tray = trayService.createTray(this, windowName);
+            
+            if (!tray) {
+                throw new Error(`Failed to create tray for ${this.getName()}`);
+            }
+
+            // Register session
+            const instanceManager = require('../../services/instance.manager');
+            await instanceManager.registerSession(this, profile);
+
+        } catch (error) {
+            log.error(`Error initializing provider ${this.getName()}:`, error);
+            throw error;
+        }
+    }
+
+    /**
+     * Initialize the window content
+     * @method initializeWindow
+     * @param {string} profile - Profile name
+     * @returns {Promise<void>}
+     */
+    async initializeWindow(profile) {
+        if (!this.window) {
+            throw new Error('Window not available for initialization');
+        }
+
+        try {
+            // Set user agent
+            const userAgent = this.getUserAgent();
+            if (userAgent) {
+                this.window.webContents.setUserAgent(userAgent);
+            }
+
+            // Load provider URL
+            const url = this.getUrl();
+            if (!url) {
+                throw new Error('Provider URL not available');
+            }
+
+            await this.window.loadURL(url);
+
+            // Setup window events after load
+            this.setupWindowEvents();
+
+            log.info(`Window initialized for ${this.getName()}`);
+        } catch (error) {
+            log.error(`Error initializing window for ${this.getName()}:`, error);
+            throw error;
+        }
+    }
+
+    /**
+     * Setup window events
+     * @method setupWindowEvents
+     * @private
+     */
+    setupWindowEvents() {
+        if (!this.window || !this.window.webContents) {
+            log.error('Window or webContents not available for setting up event handlers');
+            return;
+        }
+
+        // Handle window show event
+        this.window.on('show', () => {
+            log.debug(`Window shown for ${this.getName()}`);
+            this.updateTrayIcon();
+        });
+
+        // Handle window hide event
+        this.window.on('hide', () => {
+            log.debug(`Window hidden for ${this.getName()}`);
+            this.updateTrayIcon();
+        });
+
+        // Handle window close event
+        this.window.on('close', (event) => {
+            if (!this.isQuitting) {
+                event.preventDefault();
+                this.window.hide();
+                this.updateTrayIcon();
+            }
+        });
+
+        // Handle webContents events
+        this.window.webContents.on('did-finish-load', () => {
+            log.debug(`WebContents finished loading for ${this.getName()}`);
+        });
+
+        this.window.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
+            log.error(`WebContents failed to load for ${this.getName()}:`, errorDescription);
+        });
+    }
+
+    /**
      * Spawns a new window for the provider.
      * @param {string} profile - Profile name for window isolation
      * @param {Object} metadata - Additional metadata for the window
@@ -192,106 +333,6 @@ class BaseProvider {
         } catch (error) {
             log.error(`[${this.getName()}] Error spawning window:`, error);
             return null;
-        }
-    }
-
-    /**
-     * Initializes the provider's window with specific configuration.
-     * @param {string} profile - Profile name
-     * @returns {Promise<void>}
-     * @throws {Error} If window is not properly initialized
-     */
-    async initializeWindow(profile) {
-        if (!this.window || !this.window.webContents) {
-            throw new Error('Window not properly initialized');
-        }
-
-        try {
-            // Set user agent
-            const userAgent = userAgentConfig.getUserAgent(this.getName());
-            if (userAgent) {
-                this.window.webContents.setUserAgent(userAgent);
-            }
-
-            // Load provider URL
-            const url = this.getUrl();
-            if (!url) {
-                throw new Error('Provider URL not specified');
-            }
-            await this.window.loadURL(url);
-
-            // Set up window event handlers if not already done
-            if (!this.eventsSetup) {
-                // Handle new window creation
-                this.window.webContents.setWindowOpenHandler(({ url }) => {
-                    // Open URLs in external browser
-                    shell.openExternal(url);
-                    return { action: 'deny' };
-                });
-
-                // Handle window close
-                this.window.on('close', (event) => {
-                    if (!global.isQuitting) {
-                        event.preventDefault();
-                        this.window.hide();
-                    }
-                });
-
-                // Handle window blur
-                this.window.on('blur', () => {
-                    if (this.hasNotification) {
-                        this.hasNotification = false;
-                        trayService.stopNotification(this.window);
-                    }
-                });
-
-                // Handle window focus
-                this.window.on('focus', () => {
-                    if (this.hasNotification) {
-                        this.hasNotification = false;
-                        trayService.stopNotification(this.window);
-                    }
-                });
-
-                // Handle page title updates
-                this.window.on('page-title-updated', (event, title) => {
-                    event.preventDefault();
-                    if (title.includes('(')) {
-                        if (!this.hasNotification && !this.window.isFocused()) {
-                            this.hasNotification = true;
-                            trayService.startNotification(this.window, this.getNotificationInterval());
-                        }
-                    } else {
-                        if (this.hasNotification) {
-                            this.hasNotification = false;
-                            trayService.stopNotification(this.window);
-                        }
-                    }
-                });
-
-                // Handle window hide
-                this.window.on('hide', () => {
-                    this.onWindowHide();
-                });
-
-                // Handle window show
-                this.window.on('show', () => {
-                    this.onWindowShow();
-                });
-
-                // Set up provider-specific event handlers
-                this.setupEventHandlers();
-
-                // Inject custom JavaScript if needed
-                this.injectCustomJS();
-
-                this.eventsSetup = true;
-            }
-
-            log.info(`[${this.getName()}] Window initialized successfully`);
-        } catch (error) {
-            log.error(`[${this.getName()}] Error initializing window:`, error);
-            throw error;
         }
     }
 
