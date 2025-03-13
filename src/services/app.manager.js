@@ -221,13 +221,18 @@ class AppManager {
             await new Promise((resolve, reject) => {
                 const timeout = setTimeout(() => {
                     reject(new Error('Window ready-to-show timeout'));
-                }, 10000);
+                }, 30000); // Increased from 10000 to 30000 (30 seconds)
 
                 const cleanup = () => {
                     window.removeAllListeners('ready-to-show');
                     window.removeAllListeners('closed');
                     clearTimeout(timeout);
                 };
+
+                // Add a did-finish-load event handler to help with debugging
+                window.webContents.once('did-finish-load', () => {
+                    logger.info(`[${provider.getName()}] Window did-finish-load event fired`);
+                });
 
                 window.once('ready-to-show', () => {
                     try {

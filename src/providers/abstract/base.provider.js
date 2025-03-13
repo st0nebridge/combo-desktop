@@ -230,11 +230,43 @@ class BaseProvider {
 
             // Inject custom JS after load
             this.injectCustomJS();
+            
+            // Register keyboard shortcuts after window is fully initialized
+            this.registerKeyboardShortcuts();
 
             log.info(`Window initialized for ${this.getName()}`);
         } catch (error) {
             log.error(`Error initializing window for ${this.getName()}:`, error);
             throw error;
+        }
+    }
+
+    /**
+     * Register keyboard shortcuts for the window
+     * @method registerKeyboardShortcuts
+     * @private
+     */
+    registerKeyboardShortcuts() {
+        if (!this.window) {
+            log.error(`Cannot register shortcuts - no window for ${this.getName()}`);
+            return;
+        }
+
+        try {
+            // Unregister any existing shortcuts first to prevent duplicates
+            electronLocalshortcut.unregisterAll(this.window);
+            
+            // Register ESC shortcut to minimize window to tray
+            electronLocalshortcut.register(this.window, 'Escape', () => {
+                if (this.window && this.window.isVisible() && !this.window.isDestroyed()) {
+                    log.debug(`ESC pressed, minimizing ${this.getName()} to tray`);
+                    this.window.hide();
+                }
+            });
+            
+            log.debug(`Keyboard shortcuts registered for ${this.getName()}`);
+        } catch (error) {
+            log.error(`Error registering keyboard shortcuts for ${this.getName()}:`, error);
         }
     }
 
