@@ -108,7 +108,8 @@ class TrayService {
     updateTrayIcon(windowName, isVisible) {
         const trayInfo = this.trays.get(windowName);
         if (!trayInfo) {
-            logger.warn(`No tray found for window: ${windowName}`);
+            // Log at debug level instead of warning to avoid log spam
+            logger.debug(`No tray found for window: ${windowName}`);
             return;
         }
 
@@ -119,18 +120,21 @@ class TrayService {
             const hasNotification = this.notificationStates.get(windowName) || false;
             const trayIcon = provider.getTrayIcon(hasNotification, !isVisible);
             
-            if (trayIcon && trayIcon.image) {
-                logger.info('Updating tray icon from provider');
-                tray.setImage(trayIcon.image);
+            // Update tray icon if it exists and is not destroyed
+            if (tray && !tray.isDestroyed()) {
+                if (trayIcon && trayIcon.image) {
+                    logger.info('Updating tray icon from provider');
+                    tray.setImage(trayIcon.image);
+                }
+
+                // Update tooltip to show window state
+                const profile = windowName.split(':')[1] || 'default';
+                const state = isVisible ? 'Running' : 'Minimized to tray';
+                tray.setToolTip(`${provider.getName()} (${profile}) - ${state}`);
+
+                // Update context menu
+                this.updateContextMenu(tray, provider);
             }
-
-            // Update tooltip to show window state
-            const profile = windowName.split(':')[1] || 'default';
-            const state = isVisible ? 'Running' : 'Minimized to tray';
-            tray.setToolTip(`${provider.getName()} (${profile}) - ${state}`);
-
-            // Update context menu
-            this.updateContextMenu(tray, provider);
         } catch (error) {
             logger.error(`Error updating tray icon for ${windowName}:`, error);
         }
@@ -255,17 +259,20 @@ class TrayService {
                 this.clearNotificationTimer(windowName);
                 this.notificationStates.delete(windowName);
 
-                // Remove all listeners and destroy
-                tray.removeAllListeners();
-                tray.destroy();
+                // Remove all listeners and destroy if not already destroyed
+                if (tray && !tray.isDestroyed()) {
+                    tray.removeAllListeners();
+                    tray.destroy();
+                    logger.info(`Destroyed tray icon for ${windowName}`);
+                }
 
                 // Remove from maps
                 this.trays.delete(windowName);
-
-                logger.info(`Destroyed tray icon for ${windowName}`);
             } catch (error) {
                 logger.error(`Error destroying tray for ${windowName}:`, error);
             }
+        } else {
+            logger.debug(`No tray to destroy for ${windowName}`);
         }
     }
 
@@ -274,10 +281,16 @@ class TrayService {
      * @method cleanup
      */
     cleanup() {
+        logger.info(`Cleaning up all tray icons (count: ${this.trays.size})`);
+        
+        // Create a copy of the keys to avoid modification during iteration
+        const windowNames = [...this.trays.keys()];
+        
         // Clear all notification timers and destroy trays
-        for (const [windowName] of this.trays) {
+        for (const windowName of windowNames) {
             this.destroyTray(windowName);
         }
+        
         this.trays.clear();
         this.notificationStates.clear();
         this.notificationTimers.clear();

@@ -125,40 +125,73 @@ class WindowService {
                 this.windows.delete(windowName);
 
                 // Check if this was the last window
-                if (this.windows.size === 0 && !this.isQuitting) {
+                if (this.windows.size === 0) {
                     // Set quitting flag to prevent windows from being hidden
                     this.isQuitting = true;
-                    app.quit();
+                    
+                    try {
+                        // Clean up tray icons to allow app to exit
+                        const trayService = require('./tray.service');
+                        trayService.cleanup();
+                        
+                        // Clean up instance manager
+                        const instanceManager = require('./instance.manager');
+                        await instanceManager.cleanup();
+                    } catch (cleanupError) {
+                        // Log but continue with quit even if cleanup fails
+                        const log = require('../services/logging.service');
+                        log.error('Error during final cleanup:', cleanupError);
+                    }
+                    
+                    // Force quit the application
+                    const { app } = require('electron');
+                    
+                    // Use a timeout to ensure all async operations have time to complete
+                    // but don't emit events that could trigger race conditions
+                    process.nextTick(() => {
+                        app.exit(0); // Force immediate exit
+                    });
                 }
             } catch (error) {
+                const log = require('../services/logging.service');
                 log.error(`Error cleaning up window ${windowName}:`, error);
+                
+                // Ensure app quits even if there's an error
+                const { app } = require('electron');
+                app.exit(1);
             }
         });
 
         // Handle window hide event
         window.on('hide', () => {
-            // Update tray icon state
-            const trayService = require('./tray.service');
-            trayService.updateTrayIcon(windowName, false);
+            // Only update tray if we're not quitting
+            if (!this.isQuitting) {
+                // Update tray icon state
+                const trayService = require('./tray.service');
+                trayService.updateTrayIcon(windowName, false);
 
-            if (window.metadata && window.metadata.provider) {
-                const { provider } = window.metadata;
-                if (provider.onWindowHide) {
-                    provider.onWindowHide();
+                if (window.metadata && window.metadata.provider) {
+                    const { provider } = window.metadata;
+                    if (provider.onWindowHide) {
+                        provider.onWindowHide();
+                    }
                 }
             }
         });
 
         // Handle window show event
         window.on('show', () => {
-            // Update tray icon state
-            const trayService = require('./tray.service');
-            trayService.updateTrayIcon(windowName, true);
+            // Only update tray if we're not quitting
+            if (!this.isQuitting) {
+                // Update tray icon state
+                const trayService = require('./tray.service');
+                trayService.updateTrayIcon(windowName, true);
 
-            if (window.metadata && window.metadata.provider) {
-                const { provider } = window.metadata;
-                if (provider.onWindowShow) {
-                    provider.onWindowShow();
+                if (window.metadata && window.metadata.provider) {
+                    const { provider } = window.metadata;
+                    if (provider.onWindowShow) {
+                        provider.onWindowShow();
+                    }
                 }
             }
         });

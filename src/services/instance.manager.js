@@ -332,33 +332,43 @@ class InstanceManager {
             // Acquire lock for file operations
             release = await this.acquireWriteLock(this.instanceLockFile);
 
-            // Read existing lock data or create new
-            let lockData = { instances: {} };
-            if (fs.existsSync(this.instanceLockFile)) {
-                try {
-                    const data = await fs.promises.readFile(this.instanceLockFile, 'utf8');
+            // Default lock data structure
+            let lockData = {
+                instances: {}
+            };
+
+            try {
+                // Try to read existing lock data
+                const data = await fs.promises.readFile(this.instanceLockFile, 'utf8');
+                if (data && data.trim()) {
                     lockData = JSON.parse(data);
-                } catch (error) {
-                    log.warn('Error reading lock file, creating new one:', error);
+                    
+                    // Ensure the structure is valid
+                    if (!lockData.instances) {
+                        lockData.instances = {};
+                    }
                 }
+            } catch (readError) {
+                // If file doesn't exist or is corrupted, use default structure
+                log.warn(`Lock file could not be read, creating new one: ${readError.message}`);
             }
 
-            // Add this instance
+            // Add new instance
             lockData.instances[instanceId] = {
                 pid: process.pid,
-                profile: this.currentProfile,
+                timestamp: Date.now(),
                 providers: []
             };
 
             // Write updated lock data
             await fs.promises.writeFile(this.instanceLockFile, JSON.stringify(lockData, null, 2));
-            log.info(`Initialized lock file for instance ${instanceId}`);
+            log.info(`Lock file initialized for instance ${instanceId}`);
         } catch (error) {
             log.error('Error initializing lock file:', error);
             throw error;
         } finally {
             if (release) {
-                await release();
+                release();
             }
         }
     }
@@ -403,7 +413,7 @@ class InstanceManager {
             throw error;
         } finally {
             if (release) {
-                await release();
+                release();
             }
         }
     }
@@ -547,7 +557,7 @@ class InstanceManager {
             log.error('Error during cleanup:', error);
         } finally {
             if (release) {
-                await release();
+                release();
             }
         }
     }
@@ -591,9 +601,26 @@ class InstanceManager {
             // Acquire lock for file operations
             release = await this.acquireWriteLock(this.instanceLockFile);
 
-            // Read existing lock data
-            const data = await fs.promises.readFile(this.instanceLockFile, 'utf8');
-            const lockData = JSON.parse(data);
+            // Default lock data structure
+            let lockData = {
+                instances: {}
+            };
+
+            try {
+                // Try to read existing lock data
+                const data = await fs.promises.readFile(this.instanceLockFile, 'utf8');
+                if (data && data.trim()) {
+                    lockData = JSON.parse(data);
+                    
+                    // Ensure the structure is valid
+                    if (!lockData.instances) {
+                        lockData.instances = {};
+                    }
+                }
+            } catch (readError) {
+                // If file doesn't exist or is corrupted, use default structure
+                log.warn(`Lock file could not be read, creating new one: ${readError.message}`);
+            }
 
             // Add new instance
             lockData.instances[instanceId] = {
@@ -610,7 +637,7 @@ class InstanceManager {
             throw error;
         } finally {
             if (release) {
-                await release();
+                release();
             }
         }
     }

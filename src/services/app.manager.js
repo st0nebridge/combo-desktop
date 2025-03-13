@@ -234,8 +234,17 @@ class AppManager {
                     logger.info(`[${provider.getName()}] Window did-finish-load event fired`);
                 });
 
+                // Flag to track if we've already resolved or rejected the promise
+                let isSettled = false;
+
                 window.once('ready-to-show', () => {
                     try {
+                        if (isSettled) {
+                            return;
+                        }
+                        
+                        isSettled = true;
+                        
                         if (!window.isDestroyed()) {
                             // Show window and update tray state
                             window.show();
@@ -252,8 +261,19 @@ class AppManager {
                 });
 
                 window.once('closed', () => {
+                    if (isSettled) {
+                        return;
+                    }
+                    
+                    isSettled = true;
                     cleanup();
-                    reject(new Error('Window was closed before ready'));
+                    
+                    // If window is closed during app quit, don't reject
+                    if (windowService.isQuitting) {
+                        resolve();
+                    } else {
+                        reject(new Error('Window was closed before ready'));
+                    }
                 });
             });
 
