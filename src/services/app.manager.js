@@ -188,6 +188,19 @@ class AppManager {
 
         logger.debug('CLI arguments:', args);
 
+        // Check for help or manual flags directly
+        if (args.includes('--help') || args.includes('--manual')) {
+            logger.info('Help or manual flag detected, executing CLI command');
+            // Execute CLI command
+            await cliRegistry.execute(args);
+            // Exit the process after showing help
+            if (args.includes('--manual')) {
+                logger.info('Manual flag detected, exiting after showing help');
+                process.exit(0);
+            }
+            return { success: true, isCliCommand: true, processedProviders: [] };
+        }
+
         // Execute CLI command
         const result = await cliRegistry.execute(args);
         if (result.success && result.isCliCommand) {

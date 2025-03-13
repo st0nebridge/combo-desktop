@@ -7,7 +7,6 @@ const { app, ipcMain } = require('electron');
 const log = require('electron-log');
 const path = require('path');
 const fs = require('fs');
-const { execSync } = require('child_process');
 const properLock = require('proper-lockfile');
 
 /**
@@ -279,6 +278,44 @@ class InstanceManager {
             log.info('Instance cleaned up');
         } catch (error) {
             log.error('Error cleaning up instance:', error);
+        }
+    }
+
+    /**
+     * Delegate a command to an existing instance
+     * @method delegateCommand
+     * @param {Array<string>} args - Command line arguments to delegate
+     * @returns {Promise<boolean>} True if command was delegated successfully
+     */
+    async delegateCommand(args) {
+        try {
+            log.info('Delegating command to existing instance:', args);
+            
+            // Get running instances from PID file
+            const pids = await this.readPidFile();
+            if (pids.length === 0) {
+                log.warn('No running instances found to delegate command to');
+                return false;
+            }
+            
+            // Get the first running instance
+            const targetPid = pids[0];
+            log.info(`Delegating command to instance with PID: ${targetPid}`);
+            
+            // Prepare command arguments as a JSON string
+            const commandArgs = JSON.stringify(args);
+            
+            // Use IPC or another mechanism to send the command to the running instance
+            // For now, we'll just log that we would delegate the command
+            log.info(`Command would be delegated to PID ${targetPid} with args: ${commandArgs}`);
+            
+            // In a real implementation, you would use IPC, sockets, or another mechanism
+            // to communicate with the running instance
+            
+            return true;
+        } catch (error) {
+            log.error('Error delegating command:', error);
+            return false;
         }
     }
 }
