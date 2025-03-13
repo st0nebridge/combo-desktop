@@ -4,7 +4,7 @@
  */
 
 const { app } = require('electron');
-const log = require('electron-log');
+const logger = require('./logging.service');
 const { ipcMain } = require('electron');
 const windowService = require('./window.service');
 const trayService = require('./tray.service');
@@ -33,7 +33,7 @@ class AppManager {
         this.isQuitting = false;
         
         this.setupEventHandlers();
-        log.info('App Manager initialized');
+        logger.info('App Manager initialized');
     }
 
     /**
@@ -120,17 +120,18 @@ class AppManager {
             
             // Initialize profile manager first
             await profileManager.init();
+            logger.info('Profile Manager initialization complete');
 
-            // For CLI commands, we don't need full initialization
-            if (args && args.command) {
-                log.info('CLI command detected, skipping full initialization');
+            // For non-provider CLI commands (like --version), we don't need full initialization
+            if (args && args.isCliCommand && !args.command) {
+                logger.info('CLI utility command detected, skipping full initialization');
                 return true;
             }
 
             // Handle instance registration if needed
-            if (args && !args.cliCommand) {
+            if (args && !args.isCliCommand) {
                 if (!(await instanceManager.handleInstanceRegistration(args))) {
-                    log.error('Failed to register instance');
+                    logger.error('Failed to register instance');
                     return false;
                 }
             }
@@ -139,25 +140,25 @@ class AppManager {
             if (args && args.command) {
                 const success = await this.initializeProvider(args.command, args.profile || 'default', args);
                 if (!success) {
-                    log.error(`Failed to initialize provider: ${args.command}`);
+                    logger.error(`Failed to initialize provider: ${args.command}`);
                     return false;
                 }
-            } else if (args && !args.cliCommand) {
+            } else if (args && !args.isCliCommand) {
                 // No providers specified and not a CLI command, create main window
                 this.createMainWindow();
             }
 
-            log.info('Application initialized successfully');
+            logger.info('Application initialized successfully');
             return true;
         } catch (error) {
-            log.error('Failed to initialize application:', error);
+            logger.error('Failed to initialize application:', error);
             throw error;
         }
     }
 
     /**
      * Initialize a provider with specified profile.
-     * Creates provider instance, window, and tray if needed.
+     * Creates provider instance, window, and tray.
      * @method initializeProvider
      * @param {string} providerName - Name of the provider
      * @param {string} profile - Profile name
@@ -167,37 +168,61 @@ class AppManager {
      */
     async initializeProvider(providerName, profile, args) {
         try {
-            log.info(`Initializing provider: ${providerName} with profile: ${profile}`);
+            logger.info(`Initializing provider: ${providerName} with profile: ${profile}`);
 
             // Create provider instance
             const provider = providerRegistry.createProvider(providerName);
             if (!provider) {
-                log.error(`Invalid provider: ${providerName}`);
+                logger.error(`Invalid provider: ${providerName}`);
                 return false;
             }
 
-            // Create window for provider
-            const window = await provider.spawnWindow(profile);
+            // Set provider profile
+            provider.profile = profile;
+
+            // Create window for provider with metadata
+            const windowName = `${provider.getName()}:${profile}`;
+            const metadata = {
+                provider,
+                profile,
+                startHidden: args.tray // Set initial window visibility based on --tray flag
+            };
+
+            // Create window with security settings
+            const windowConfig = provider.getWindowConfig();
+            const webPreferences = {
+                ...provider.getWebPreferences(),
+                contextIsolation: true,
+                webSecurity: true,
+                nodeIntegration: false,
+                enableRemoteModule: false,
+                partition: provider.getPartitionName(profile)
+            };
+
+            windowConfig.webPreferences = webPreferences;
+            const window = windowService.createWindow(windowConfig, windowName, metadata);
+            
             if (!window) {
-                log.error(`Failed to create window for provider ${providerName}`);
+                logger.error(`Failed to create window for provider ${providerName}`);
                 return false;
             }
 
-            // Create tray icon if needed
-            if (args.tray) {
-                const windowName = `${provider.getName()}:${profile}`;
-                const tray = trayService.createTray(provider, windowName);
-                if (!tray) {
-                    log.error(`Failed to create tray for provider ${providerName}`);
-                    return false;
-                }
-                log.info(`Created tray icon for ${windowName}`);
+            // Always create tray icon for the provider
+            const tray = trayService.createTray(provider, windowName);
+            if (!tray) {
+                logger.error(`Failed to create tray for provider ${providerName}`);
+                return false;
             }
+            logger.info(`Created tray icon for ${windowName}`);
 
-            log.info(`Provider ${providerName} initialized successfully`);
+            // Register provider session
+            const instanceManager = require('./instance.manager');
+            await instanceManager.registerSession(provider, profile);
+
+            logger.info(`Provider ${providerName} initialized successfully`);
             return true;
         } catch (error) {
-            log.error(`Error initializing provider ${providerName}:`, error);
+            logger.error(`Error initializing provider ${providerName}:`, error);
             return false;
         }
     }
@@ -205,21 +230,26 @@ class AppManager {
     /**
      * Handle second instance of the application
      * @method handleSecondInstance
-     * @param {Array<string>} argv - Command line arguments from second instance
+     * @param {string[]} argv - Command line arguments from second instance
      */
     handleSecondInstance(argv) {
-        // Focus the main window if it exists
-        const mainWindow = windowService.getWindow('main');
-        if (mainWindow) {
-            if (mainWindow.isMinimized()) {
-                mainWindow.restore();
+        try {
+            // Focus first window of existing instance
+            const windows = windowService.getAllWindows();
+            if (windows.length > 0) {
+                const win = windows[0];
+                if (win.isMinimized()) {
+                    win.restore();
+                }
+                win.focus();
             }
-            mainWindow.focus();
+        } catch (error) {
+            logger.error('Error handling second instance:', error);
         }
     }
 
     /**
-     * Quit the application gracefully
+     * Quit the application cleanly
      * @method quit
      */
     quit() {

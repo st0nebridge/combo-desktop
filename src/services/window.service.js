@@ -48,6 +48,7 @@ class WindowService {
                 log.info(`Window ${windowName} already exists, focusing...`);
                 const existingWindow = this.windows.get(windowName);
                 if (!existingWindow.isDestroyed()) {
+                    existingWindow.show();
                     existingWindow.focus();
                     return existingWindow;
                 }
@@ -55,16 +56,24 @@ class WindowService {
                 this.windows.delete(windowName);
             }
 
-            // Create window with provided config
+            // Enforce security settings
+            const webPreferences = {
+                ...config.webPreferences,
+                contextIsolation: true,
+                webSecurity: true,
+                nodeIntegration: false,
+                enableRemoteModule: false
+            };
+
+            // Create window with provided config and enforced security
             const window = new BrowserWindow({
                 ...config,
-                show: false // Don't show until ready-to-show
+                show: false, // Don't show until ready-to-show
+                webPreferences
             });
 
-            // Store window reference
+            // Store window reference and metadata
             this.windows.set(windowName, window);
-
-            // Store metadata
             window.metadata = metadata;
 
             // Setup window events
@@ -88,9 +97,9 @@ class WindowService {
             return;
         }
 
-        // Show window when ready
+        // Show window when ready if not starting in tray
         window.once('ready-to-show', () => {
-            if (!window.isDestroyed()) {
+            if (!window.isDestroyed() && (!window.metadata || !window.metadata.startHidden)) {
                 window.show();
             }
         });
@@ -117,7 +126,7 @@ class WindowService {
                 this.windows.delete(windowName);
 
                 // Check if this was the last window
-                if (this.windows.size === 0) {
+                if (this.windows.size === 0 && !this.isQuitting) {
                     // Set quitting flag to prevent windows from being hidden
                     this.isQuitting = true;
                     app.quit();
@@ -125,6 +134,11 @@ class WindowService {
             } catch (error) {
                 log.error(`Error cleaning up window ${windowName}:`, error);
             }
+        });
+
+        // Clear event listeners on window destruction
+        window.on('closed', () => {
+            window.removeAllListeners();
         });
     }
 

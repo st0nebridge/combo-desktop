@@ -218,8 +218,13 @@ Options:
   --help\t\t\tShow this help message
   --manual\t\tShow detailed manual
   --version\t\tShow version information
-  --tray\t\t\tStart provider in tray
+  --tray\t\t\tStart with window hidden (minimized to tray)
   --profile <name>\tUse specific profile (default: default)
+
+Note: All provider sessions will have a tray icon for quick access.
+      Close button will hide window to tray instead of quitting.
+      Click tray icon to toggle window visibility.
+      Use 'Quit' from tray menu to fully close the application.
 `);
     }
 }

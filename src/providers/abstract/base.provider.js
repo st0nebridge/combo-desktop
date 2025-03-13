@@ -17,6 +17,7 @@ const profileManager = require("../../services/profile.manager");
 const electronLocalshortcut = require('electron-localshortcut');
 const { shell } = require('electron');
 const trayService = require('../../services/tray.service');
+const path = require('path');
 
 /**
  * Abstract base class for all application providers.
@@ -44,6 +45,9 @@ class BaseProvider {
         
         /** @property {boolean} hasNotification - Whether the provider has active notifications */
         this.hasNotification = false;
+        
+        /** @property {string} profile - Profile name */
+        this.profile = null;
     }
 
     /**
@@ -89,13 +93,10 @@ class BaseProvider {
 
     /**
      * Returns the base icon path for this provider.
-     * @abstract
-     * @method getBaseIconPath
      * @returns {string} The base icon path
-     * @throws {Error} If not implemented by child class
      */
     getBaseIconPath() {
-        throw new Error('getBaseIconPath() must be implemented by child class');
+        return path.join(__dirname, '..', '..', 'assets', 'icons', this.getName().toLowerCase());
     }
     
     /**
@@ -157,9 +158,10 @@ class BaseProvider {
     /**
      * Spawns a new window for the provider.
      * @param {string} profile - Profile name for window isolation
+     * @param {Object} metadata - Additional metadata for the window
      * @returns {Promise<Electron.BrowserWindow|null>} The created window or null if creation fails
      */
-    async spawnWindow(profile) {
+    async spawnWindow(profile, metadata = {}) {
         try {
             let windowConfig = this.getWindowConfig();
             let webPreferences = this.getWebPreferences();
@@ -175,6 +177,7 @@ class BaseProvider {
             
             const windowName = `${this.getName()}:${profile}`;
             this.window = windowService.createWindow(windowConfig, windowName, {
+                ...metadata,
                 provider: this,
                 profile
             });
@@ -203,13 +206,6 @@ class BaseProvider {
             // Configure session before loading URL
             const partition = this.getPartitionName(profile);
             this.configureSession(partition);
-
-            // Register ESC shortcut to minimize window
-            electronLocalshortcut.register(this.window, 'Esc', () => {
-                if (this.window) {
-                    this.window.hide();
-                }
-            });
 
             // Handle external URLs
             this.window.webContents.setWindowOpenHandler((details) => {
@@ -280,7 +276,7 @@ class BaseProvider {
      * @returns {Object} Object containing icon path and theme info
      */
     getTrayIcon(hasNotification = false) {
-        const { getIconPath } = require('../utils/icons');
+        const { getIconPath } = require('../../utils/icons');
         return getIconPath(this.getBaseIconPath(), hasNotification);
     }
 
@@ -388,7 +384,40 @@ class BaseProvider {
     }
 
     /**
-     * Handle single click on tray icon - can be overridden by providers
+     * Get tray menu template
+     * @returns {Array<Object>} Menu template
+     */
+    getTrayMenuTemplate() {
+        return [
+            {
+                label: 'Show/Hide',
+                click: () => this.handleTrayClick()
+            },
+            {
+                label: 'Profile',
+                submenu: [
+                    {
+                        label: this.profile || 'default',
+                        enabled: false
+                    }
+                ]
+            },
+            { type: 'separator' },
+            {
+                label: 'Quit',
+                click: () => {
+                    if (this.window) {
+                        this.window.forceClose = true;
+                        this.window.close();
+                    }
+                }
+            }
+        ];
+    }
+
+    /**
+     * Handle single click on tray icon
+     * Empty handler for provider override
      */
     handleTrayClick() {
         if (this.window) {
@@ -397,7 +426,8 @@ class BaseProvider {
     }
 
     /**
-     * Handle double click on tray icon - can be overridden by providers
+     * Handle double click on tray icon
+     * Shows and focuses the window
      */
     handleTrayDoubleClick() {
         if (this.window) {
