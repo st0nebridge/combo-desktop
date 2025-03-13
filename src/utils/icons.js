@@ -259,122 +259,84 @@ function invertImageColors(image) {
  * Get the appropriate icon for the current theme and notification state
  * @param {string} serviceName - The name of the service (e.g., 'whatsapp', 'facebook')
  * @param {boolean} hasNotification - Whether there is a notification
+ * @param {boolean} isMinimized - Whether the window is minimized to tray
  * @returns {Object} Object containing icon path and theme info
  */
-function getIconPath(serviceName, hasNotification = false) {
+function getIconPath(serviceName, hasNotification = false, isMinimized = false) {
+    if (!serviceName) {
+        logger.error('Service name is required for icon lookup');
+        return null;
+    }
+
     const isDarkMode = nativeTheme.shouldUseDarkColors;
+    const baseDir = path.resolve(__dirname, '..', '..', 'assets', 'icons', serviceName.toLowerCase());
+
+    if (!fs.existsSync(baseDir)) {
+        logger.error(`Icon directory not found for service: ${serviceName}`);
+        return null;
+    }
+
     logger.info(`Getting icon for service: ${serviceName}`, { 
         hasNotification, 
-        isDarkMode, 
-        themeSource: nativeTheme.themeSource 
+        isDarkMode,
+        isMinimized,
+        themeSource: nativeTheme.themeSource,
+        baseDir
     });
-    
-    const baseDir = path.join(__dirname, '..', '..', 'assets', 'icons', serviceName);
-    logger.info(`Base icon directory: ${baseDir}`);
-    
-    // Check theme-specific folders first
+
+    // Define icon variants to try in order of preference
+    const iconVariants = [];
     const themeFolder = isDarkMode ? 'dark' : 'light';
-    const oppositeThemeFolder = isDarkMode ? 'light' : 'dark';
     
-    // Try theme-specific folder first
-    const themeFolderPath = path.join(baseDir, themeFolder);
-    if (fs.existsSync(themeFolderPath)) {
-        const iconPath = hasNotification 
-            ? path.join(themeFolderPath, 'tray_notif.ico')
-            : path.join(themeFolderPath, 'tray.ico');
-            
+    // Add notification icon if needed
+    if (hasNotification) {
+        iconVariants.push(
+            path.join(baseDir, themeFolder, 'tray_notif.ico'),
+            path.join(baseDir, 'tray_notif.ico')
+        );
+    }
+
+    // Add minimized icon if needed
+    if (isMinimized) {
+        iconVariants.push(
+            path.join(baseDir, themeFolder, 'tray_min.ico'),
+            path.join(baseDir, 'tray_min.ico')
+        );
+    }
+
+    // Add regular tray icons
+    iconVariants.push(
+        path.join(baseDir, themeFolder, 'tray.ico'),
+        path.join(baseDir, themeFolder, 'icon.ico'),
+        path.join(baseDir, 'tray.ico'),
+        path.join(baseDir, 'icon.ico')
+    );
+
+    // Try each variant
+    for (const iconPath of iconVariants) {
         if (fs.existsSync(iconPath)) {
-            logger.info(`Found theme-specific icon: ${iconPath}`);
+            logger.info(`Using icon: ${iconPath}`);
             return {
                 image: nativeImage.createFromPath(iconPath),
                 isDarkMode,
-                hasNotification
+                hasNotification,
+                isMinimized
             };
         }
-        logger.warn(`Theme-specific icon not found: ${iconPath}`);
     }
-    
-    // Try opposite theme folder and invert
-    const oppositeThemeFolderPath = path.join(baseDir, oppositeThemeFolder);
-    if (fs.existsSync(oppositeThemeFolderPath)) {
-        const iconPath = hasNotification 
-            ? path.join(oppositeThemeFolderPath, 'tray_notif.ico')
-            : path.join(oppositeThemeFolderPath, 'tray.ico');
-            
-        if (fs.existsSync(iconPath)) {
-            logger.info(`Found opposite theme icon to invert: ${iconPath}`);
-            let image = nativeImage.createFromPath(iconPath);
-            return {
-                image: invertImageColors(image),
-                isDarkMode,
-                hasNotification
-            };
-        }
-        logger.warn(`Opposite theme icon not found: ${iconPath}`);
-    }
-    
-    // Try theme-specific root icons
-    const themeIcon = isDarkMode ? 'dark.ico' : 'light.ico';
-    const themeIconPath = path.join(baseDir, themeIcon);
-    if (fs.existsSync(themeIconPath)) {
-        logger.info(`Found root theme icon: ${themeIconPath}`);
-        return {
-            image: nativeImage.createFromPath(themeIconPath),
-            isDarkMode,
-            hasNotification
-        };
-    }
-    logger.warn(`Root theme icon not found: ${themeIconPath}`);
-    
-    // Try generic icon.ico with inversion if needed
-    const defaultIconPath = path.join(baseDir, 'icon.ico');
-    if (fs.existsSync(defaultIconPath)) {
-        logger.info(`Using default icon with auto-detection: ${defaultIconPath}`);
-        let image = nativeImage.createFromPath(defaultIconPath);
-        
-        // Detect if icon is light or dark and invert if necessary
-        const size = image.getSize();
-        const buffer = image.toBitmap();
-        let totalBrightness = 0;
-        
-        for (let i = 0; i < buffer.length; i += 4) {
-            const r = buffer[i + 2];
-            const g = buffer[i + 1];
-            const b = buffer[i];
-            totalBrightness += (r + g + b) / 3;
-        }
-        
-        const avgBrightness = totalBrightness / (size.width * size.height);
-        const isLightIcon = avgBrightness > 128;
-        
-        logger.info('Icon brightness analysis:', { 
-            avgBrightness, 
-            isLightIcon, 
-            needsInversion: (isDarkMode && isLightIcon) || (!isDarkMode && !isLightIcon) 
-        });
-        
-        if ((isDarkMode && isLightIcon) || (!isDarkMode && !isLightIcon)) {
-            image = invertImageColors(image);
-        }
-        
-        return {
-            image,
-            isDarkMode,
-            hasNotification
-        };
-    }
-    
+
     // Final fallback to app.ico
-    const appIconPath = path.join(__dirname, '..', '..', 'assets', 'icons', 'app.ico');
+    const appIconPath = path.resolve(__dirname, '..', '..', 'assets', 'icons', 'app.ico');
     if (fs.existsSync(appIconPath)) {
         logger.warn(`No service-specific icon found for ${serviceName}, falling back to app.ico`);
         return {
             image: nativeImage.createFromPath(appIconPath),
             isDarkMode,
-            hasNotification
+            hasNotification,
+            isMinimized
         };
     }
-    
+
     logger.error(`No suitable icon found for ${serviceName} and app.ico fallback is missing`);
     return null;
 }
@@ -385,8 +347,14 @@ function getIconPath(serviceName, hasNotification = false) {
  * @returns {string} Path to the app icon
  */
 function getAppIconPath(serviceName) {
-    const iconPath = path.join(__dirname, '..', '..', 'assets', 'icons', serviceName, 'icon.ico');
-    return fs.existsSync(iconPath) ? iconPath : path.join(__dirname, '..', '..', 'assets', 'icons', 'app.ico');
+    if (!serviceName) {
+        return path.resolve(__dirname, '..', '..', 'assets', 'icons', 'app.ico');
+    }
+
+    const baseDir = path.resolve(__dirname, '..', '..', 'assets', 'icons', serviceName.toLowerCase());
+    const iconPath = path.join(baseDir, 'app.ico');
+
+    return fs.existsSync(iconPath) ? iconPath : path.resolve(__dirname, '..', '..', 'assets', 'icons', 'app.ico');
 }
 
 module.exports = {

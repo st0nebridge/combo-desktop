@@ -554,6 +554,66 @@ class InstanceManager {
     }
 
     /**
+     * Unregister a provider session from this instance
+     * @method unregisterSession
+     * @param {BaseProvider} provider - Provider instance
+     * @param {string} profile - Profile name
+     * @returns {Promise<boolean>} True if unregistration successful
+     */
+    async unregisterSession(provider, profile) {
+        if (!provider || !profile) {
+            log.error('Invalid provider or profile for session unregistration');
+            return false;
+        }
+
+        let release;
+        try {
+            // Acquire lock for file operations
+            release = await this.acquireWriteLock(this.instanceLockFile);
+
+            // Read current lock data
+            let lockData;
+            try {
+                const data = await fs.promises.readFile(this.instanceLockFile, 'utf8');
+                lockData = JSON.parse(data);
+            } catch (error) {
+                log.error('Error reading lock file:', error);
+                return false;
+            }
+
+            // Ensure instance exists in lock file
+            if (!lockData.instances[this.instanceId]) {
+                log.warn('Instance not found in lock file during unregister');
+                return false;
+            }
+
+            // Remove provider from instance's providers list
+            const instance = lockData.instances[this.instanceId];
+            const providerName = provider.getName();
+            instance.providers = instance.providers.filter(p => 
+                !(p.name === providerName && p.profile === profile)
+            );
+
+            // Write updated lock data
+            await fs.promises.writeFile(this.instanceLockFile, JSON.stringify(lockData, null, 2));
+
+            // Remove session from memory
+            const sessionKey = `${providerName}:${profile}`;
+            this.activeSessions.delete(sessionKey);
+
+            log.info(`Unregistered provider ${providerName} with profile ${profile}`);
+            return true;
+        } catch (error) {
+            log.error('Failed to unregister provider session:', error);
+            return false;
+        } finally {
+            if (release) {
+                await release();
+            }
+        }
+    }
+
+    /**
      * Clean up instance resources
      * @method cleanup
      * @throws {Error} If cleanup fails

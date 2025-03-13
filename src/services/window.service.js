@@ -115,13 +115,6 @@ class WindowService {
                     return;
                 }
 
-                // Cleanup session if provider exists
-                if (window.metadata && window.metadata.provider) {
-                    const { provider, profile } = window.metadata;
-                    const instanceManager = require('./instance.manager');
-                    await instanceManager.unregisterSession(provider, profile);
-                }
-
                 // Remove from our map
                 this.windows.delete(windowName);
 
@@ -136,9 +129,40 @@ class WindowService {
             }
         });
 
+        // Handle window hide event
+        window.on('hide', () => {
+            if (window.metadata && window.metadata.provider) {
+                const { provider } = window.metadata;
+                if (provider.onWindowHide) {
+                    provider.onWindowHide();
+                }
+            }
+        });
+
+        // Handle window show event
+        window.on('show', () => {
+            if (window.metadata && window.metadata.provider) {
+                const { provider } = window.metadata;
+                if (provider.onWindowShow) {
+                    provider.onWindowShow();
+                }
+            }
+        });
+
         // Clear event listeners on window destruction
-        window.on('closed', () => {
-            window.removeAllListeners();
+        window.on('closed', async () => {
+            try {
+                // Cleanup session if provider exists
+                if (window.metadata && window.metadata.provider) {
+                    const { provider, profile } = window.metadata;
+                    const instanceManager = require('./instance.manager');
+                    await instanceManager.unregisterSession(provider, profile);
+                }
+            } catch (error) {
+                log.error(`Error cleaning up session for window ${windowName}:`, error);
+            } finally {
+                window.removeAllListeners();
+            }
         });
     }
 

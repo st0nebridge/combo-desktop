@@ -182,6 +182,10 @@ class BaseProvider {
                 profile
             });
 
+            if (!this.window) {
+                throw new Error('Failed to create window');
+            }
+
             await this.initializeWindow(profile);
 
             return this.window;
@@ -265,6 +269,16 @@ class BaseProvider {
                     }
                 });
 
+                // Handle window hide
+                this.window.on('hide', () => {
+                    this.onWindowHide();
+                });
+
+                // Handle window show
+                this.window.on('show', () => {
+                    this.onWindowShow();
+                });
+
                 // Set up provider-specific event handlers
                 this.setupEventHandlers();
 
@@ -315,11 +329,12 @@ class BaseProvider {
     /**
      * Gets the tray icon path for this provider.
      * @param {boolean} [hasNotification=false] - Whether there is a notification
+     * @param {boolean} [isMinimized=false] - Whether window is minimized to tray
      * @returns {Object} Object containing icon path and theme info
      */
-    getTrayIcon(hasNotification = false) {
+    getTrayIcon(hasNotification = false, isMinimized = false) {
         const { getIconPath } = require('../../utils/icons');
-        return getIconPath(this.getBaseIconPath(), hasNotification);
+        return getIconPath(this.getName(), hasNotification, isMinimized);
     }
 
     /**
@@ -400,9 +415,10 @@ class BaseProvider {
      * @returns {Array<Object>} Array of context menu options
      */
     getContextMenuOptions() {
+        const windowState = this.window?.isVisible() ? 'Hide' : 'Show';
         return [
             {
-                label: 'Show/Hide Window',
+                label: `${windowState} Window`,
                 click: () => {
                     if (this.window) {
                         windowService.toggleWindow(this.window);
@@ -411,14 +427,25 @@ class BaseProvider {
             },
             { type: 'separator' },
             {
+                label: 'Profile',
+                submenu: [
+                    {
+                        label: this.profile || 'default',
+                        enabled: false
+                    }
+                ]
+            },
+            { type: 'separator' },
+            {
                 label: 'Quit',
                 click: () => {
                     if (this.window) {
-                        const windowName = `${this.getName()}:${this.window?.metadata?.profile || 'default'}`;
+                        const windowName = `${this.getName()}:${this.profile || 'default'}`;
                         // Remove tray icon first
                         trayService.destroyTray(windowName);
                         // Then close window with force flag
-                        windowService.closeWindow(this.window, true);
+                        this.window.forceClose = true;
+                        this.window.close();
                     }
                 }
             }
@@ -474,6 +501,48 @@ class BaseProvider {
     handleTrayDoubleClick() {
         if (this.window) {
             windowService.showWindow(this.window);
+        }
+    }
+
+    /**
+     * Handle window hide event
+     * @method onWindowHide
+     */
+    onWindowHide() {
+        try {
+            // Update tray icon state
+            const trayService = require('../../services/tray.service');
+            const windowName = `${this.getName()}:${this.profile}`;
+            trayService.updateTrayIcon(windowName, false);
+
+            // Log window state
+            log.info(`[${this.getName()}] Window hidden`);
+        } catch (error) {
+            log.error(`[${this.getName()}] Error handling window hide:`, error);
+        }
+    }
+
+    /**
+     * Handle window show event
+     * @method onWindowShow
+     */
+    onWindowShow() {
+        try {
+            // Update tray icon state
+            const trayService = require('../../services/tray.service');
+            const windowName = `${this.getName()}:${this.profile}`;
+            trayService.updateTrayIcon(windowName, true);
+
+            // Clear notifications when window is shown
+            if (this.hasNotification) {
+                this.hasNotification = false;
+                trayService.stopNotification(this.window);
+            }
+
+            // Log window state
+            log.info(`[${this.getName()}] Window shown`);
+        } catch (error) {
+            log.error(`[${this.getName()}] Error handling window show:`, error);
         }
     }
 }

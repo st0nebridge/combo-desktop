@@ -101,6 +101,38 @@ class TrayService {
     }
 
     /**
+     * Update tray icon state based on window visibility
+     * @method updateTrayIcon
+     * @param {string} windowName - Name of window with tray
+     * @param {boolean} isVisible - Whether window is visible
+     */
+    updateTrayIcon(windowName, isVisible) {
+        const trayInfo = this.trays.get(windowName);
+        if (!trayInfo) {
+            logger.warn(`No tray found for window: ${windowName}`);
+            return;
+        }
+
+        try {
+            const { tray, provider } = trayInfo;
+            const trayIcon = provider.getTrayIcon(false, !isVisible);
+            if (trayIcon && trayIcon.image) {
+                tray.setImage(trayIcon.image);
+            }
+
+            // Update tooltip to show window state
+            const profile = windowName.split(':')[1];
+            const state = isVisible ? 'Running' : 'Minimized to tray';
+            tray.setToolTip(`${provider.getName()} (${profile}) - ${state}`);
+
+            // Update context menu
+            this.updateContextMenu(tray, provider);
+        } catch (error) {
+            logger.error(`Error updating tray icon for ${windowName}:`, error);
+        }
+    }
+
+    /**
      * Set notification state for a tray icon
      * @method setNotificationState
      * @param {string} windowName - Name of window with tray (format: providerName:profile)
@@ -117,6 +149,11 @@ class TrayService {
         try {
             const { tray, provider } = trayInfo;
             const currentState = this.notificationStates.get(windowName);
+
+            // Don't update if state hasn't changed
+            if (currentState === hasNotification) {
+                return;
+            }
 
             // Clear existing notification timer if any
             this.clearNotificationTimer(windowName);
@@ -142,6 +179,7 @@ class TrayService {
             }
 
             this.notificationStates.set(windowName, hasNotification);
+            logger.info(`Updated notification state for ${windowName}: ${hasNotification}`);
         } catch (error) {
             logger.error(`Error updating notification state for ${windowName}:`, error);
         }
@@ -158,6 +196,39 @@ class TrayService {
             clearInterval(timer);
             this.notificationTimers.delete(windowName);
         }
+    }
+
+    /**
+     * Start notification blinking for a window
+     * @method startNotification
+     * @param {Electron.BrowserWindow} window - Window to start notification for
+     * @param {number} interval - Blink interval in milliseconds
+     */
+    startNotification(window, interval) {
+        if (!window || !window.metadata || !window.metadata.provider) {
+            logger.warn('Invalid window for notification');
+            return;
+        }
+
+        const { provider } = window.metadata;
+        const windowName = `${provider.getName()}:${provider.profile}`;
+        this.setNotificationState(windowName, true);
+    }
+
+    /**
+     * Stop notification blinking for a window
+     * @method stopNotification
+     * @param {Electron.BrowserWindow} window - Window to stop notification for
+     */
+    stopNotification(window) {
+        if (!window || !window.metadata || !window.metadata.provider) {
+            logger.warn('Invalid window for notification');
+            return;
+        }
+
+        const { provider } = window.metadata;
+        const windowName = `${provider.getName()}:${provider.profile}`;
+        this.setNotificationState(windowName, false);
     }
 
     /**
