@@ -26,63 +26,74 @@ class WindowService {
         
         /** @property {boolean} isQuitting - Whether the app is in the process of quitting */
         this.isQuitting = false;
-    }
-
-    /**
-     * Create a new browser window with the specified configuration
-     * @method createWindow
-     * @param {Object} config - Window configuration options
-     * @param {string} windowName - Unique identifier for the window
-     * @param {Object} [metadata={}] - Additional metadata to attach to the window
-     * @returns {Electron.BrowserWindow|null} Created window or null if creation fails
-     * @throws {Error} If window name is not provided
-     */
-    createWindow(config, windowName, metadata = {}) {
-        try {
-            if (!windowName) {
-                throw new Error('Window name is required');
-            }
-
-            // Check if window already exists
-            if (this.windows.has(windowName)) {
-                log.info(`Window ${windowName} already exists, focusing...`);
-                const existingWindow = this.windows.get(windowName);
-                if (!existingWindow.isDestroyed()) {
-                    existingWindow.show();
-                    existingWindow.focus();
-                    return existingWindow;
-                }
-                // Window was destroyed, remove it from our map
-                this.windows.delete(windowName);
-            }
-
-            // Enforce security settings
-            const webPreferences = {
-                ...config.webPreferences,
+        
+        this.defaultOptions = {
+            webPreferences: {
                 contextIsolation: true,
                 webSecurity: true,
                 nodeIntegration: false,
                 enableRemoteModule: false
+            }
+        };
+    }
+
+    /**
+     * Create a new window or get existing window
+     * @method createWindow
+     * @param {string} windowName - Name for the window
+     * @param {Object} options - Window creation options
+     * @param {Object} [metadata={}] - Additional metadata to attach to the window
+     * @returns {Electron.BrowserWindow} Created or existing window
+     */
+    createWindow(windowName, options = {}, metadata = {}) {
+        try {
+            // Check if window already exists
+            log.info(`Checking if window ${windowName} already exists...`);
+            const existingWindow = this.windows.get(windowName);
+            if (existingWindow && !existingWindow.isDestroyed()) {
+                log.info(`Window ${windowName} already exists, showing without focus...`);
+                
+                // Show the window if it's not visible, but don't focus it
+                if (!existingWindow.isVisible()) {
+                    existingWindow.show();
+                }
+                
+                return existingWindow;
+            }
+
+            // Create new window with show: false to prevent automatic showing/focusing
+            const windowOptions = {
+                ...this.defaultOptions,
+                ...options,
+                show: false, // Prevent automatic showing and focusing
+                webPreferences: {
+                    ...this.defaultOptions.webPreferences,
+                    ...options.webPreferences
+                }
             };
 
-            // Create window with provided config and enforced security
-            const window = new BrowserWindow({
-                ...config,
-                show: false, // Don't show until ready-to-show
-                webPreferences
-            });
+            log.info(`Creating new window: ${windowName} with options:`, JSON.stringify({
+                width: windowOptions.width,
+                height: windowOptions.height,
+                show: windowOptions.show
+            }));
 
-            // Store window reference and metadata
+            const window = new BrowserWindow(windowOptions);
+
+            // Store window reference
             this.windows.set(windowName, window);
+            
+            // Attach metadata to window
             window.metadata = metadata;
-
-            // Setup window events
+            
+            // Set up window event handlers
             this.setupWindowEvents(window, windowName);
-
+            
+            log.info(`Created window: ${windowName}`);
             return window;
         } catch (error) {
             log.error(`Error creating window ${windowName}:`, error);
-            return null;
+            throw error;
         }
     }
 
@@ -269,7 +280,6 @@ class WindowService {
             const { window } = this.resolveWindow(windowOrName);
             if (window && !window.isDestroyed()) {
                 window.show();
-                window.focus();
             }
         } catch (error) {
             log.error('Error showing window:', error);
@@ -307,7 +317,6 @@ class WindowService {
                     window.hide();
                 } else {
                     window.show();
-                    window.focus();
                 }
             }
         } catch (error) {

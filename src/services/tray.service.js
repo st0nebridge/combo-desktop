@@ -45,11 +45,32 @@ class TrayService {
             return null;
         }
 
-        // Cleanup existing tray if any
-        await this.destroyTray(windowName);
+        // Cleanup existing tray if any - but don't await it
+        this.destroyTray(windowName).catch(err => {
+            logger.error(`Error destroying existing tray for ${windowName}:`, err);
+        });
 
         try {
-            const trayIcon = provider.getTrayIcon();
+            // Add timeout to prevent hanging
+            const trayIconPromise = new Promise((resolve, reject) => {
+                try {
+                    const trayIcon = provider.getTrayIcon();
+                    resolve(trayIcon);
+                } catch (error) {
+                    reject(error);
+                }
+            });
+            
+            // Set a timeout to prevent hanging
+            const timeoutPromise = new Promise((_, reject) => {
+                setTimeout(() => {
+                    reject(new Error('Tray icon creation timed out'));
+                }, 2000); // 2 second timeout
+            });
+            
+            // Race the promises to prevent hanging
+            const trayIcon = await Promise.race([trayIconPromise, timeoutPromise]);
+            
             if (!trayIcon || !trayIcon.image) {
                 throw new Error('Invalid tray icon returned from provider');
             }

@@ -113,31 +113,48 @@ class AppManager {
     /**
      * Initialize the application
      * @method initializeApp
-     * @param {Array<string>} args - CLI arguments
+     * @param {Array} args - Command line arguments
      * @returns {Promise<void>}
      */
     async initializeApp(args) {
         try {
             if (this.initialized) {
-                logger.warn('Application already initialized');
+                logger.warn('App already initialized');
                 return;
             }
 
             logger.info('Application starting...');
+            logger.debug('Command line arguments:', args);
 
-            // Initialize instance manager first
+            // Initialize instance manager
             await instanceManager.initialize();
 
             // Initialize CLI modules
             await this.initializeCLI();
 
-            // Process CLI arguments
-            await this.processCLIArguments(args);
+            try {
+                // Use CLI registry to process arguments
+                const cliRegistry = require('../cli/cli.registry');
+                const { success, isCliCommand, processedProviders } = await cliRegistry.execute(args);
+                
+                // If CLI registry successfully processed providers, don't process them again
+                if (success && !isCliCommand && processedProviders && processedProviders.length > 0) {
+                    logger.info(`CLI registry processed ${processedProviders.length} providers: ${processedProviders.join(', ')}`);
+                    
+                    // We don't need to do anything else here as the providers are being initialized
+                    // by the provider-cli.js module in a non-blocking way
+                } else {
+                    // Process CLI arguments directly as fallback
+                    await this.processCLIArguments(args);
+                }
+            } catch (error) {
+                logger.error('Error processing CLI arguments:', error);
+                // Continue with application initialization even if CLI argument processing fails
+            }
 
             this.initialized = true;
-            logger.info('Application initialized');
         } catch (error) {
-            logger.error('Error initializing application:', error);
+            logger.error('Error initializing app:', error);
             throw error;
         }
     }
@@ -157,16 +174,29 @@ class AppManager {
         logger.debug('CLI arguments:', args);
 
         // Find provider arguments (starting with --)
-        const providerArgs = args.filter(arg => arg.startsWith('--'));
+        const providerArgs = args.filter(arg => arg.startsWith('--') && arg !== '--tray' && arg !== '--profile');
         if (providerArgs.length === 0) {
             logger.info('No provider arguments found');
             return;
         }
 
+        // Get profile argument if present
+        let profile = 'default';
+        const profileIndex = args.indexOf('--profile');
+        if (profileIndex !== -1 && profileIndex + 1 < args.length) {
+            profile = args[profileIndex + 1];
+        }
+
+        // Check if tray mode is enabled
+        const trayMode = args.includes('--tray');
+
         // Process each provider argument
         for (const arg of providerArgs) {
             const providerName = arg.substring(2);
-            await this.initializeProvider(providerName);
+            const success = await this.initializeProvider(providerName, profile, { tray: trayMode });
+            if (!success) {
+                logger.error(`Failed to initialize provider ${providerName}`);
+            }
         }
 
         logger.info('CLI command completed successfully');
@@ -176,111 +206,164 @@ class AppManager {
      * Initialize a provider
      * @method initializeProvider
      * @param {string} providerName - Name of the provider to initialize
-     * @returns {Promise<void>}
+     * @param {string} profile - Profile name
+     * @param {Object} options - Options for provider initialization
+     * @returns {Promise<boolean>} True if initialization successful, false otherwise
      */
-    async initializeProvider(providerName) {
+    async initializeProvider(providerName, profile, options) {
         try {
             const provider = providerRegistry.getProvider(providerName);
             if (!provider) {
                 logger.error(`Provider not found: ${providerName}`);
-                return;
+                return false;
             }
 
-            logger.info(`Initializing provider: ${provider.getName()} with profile: default`);
+            const providerDisplayName = provider.getName();
+            logger.info(`Initializing provider: ${providerDisplayName} with profile: ${profile}`);
 
             // Check if provider window already exists
-            const windowName = `${provider.getName()}:default`;
+            const windowName = `${providerDisplayName}:${profile}`;
+            logger.info(`Window name for provider: ${windowName}`);
+            
             const { window: existingWindow } = windowService.resolveWindow(windowName);
             
             if (existingWindow && !existingWindow.isDestroyed()) {
-                logger.info(`Window ${windowName} already exists, focusing...`);
-                existingWindow.show();
-                existingWindow.focus();
-                return;
+                // Only show the window if it's hidden, don't focus it
+                if (!existingWindow.isVisible()) {
+                    logger.info(`Window ${windowName} already exists, showing without focus...`);
+                    existingWindow.show();
+                } else {
+                    logger.info(`Window ${windowName} already exists and is visible, not changing focus`);
+                }
+                return true;
             }
 
             // Register session first
-            await instanceManager.registerSession(provider, 'default');
+            await instanceManager.registerSession(provider, profile);
 
-            // Initialize provider with default profile
-            await provider.initializeProvider('default');
+            // Initialize provider with profile
+            await provider.initializeProvider(profile);
 
-            // Get window reference through window service
-            const { window } = windowService.resolveWindow(windowName);
-            if (!window || window.isDestroyed()) {
-                throw new Error(`Window not created for ${provider.getName()}`);
+            // Get window config from provider
+            const windowConfig = provider.getWindowConfig();
+            
+            // Create window with show: false to prevent automatic showing/focusing
+            // Pass metadata as third parameter
+            const window = windowService.createWindow(
+                windowName, 
+                {
+                    ...windowConfig,
+                    show: false // Ensure window doesn't show automatically
+                },
+                {
+                    provider,
+                    profile
+                }
+            );
+            
+            if (!window) {
+                logger.error(`Failed to create window for ${providerDisplayName}`);
+                return false;
             }
 
-            // Create tray before showing window to avoid race condition
-            const tray = await trayService.createTray(provider, windowName);
-            if (!tray) {
-                throw new Error(`Failed to create tray for ${provider.getName()}`);
-            }
-
-            // Wait for window to be ready before showing
-            await new Promise((resolve, reject) => {
-                const timeout = setTimeout(() => {
-                    reject(new Error('Window ready-to-show timeout'));
-                }, 30000); // Increased from 10000 to 30000 (30 seconds)
-
-                const cleanup = () => {
-                    window.removeAllListeners('ready-to-show');
-                    window.removeAllListeners('closed');
-                    clearTimeout(timeout);
-                };
-
-                // Add a did-finish-load event handler to help with debugging
-                window.webContents.once('did-finish-load', () => {
-                    logger.info(`[${provider.getName()}] Window did-finish-load event fired`);
+            // Create tray icon for the window - don't wait for it to complete
+            // This prevents hanging on tray creation
+            trayService.createTray(provider, windowName)
+                .then(tray => {
+                    if (!tray) {
+                        logger.error(`Failed to create tray for ${providerDisplayName}`);
+                        logger.warn(`Continuing without tray for ${providerDisplayName}`);
+                    }
+                })
+                .catch(error => {
+                    logger.error(`Error creating tray for ${providerDisplayName}:`, error);
+                    logger.warn(`Continuing without tray for ${providerDisplayName}`);
                 });
 
-                // Flag to track if we've already resolved or rejected the promise
-                let isSettled = false;
+            // Wait for window to be ready before showing
+            try {
+                await new Promise((resolve) => {
+                    // Reduced timeout from 30 seconds to 10 seconds
+                    const timeout = setTimeout(() => {
+                        logger.warn(`Window ready-to-show timeout for ${providerDisplayName} - showing window anyway`);
+                        
+                        // Instead of rejecting, we'll resolve anyway and show the window
+                        if (!window.isDestroyed()) {
+                            window.show();
+                            // Don't focus the window to prevent random focusing
+                        }
+                        
+                        resolve();
+                    }, 10000); // 10 seconds timeout
 
-                window.once('ready-to-show', () => {
-                    try {
+                    const cleanup = () => {
+                        window.removeAllListeners('ready-to-show');
+                        window.removeAllListeners('closed');
+                        clearTimeout(timeout);
+                    };
+
+                    // Add a did-finish-load event handler to help with debugging
+                    window.webContents.once('did-finish-load', () => {
+                        logger.info(`[${providerDisplayName}] Window did-finish-load event fired`);
+                    });
+
+                    // Flag to track if we've already resolved or rejected the promise
+                    let isSettled = false;
+
+                    window.once('ready-to-show', () => {
+                        try {
+                            if (isSettled) {
+                                return;
+                            }
+                            
+                            isSettled = true;
+                            
+                            if (!window.isDestroyed()) {
+                                // Show window without focusing
+                                window.show();
+                                logger.info(`[${providerDisplayName}] Window shown`);
+                            }
+
+                            cleanup();
+                            resolve();
+                        } catch (error) {
+                            logger.error(`Error in ready-to-show handler for ${providerDisplayName}:`, error);
+                            cleanup();
+                            
+                            // Instead of rejecting, we'll resolve anyway
+                            resolve();
+                        }
+                    });
+
+                    window.once('closed', () => {
                         if (isSettled) {
                             return;
                         }
                         
                         isSettled = true;
+                        cleanup();
                         
-                        if (!window.isDestroyed()) {
-                            // Show window and update tray state
-                            window.show();
-                            window.focus();
-                            trayService.updateTrayIcon(windowName, true);
+                        // If window is closed during app quit, don't reject
+                        if (windowService.isQuitting) {
+                            resolve();
+                        } else {
+                            // Instead of rejecting, we'll resolve with a warning
+                            logger.warn(`Window was closed before ready for ${providerDisplayName}`);
+                            resolve();
                         }
-
-                        cleanup();
-                        resolve();
-                    } catch (error) {
-                        cleanup();
-                        reject(error);
-                    }
+                    });
                 });
+            } catch (error) {
+                logger.error(`Error waiting for window to be ready for ${providerDisplayName}: ${error.message}`);
+                // Continue anyway - we'll still return success
+                logger.warn(`Continuing despite window ready error for ${providerDisplayName}`);
+            }
 
-                window.once('closed', () => {
-                    if (isSettled) {
-                        return;
-                    }
-                    
-                    isSettled = true;
-                    cleanup();
-                    
-                    // If window is closed during app quit, don't reject
-                    if (windowService.isQuitting) {
-                        resolve();
-                    } else {
-                        reject(new Error('Window was closed before ready'));
-                    }
-                });
-            });
-
-            logger.info(`Provider ${providerName} initialized successfully`);
+            logger.info(`Provider ${providerDisplayName} initialized successfully`);
+            return true;
         } catch (error) {
             logger.error(`Error initializing provider ${providerName}:`, error);
-            throw error;
+            return false;
         }
     }
 
@@ -377,10 +460,29 @@ class AppManager {
                 if (win.isMinimized()) {
                     win.restore();
                 }
-                win.focus();
+                // Removed the focus call here
             }
         } catch (error) {
             logger.error('Error handling second instance:', error);
+        }
+    }
+
+    /**
+     * Show the main window
+     * @method showMainWindow
+     */
+    showMainWindow() {
+        try {
+            const { window: win } = windowService.resolveWindow('main');
+            if (win && !win.isDestroyed()) {
+                if (win.isMinimized()) {
+                    win.restore();
+                }
+                win.show();
+                // Don't focus the window to prevent unnecessary focus changes
+            }
+        } catch (error) {
+            logger.error('Error showing main window:', error);
         }
     }
 

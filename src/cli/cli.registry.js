@@ -72,12 +72,12 @@ class CLIRegistry {
      * Execute CLI command with given arguments
      * @method execute
      * @param {Array<string>} args - Command line arguments
-     * @returns {Promise<{success: boolean, isCliCommand: boolean}>}
+     * @returns {Promise<{success: boolean, isCliCommand: boolean, processedProviders: Array<string>}>}
      */
     async execute(args) {
         if (!args || args.length === 0) {
             log.warn('No arguments to process');
-            return { success: false, isCliCommand: true };
+            return { success: false, isCliCommand: true, processedProviders: [] };
         }
 
         try {
@@ -88,14 +88,19 @@ class CLIRegistry {
             // Check for help flag first
             if (cliArgs.includes('--help') || cliArgs.includes('--manual')) {
                 this.showHelp();
-                return { success: true, isCliCommand: true };
+                return { success: true, isCliCommand: true, processedProviders: [] };
             }
 
             // Initialize instance manager
             const instanceManager = require('../services/instance.manager');
             await instanceManager.ensureDirectories();
 
-            // Find module that can handle these arguments
+            // Track if any module successfully handled arguments
+            let anySuccess = false;
+            let isCliCommand = true;
+            let processedProviders = [];
+            
+            // Process all provider flags by checking all modules
             for (const [name, module] of this.modules) {
                 try {
                     const result = await module.parseArgs(cliArgs);
@@ -107,22 +112,35 @@ class CLIRegistry {
 
                         // Execute command
                         const success = await module.execute(result);
-                        if (!success) {
+                        if (success) {
+                            anySuccess = true;
+                            // If any module is not a CLI command, mark the overall result as not a CLI command
+                            if (module.isCliCommand && typeof module.isCliCommand === 'function') {
+                                isCliCommand = isCliCommand && module.isCliCommand();
+                            }
+                            
+                            // Track processed providers
+                            if (result.providers && Array.isArray(result.providers)) {
+                                processedProviders = processedProviders.concat(result.providers);
+                            }
+                        } else {
                             log.error(`Command execution failed in module: ${name}`);
-                            return { success: false, isCliCommand: true };
                         }
-
-                        log.info('CLI command completed successfully');
-                        return { success: true, isCliCommand: true };
                     }
                 } catch (error) {
                     log.error(`Error in module ${name}:`, error);
-                    throw error;
+                    // Continue with other modules instead of throwing
+                    log.warn(`Continuing with other modules after error in ${name}`);
                 }
             }
 
+            if (anySuccess) {
+                log.info('CLI commands completed successfully');
+                return { success: true, isCliCommand, processedProviders };
+            }
+
             log.warn('No module found to handle arguments:', cliArgs);
-            return { success: false, isCliCommand: true };
+            return { success: false, isCliCommand: true, processedProviders: [] };
         } catch (error) {
             log.error('Error executing CLI command:', error);
             throw error;
