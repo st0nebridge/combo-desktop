@@ -203,36 +203,78 @@ class BaseProvider {
         }
 
         try {
-            // Configure session before loading URL
-            const partition = this.getPartitionName(profile);
-            this.configureSession(partition);
+            // Set user agent
+            const userAgent = userAgentConfig.getUserAgent(this.getName());
+            if (userAgent) {
+                this.window.webContents.setUserAgent(userAgent);
+            }
 
-            // Handle external URLs
-            this.window.webContents.setWindowOpenHandler((details) => {
-                if (details.url) {
-                    shell.openExternal(details.url).catch(err => {
-                        log.error(`[${this.getName()}] Error opening external URL:`, err);
-                    });
-                }
-                return { action: 'deny' };
-            });
-
-            // Load the provider URL
+            // Load provider URL
             const url = this.getUrl();
             if (!url) {
                 throw new Error('Provider URL not specified');
             }
-            
-            log.info(`[${this.getName()}] Initializing window with URL: ${url}`);
             await this.window.loadURL(url);
-            
-            // Inject any custom JS
-            this.injectCustomJS();
-            
-            // Call provider-specific initialization
-            await this.initializeProvider(profile);
-            
-            log.info(`[${this.getName()}] Window initialization complete`);
+
+            // Set up window event handlers if not already done
+            if (!this.eventsSetup) {
+                // Handle new window creation
+                this.window.webContents.setWindowOpenHandler(({ url }) => {
+                    // Open URLs in external browser
+                    shell.openExternal(url);
+                    return { action: 'deny' };
+                });
+
+                // Handle window close
+                this.window.on('close', (event) => {
+                    if (!global.isQuitting) {
+                        event.preventDefault();
+                        this.window.hide();
+                    }
+                });
+
+                // Handle window blur
+                this.window.on('blur', () => {
+                    if (this.hasNotification) {
+                        this.hasNotification = false;
+                        trayService.stopNotification(this.window);
+                    }
+                });
+
+                // Handle window focus
+                this.window.on('focus', () => {
+                    if (this.hasNotification) {
+                        this.hasNotification = false;
+                        trayService.stopNotification(this.window);
+                    }
+                });
+
+                // Handle page title updates
+                this.window.on('page-title-updated', (event, title) => {
+                    event.preventDefault();
+                    if (title.includes('(')) {
+                        if (!this.hasNotification && !this.window.isFocused()) {
+                            this.hasNotification = true;
+                            trayService.startNotification(this.window, this.getNotificationInterval());
+                        }
+                    } else {
+                        if (this.hasNotification) {
+                            this.hasNotification = false;
+                            trayService.stopNotification(this.window);
+                        }
+                    }
+                });
+
+                // Set up provider-specific event handlers
+                this.setupEventHandlers();
+
+                // Inject custom JavaScript if needed
+                this.injectCustomJS();
+
+                this.eventsSetup = true;
+            }
+
+            log.info(`[${this.getName()}] Window initialized successfully`);
         } catch (error) {
             log.error(`[${this.getName()}] Error initializing window:`, error);
             throw error;

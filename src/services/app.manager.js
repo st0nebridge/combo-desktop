@@ -170,10 +170,13 @@ class AppManager {
         try {
             logger.info(`Initializing provider: ${providerName} with profile: ${profile}`);
 
+            // Remove leading -- from provider name if present
+            const cleanProviderName = providerName.replace(/^--/, '');
+
             // Create provider instance
-            const provider = providerRegistry.createProvider(providerName);
+            const provider = providerRegistry.createProvider(cleanProviderName);
             if (!provider) {
-                logger.error(`Invalid provider: ${providerName}`);
+                logger.error(`Invalid provider: ${cleanProviderName}`);
                 return false;
             }
 
@@ -200,17 +203,29 @@ class AppManager {
             };
 
             windowConfig.webPreferences = webPreferences;
-            const window = windowService.createWindow(windowConfig, windowName, metadata);
             
+            // Create window through WindowService
+            const window = windowService.createWindow(windowConfig, windowName, metadata);
             if (!window) {
-                logger.error(`Failed to create window for provider ${providerName}`);
+                logger.error(`Failed to create window for provider ${cleanProviderName}`);
+                return false;
+            }
+
+            // Store window reference in provider
+            provider.window = window;
+
+            // Initialize provider window
+            try {
+                await provider.initializeWindow(profile);
+            } catch (error) {
+                logger.error(`Failed to initialize window for provider ${cleanProviderName}:`, error);
                 return false;
             }
 
             // Always create tray icon for the provider
             const tray = trayService.createTray(provider, windowName);
             if (!tray) {
-                logger.error(`Failed to create tray for provider ${providerName}`);
+                logger.error(`Failed to create tray for provider ${cleanProviderName}`);
                 return false;
             }
             logger.info(`Created tray icon for ${windowName}`);
@@ -219,11 +234,11 @@ class AppManager {
             const instanceManager = require('./instance.manager');
             await instanceManager.registerSession(provider, profile);
 
-            logger.info(`Provider ${providerName} initialized successfully`);
+            logger.info(`Provider ${cleanProviderName} initialized successfully`);
             return true;
         } catch (error) {
             logger.error(`Error initializing provider ${providerName}:`, error);
-            return false;
+            throw error;
         }
     }
 

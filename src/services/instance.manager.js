@@ -76,14 +76,23 @@ class InstanceManager {
      */
     async ensureDirectories() {
         try {
-            // Ensure parent directories exist
-            const userDataDir = path.dirname(this.instanceLockFile);
+            // Get user data directory
+            const userDataDir = app.getPath('userData');
+
+            // Create user data directory if it doesn't exist
             await fs.promises.mkdir(userDataDir, { recursive: true });
+
+            // Create instance lock file if it doesn't exist
+            if (!fs.existsSync(this.instanceLockFile)) {
+                await fs.promises.writeFile(this.instanceLockFile, JSON.stringify({ instances: {} }, null, 2));
+            }
 
             // Create PID file if it doesn't exist
             if (!fs.existsSync(this.pidFile)) {
-                await fs.promises.writeFile(this.pidFile, '[]', 'utf8');
+                await fs.promises.writeFile(this.pidFile, JSON.stringify([], null, 2));
             }
+
+            log.info('Instance management directories initialized');
         } catch (error) {
             log.error('Error creating directories:', error);
             throw error;
@@ -191,6 +200,9 @@ class InstanceManager {
                 return true;
             }
 
+            // Ensure directories exist first
+            await this.ensureDirectories();
+
             // Handle reset-lock command first
             if (args.resetLock) {
                 await this.resetLock();
@@ -222,7 +234,7 @@ class InstanceManager {
             return true;
         } catch (error) {
             log.error('Failed to handle instance registration:', error);
-            return false;
+            throw error; // Re-throw to allow proper error handling
         }
     }
 
@@ -462,6 +474,82 @@ class InstanceManager {
             }
         } catch (error) {
             return false;
+        }
+    }
+
+    /**
+     * Register a provider session with this instance
+     * @method registerSession
+     * @param {BaseProvider} provider - Provider instance
+     * @param {string} profile - Profile name
+     * @returns {Promise<boolean>} True if registration successful
+     * @throws {Error} If registration fails
+     */
+    async registerSession(provider, profile) {
+        if (!provider || !profile) {
+            log.error('Invalid provider or profile for session registration');
+            throw new Error('Invalid provider or profile');
+        }
+
+        let release;
+        try {
+            // Acquire lock for file operations
+            release = await this.acquireWriteLock(this.instanceLockFile);
+
+            // Read current lock data
+            let lockData;
+            try {
+                const data = await fs.promises.readFile(this.instanceLockFile, 'utf8');
+                lockData = JSON.parse(data);
+            } catch (error) {
+                log.error('Error reading lock file:', error);
+                throw error;
+            }
+
+            // Ensure instance exists in lock file
+            if (!lockData.instances[this.instanceId]) {
+                log.error('Instance not found in lock file');
+                throw new Error('Instance not found');
+            }
+
+            // Add provider to instance's providers list if not already present
+            const providerData = {
+                name: provider.getName(),
+                profile,
+                timestamp: Date.now()
+            };
+
+            const instance = lockData.instances[this.instanceId];
+            const existingProvider = instance.providers.find(p => 
+                p.name === providerData.name && p.profile === providerData.profile
+            );
+
+            if (!existingProvider) {
+                instance.providers.push(providerData);
+                log.info(`Added provider ${provider.getName()} with profile ${profile} to instance ${this.instanceId}`);
+            } else {
+                log.info(`Provider ${provider.getName()} with profile ${profile} already registered`);
+            }
+
+            // Write updated lock data
+            await fs.promises.writeFile(this.instanceLockFile, JSON.stringify(lockData, null, 2));
+
+            // Store session in memory
+            const sessionKey = `${provider.getName()}:${profile}`;
+            this.activeSessions.set(sessionKey, {
+                provider,
+                profile,
+                timestamp: Date.now()
+            });
+
+            return true;
+        } catch (error) {
+            log.error('Failed to register provider session:', error);
+            throw error;
+        } finally {
+            if (release) {
+                await release();
+            }
         }
     }
 

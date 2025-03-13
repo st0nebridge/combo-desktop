@@ -83,6 +83,15 @@ class CLIRegistry {
                 return { success: true, isCliCommand: true };
             }
 
+            // Initialize instance manager first
+            const instanceManager = require('../services/instance.manager');
+            try {
+                await instanceManager.ensureDirectories();
+            } catch (error) {
+                logger.error('Failed to initialize instance directories:', error);
+                throw error;
+            }
+
             // Find module that can handle these arguments
             for (const instance of this.instances) {
                 try {
@@ -92,6 +101,18 @@ class CLIRegistry {
                         
                         // Store parsed args for app initialization
                         this.lastParsedArgs = result;
+
+                        // Handle instance registration before execution
+                        try {
+                            const registered = await instanceManager.handleInstanceRegistration(result);
+                            if (!registered) {
+                                logger.error('Failed to register instance');
+                                return { success: false, isCliCommand: instance.isCliCommand() };
+                            }
+                        } catch (error) {
+                            logger.error('Instance registration error:', error);
+                            throw error;
+                        }
 
                         // Execute command if module has execute method
                         if (instance.execute) {
