@@ -173,6 +173,9 @@ class BaseProvider {
      */
     async initializeProvider(profile = 'default') {
         try {
+            // Store profile reference
+            this.profile = profile;
+
             const windowName = this.getWindowName(profile);
             log.info(`Initializing ${this.getName()} provider with profile: ${profile}`);
 
