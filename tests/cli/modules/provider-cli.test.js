@@ -57,7 +57,8 @@ async function runTests() {
         verboseLog('Setting up provider registry mock');
         const mockProviders = [
             { name: 'WhatsApp', commandArg: '--whatsapp', description: 'WhatsApp messenger' },
-            { name: 'Facebook', commandArg: '--facebook', description: 'Facebook messenger' }
+            { name: 'Facebook', commandArg: '--facebook', description: 'Facebook messenger' },
+            { name: 'Telegram', commandArg: '--telegram', description: 'Telegram messenger' }
         ];
         
         const providerRegistryPath = path.resolve(__dirname, '../../../src/providers');
@@ -79,6 +80,12 @@ async function runTests() {
                         name: 'Facebook',
                         commandArg: '--facebook',
                         description: 'Facebook messenger'
+                    };
+                } else if (name === 'telegram') {
+                    return {
+                        name: 'Telegram',
+                        commandArg: '--telegram',
+                        description: 'Telegram messenger'
                     };
                 }
                 return null;
@@ -124,228 +131,166 @@ async function runTests() {
         console.log('Running Provider CLI tests...');
         verboseLog('Starting Provider CLI tests with verbose logging enabled');
         
-        // Test instance creation and command mapping
+        // Test instance creation
         verboseLog('Testing ProviderCLI instance creation...');
         const providerCli = new ProviderCLI();
         
-        // Override the listProviders method for testing
-        providerCli.listProviders = async () => {
-            verboseLog('Mock: Listing providers');
-            console.log('\nAvailable Providers:');
-            console.log('  - WhatsApp');
-            console.log('    WhatsApp messenger');
-            console.log('  - Facebook');
-            console.log('    Facebook messenger');
-            console.log();
-            return true;
-        };
+        // Test the findAllIndices method
+        verboseLog('Testing findAllIndices method...');
+        const testArray = ['a', 'b', 'c', 'a', 'd', 'a'];
+        const indices = providerCli.findAllIndices(testArray, 'a');
+        assert.ok(Array.isArray(indices), 'Should return an array');
+        assert.strictEqual(indices.length, 3, 'Should find all occurrences');
+        assert.deepStrictEqual(indices, [0, 3, 5], 'Should return correct indices');
+        verboseLog('✅ findAllIndices method test passed');
         
-        // Override other methods for testing
-        providerCli.getStatus = async () => {
-            verboseLog('Mock: Getting provider status');
-            return true;
-        };
+        // Test parseArgs method with array-style arguments
+        verboseLog('Testing parseArgs with array-style arguments...');
         
-        providerCli.stopProvider = async () => {
-            verboseLog('Mock: Stopping provider');
-            return true;
-        };
+        // Test with single provider
+        verboseLog('Testing parseArgs with single provider...');
+        let args = ['--whatsapp'];
+        let result = providerCli.parseArgs(args);
+        assert.ok(result, 'Should parse single provider');
+        assert.ok(Array.isArray(result.providers), 'Should have providers array');
+        assert.strictEqual(result.providers.length, 1, 'Should have one provider');
+        assert.strictEqual(result.providers[0], 'whatsapp', 'Should be whatsapp provider');
+        assert.ok(Array.isArray(result.sessions), 'Should have sessions array');
+        assert.strictEqual(result.sessions.length, 1, 'Should have one session');
+        assert.strictEqual(result.sessions[0].provider, 'whatsapp', 'Session should be for whatsapp');
+        assert.strictEqual(result.sessions[0].profile, 'default', 'Session should have default profile');
+        verboseLog('✅ parseArgs with single provider test passed');
         
-        providerCli.restartProvider = async () => {
-            verboseLog('Mock: Restarting provider');
-            return true;
-        };
+        // Test with single provider and profile
+        verboseLog('Testing parseArgs with single provider and profile...');
+        args = ['--whatsapp', 'work'];
+        result = providerCli.parseArgs(args);
+        assert.ok(result, 'Should parse single provider with profile');
+        assert.ok(Array.isArray(result.providers), 'Should have providers array');
+        assert.strictEqual(result.providers.length, 1, 'Should have one provider');
+        assert.strictEqual(result.providers[0], 'whatsapp', 'Should be whatsapp provider');
+        assert.ok(Array.isArray(result.sessions), 'Should have sessions array');
+        assert.strictEqual(result.sessions.length, 1, 'Should have one session');
+        assert.strictEqual(result.sessions[0].provider, 'whatsapp', 'Session should be for whatsapp');
+        assert.strictEqual(result.sessions[0].profile, 'work', 'Session should have work profile');
+        verboseLog('✅ parseArgs with single provider and profile test passed');
         
-        assert.ok(providerCli, 'Should create ProviderCLI instance');
-        assert.ok(providerCli.commands, 'Should have commands object');
-        assert.ok(typeof providerCli.commands.list === 'function', 'Should have list command');
-        assert.ok(typeof providerCli.commands.status === 'function', 'Should have status command');
-        assert.ok(typeof providerCli.commands.stop === 'function', 'Should have stop command');
-        assert.ok(typeof providerCli.commands.restart === 'function', 'Should have restart command');
-        assert.ok(typeof providerCli.commands.whatsapp === 'function', 'Should have whatsapp command');
-        assert.ok(typeof providerCli.commands.facebook === 'function', 'Should have facebook command');
-        verboseLog('✅ ProviderCLI instance creation test passed');
+        // Test with multiple different providers
+        verboseLog('Testing parseArgs with multiple different providers...');
+        args = ['--whatsapp', '--facebook'];
+        result = providerCli.parseArgs(args);
+        assert.ok(result, 'Should parse multiple different providers');
+        assert.ok(Array.isArray(result.providers), 'Should have providers array');
+        assert.strictEqual(result.providers.length, 2, 'Should have two providers');
+        assert.ok(result.providers.includes('whatsapp'), 'Should include whatsapp provider');
+        assert.ok(result.providers.includes('facebook'), 'Should include facebook provider');
+        assert.ok(Array.isArray(result.sessions), 'Should have sessions array');
+        assert.strictEqual(result.sessions.length, 2, 'Should have two sessions');
         
-        // Test parseArgs method with list command
-        verboseLog('Testing parseArgs with list command...');
-        let args = {
-            provider: true,  // This is the entry flag that must be present (singular, not plural)
-            _: ['list']
-        };
-        let result = await providerCli.parseArgs(args);
-        assert.ok(result, 'Should parse list command');
-        assert.strictEqual(result.command, 'list', 'Should identify list command');
-        assert.ok(result.handler, 'Should have handler function');
-        verboseLog('✅ Parse list command test passed');
-
-        // Test parseArgs with status command
-        verboseLog('Testing parseArgs with status command...');
-        args = {
-            provider: true,  // This is the entry flag that must be present (singular, not plural)
-            _: ['status']
-        };
-        result = await providerCli.parseArgs(args);
-        assert.ok(result, 'Should parse status command');
-        assert.strictEqual(result.command, 'status', 'Should identify status command');
-        assert.ok(result.handler, 'Should have handler function');
-        verboseLog('✅ Parse status command test passed');
+        // Check for WhatsApp session
+        const whatsappSession = result.sessions.find(s => s.provider === 'whatsapp');
+        assert.ok(whatsappSession, 'Should have WhatsApp session');
+        assert.strictEqual(whatsappSession.profile, 'default', 'WhatsApp session should have default profile');
         
-        // Test parseArgs with stop command
-        verboseLog('Testing parseArgs with stop command...');
-        args = {
-            provider: true,  // This is the entry flag that must be present (singular, not plural)
-            _: ['stop'],
-            name: 'whatsapp'
-        };
-        result = await providerCli.parseArgs(args);
-        assert.ok(result, 'Should parse stop command');
-        assert.strictEqual(result.command, 'stop', 'Should identify stop command');
-        assert.ok(result.handler, 'Should have handler function');
-        assert.strictEqual(result.name, 'whatsapp', 'Should capture provider name');
-        verboseLog('✅ Parse stop command test passed');
+        // Check for Facebook session
+        const facebookSession = result.sessions.find(s => s.provider === 'facebook');
+        assert.ok(facebookSession, 'Should have Facebook session');
+        assert.strictEqual(facebookSession.profile, 'default', 'Facebook session should have default profile');
+        verboseLog('✅ parseArgs with multiple different providers test passed');
         
-        // Test parseArgs with restart command
-        verboseLog('Testing parseArgs with restart command...');
-        args = {
-            provider: true,  // This is the entry flag that must be present (singular, not plural)
-            _: ['restart'],
-            name: 'facebook'
-        };
-        result = await providerCli.parseArgs(args);
-        assert.ok(result, 'Should parse restart command');
-        assert.strictEqual(result.command, 'restart', 'Should identify restart command');
-        assert.ok(result.handler, 'Should have handler function');
-        assert.strictEqual(result.name, 'facebook', 'Should capture provider name');
-        verboseLog('✅ Parse restart command test passed');
-        
-        // Test parseArgs with direct provider command
-        verboseLog('Testing parseArgs with direct provider command...');
-        args = {
-            whatsapp: true,
-            _: []
-        };
-        result = await providerCli.parseArgs(args);
-        assert.ok(result, 'Should parse direct provider command');
-        assert.strictEqual(result.command, 'whatsapp', 'Should identify whatsapp command');
-        assert.ok(result.handler, 'Should have handler function');
-        verboseLog('✅ Parse direct provider command test passed');
-        
-        // Test parseArgs with direct provider command and profile
-        verboseLog('Testing parseArgs with direct provider command and profile...');
-        args = {
-            facebook: true,
-            profile: 'work',
-            _: []
-        };
-        result = await providerCli.parseArgs(args);
-        assert.ok(result, 'Should parse direct provider command with profile');
-        assert.strictEqual(result.command, 'facebook', 'Should identify facebook command');
-        assert.ok(result.handler, 'Should have handler function');
-        assert.strictEqual(result.profile, 'work', 'Should capture profile name');
-        verboseLog('✅ Parse direct provider command with profile test passed');
-        
-        // Test execute method with list command
-        verboseLog('Testing execute with list command...');
-        args = ['--provider', 'list'];
-        result = await providerCli.execute(args);
-        assert.ok(result, 'Should execute list command');
-        assert.strictEqual(result.success, true, 'Should execute successfully');
-        assert.strictEqual(result.continueExecution, false, 'Should not continue execution');
-        verboseLog('✅ Execute list command test passed');
-        
-        // Test execute method with direct provider
-        verboseLog('Testing execute with direct provider...');
-        args = ['--whatsapp'];
-        result = await providerCli.execute(args);
-        assert.ok(result, 'Should execute direct provider command');
-        assert.strictEqual(result.success, true, 'Should execute successfully');
-        assert.strictEqual(result.continueExecution, true, 'Should continue execution');
-        assert.ok(result.context, 'Should have context object');
-        assert.ok(Array.isArray(result.context.providers), 'Should have providers array');
-        assert.ok(result.context.providers.includes('whatsapp'), 'Should include whatsapp in providers');
-        verboseLog('✅ Execute direct provider command test passed');
-        
-        // Test execute method with direct provider and profile
-        verboseLog('Testing execute with direct provider and profile...');
-        args = ['--facebook', 'work'];
-        result = await providerCli.execute(args);
-        assert.ok(result, 'Should execute direct provider command with profile');
-        assert.strictEqual(result.success, true, 'Should execute successfully');
-        assert.strictEqual(result.continueExecution, true, 'Should continue execution');
-        assert.ok(result.context, 'Should have context object');
-        assert.ok(Array.isArray(result.context.providers), 'Should have providers array');
-        assert.ok(result.context.providers.includes('facebook'), 'Should include facebook in providers');
-        assert.ok(Array.isArray(result.context.sessions), 'Should have sessions array');
-        assert.strictEqual(result.context.sessions.length, 1, 'Should have one session');
-        assert.strictEqual(result.context.sessions[0].provider, 'facebook', 'Session should be for facebook');
-        assert.strictEqual(result.context.sessions[0].profile, 'work', 'Session should have work profile');
-        verboseLog('✅ Execute direct provider command with profile test passed');
-        
-        // Test multiple provider instances
-        verboseLog('Testing multiple provider instances...');
-        args = ['--whatsapp', '--facebook', '--whatsapp', 'work'];
-        result = await providerCli.execute(args);
-        assert.ok(result, 'Should execute multiple provider instances');
-        assert.strictEqual(result.success, true, 'Should execute successfully');
-        assert.strictEqual(result.continueExecution, true, 'Should continue execution');
-        assert.ok(result.context, 'Should have context object');
-        assert.ok(Array.isArray(result.context.providers), 'Should have providers array');
-        assert.ok(result.context.providers.includes('whatsapp'), 'Should include whatsapp in providers');
-        assert.ok(result.context.providers.includes('facebook'), 'Should include facebook in providers');
-        assert.ok(Array.isArray(result.context.sessions), 'Should have sessions array');
-        assert.strictEqual(result.context.sessions.length, 3, 'Should have three sessions');
+        // Test with multiple instances of the same provider
+        verboseLog('Testing parseArgs with multiple instances of the same provider...');
+        args = ['--whatsapp', '--whatsapp', 'work'];
+        result = providerCli.parseArgs(args);
+        assert.ok(result, 'Should parse multiple instances of the same provider');
+        assert.ok(Array.isArray(result.providers), 'Should have providers array');
+        assert.strictEqual(result.providers.length, 1, 'Should have one provider (unique)');
+        assert.strictEqual(result.providers[0], 'whatsapp', 'Should be whatsapp provider');
+        assert.ok(Array.isArray(result.sessions), 'Should have sessions array');
+        assert.strictEqual(result.sessions.length, 2, 'Should have two sessions');
         
         // Check for default WhatsApp session
-        const defaultWhatsappSession = result.context.sessions.find(
-            s => s.provider === 'whatsapp' && s.profile === 'default'
+        const defaultWhatsappSession = result.sessions.find(s => 
+            s.provider === 'whatsapp' && s.profile === 'default'
         );
         assert.ok(defaultWhatsappSession, 'Should have default WhatsApp session');
         
         // Check for work WhatsApp session
-        const workWhatsappSession = result.context.sessions.find(
-            s => s.provider === 'whatsapp' && s.profile === 'work'
+        const workWhatsappSession = result.sessions.find(s => 
+            s.provider === 'whatsapp' && s.profile === 'work'
         );
         assert.ok(workWhatsappSession, 'Should have work WhatsApp session');
+        verboseLog('✅ parseArgs with multiple instances of the same provider test passed');
         
-        // Check for default Facebook session
-        const defaultFacebookSession = result.context.sessions.find(
-            s => s.provider === 'facebook' && s.profile === 'default'
-        );
-        assert.ok(defaultFacebookSession, 'Should have default Facebook session');
-        verboseLog('✅ Multiple provider instances test passed');
-        
-        // Test multiple provider instances with different profiles
-        verboseLog('Testing multiple provider instances with different profiles...');
-        args = ['--whatsapp', 'personal', '--facebook', 'work', '--whatsapp', 'business'];
-        result = await providerCli.execute(args);
-        assert.ok(result, 'Should execute multiple provider instances with different profiles');
-        assert.strictEqual(result.success, true, 'Should execute successfully');
-        assert.strictEqual(result.continueExecution, true, 'Should continue execution');
-        assert.ok(result.context, 'Should have context object');
-        assert.ok(Array.isArray(result.context.providers), 'Should have providers array');
-        assert.ok(result.context.providers.includes('whatsapp'), 'Should include whatsapp in providers');
-        assert.ok(result.context.providers.includes('facebook'), 'Should include facebook in providers');
-        assert.ok(Array.isArray(result.context.sessions), 'Should have sessions array');
-        assert.strictEqual(result.context.sessions.length, 3, 'Should have three sessions');
+        // Test with complex mix of providers and profiles
+        verboseLog('Testing parseArgs with complex mix of providers and profiles...');
+        args = ['--whatsapp', 'personal', '--facebook', 'work', '--whatsapp', 'business', '--telegram'];
+        result = providerCli.parseArgs(args);
+        assert.ok(result, 'Should parse complex mix of providers and profiles');
+        assert.ok(Array.isArray(result.providers), 'Should have providers array');
+        assert.strictEqual(result.providers.length, 3, 'Should have three providers (unique)');
+        assert.ok(result.providers.includes('whatsapp'), 'Should include whatsapp provider');
+        assert.ok(result.providers.includes('facebook'), 'Should include facebook provider');
+        assert.ok(Array.isArray(result.sessions), 'Should have sessions array');
+        assert.strictEqual(result.sessions.length, 4, 'Should have four sessions');
         
         // Check for personal WhatsApp session
-        const personalWhatsappSession = result.context.sessions.find(
-            s => s.provider === 'whatsapp' && s.profile === 'personal'
+        const personalWhatsappSession = result.sessions.find(s => 
+            s.provider === 'whatsapp' && s.profile === 'personal'
         );
         assert.ok(personalWhatsappSession, 'Should have personal WhatsApp session');
         
         // Check for business WhatsApp session
-        const businessWhatsappSession = result.context.sessions.find(
-            s => s.provider === 'whatsapp' && s.profile === 'business'
+        const businessWhatsappSession = result.sessions.find(s => 
+            s.provider === 'whatsapp' && s.profile === 'business'
         );
         assert.ok(businessWhatsappSession, 'Should have business WhatsApp session');
         
         // Check for work Facebook session
-        const workFacebookSession = result.context.sessions.find(
-            s => s.provider === 'facebook' && s.profile === 'work'
+        const workFacebookSession = result.sessions.find(s => 
+            s.provider === 'facebook' && s.profile === 'work'
         );
         assert.ok(workFacebookSession, 'Should have work Facebook session');
-        verboseLog('✅ Multiple provider instances with different profiles test passed');
+        
+        // Check for default Telegram session
+        const defaultTelegramSession = result.sessions.find(s => 
+            s.provider === 'telegram' && s.profile === 'default'
+        );
+        assert.ok(defaultTelegramSession, 'Should have default Telegram session');
+        verboseLog('✅ parseArgs with complex mix of providers and profiles test passed');
+        
+        // Test execute method with multiple provider instances
+        verboseLog('Testing execute with multiple provider instances...');
+        args = ['--whatsapp', '--facebook', '--whatsapp', 'work'];
+        result = await providerCli.execute(args);
+        assert.ok(result, 'Should execute with multiple provider instances');
+        assert.strictEqual(result.success, true, 'Should execute successfully');
+        assert.strictEqual(result.continueExecution, true, 'Should continue execution');
+        assert.ok(result.context, 'Should have context object');
+        assert.ok(Array.isArray(result.context.providers), 'Should have providers array in context');
+        assert.ok(result.context.providers.includes('whatsapp'), 'Context should include whatsapp provider');
+        assert.ok(result.context.providers.includes('facebook'), 'Context should include facebook provider');
+        assert.ok(Array.isArray(result.context.sessions), 'Should have sessions array in context');
+        assert.strictEqual(result.context.sessions.length, 3, 'Should have three sessions in context');
+        
+        // Check for default WhatsApp session in context
+        const ctxDefaultWhatsappSession = result.context.sessions.find(s => 
+            s.provider === 'whatsapp' && s.profile === 'default'
+        );
+        assert.ok(ctxDefaultWhatsappSession, 'Context should have default WhatsApp session');
+        
+        // Check for work WhatsApp session in context
+        const ctxWorkWhatsappSession = result.context.sessions.find(s => 
+            s.provider === 'whatsapp' && s.profile === 'work'
+        );
+        assert.ok(ctxWorkWhatsappSession, 'Context should have work WhatsApp session');
+        
+        // Check for default Facebook session in context
+        const ctxDefaultFacebookSession = result.context.sessions.find(s => 
+            s.provider === 'facebook' && s.profile === 'default'
+        );
+        assert.ok(ctxDefaultFacebookSession, 'Context should have default Facebook session');
+        verboseLog('✅ Execute with multiple provider instances test passed');
         
         console.log('✅ All Provider CLI tests passed!');
         return true;
