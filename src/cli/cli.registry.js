@@ -76,7 +76,7 @@ class CLIRegistry {
      * Execute CLI command with given arguments
      * @method execute
      * @param {Array<string>} args - Command line arguments
-     * @returns {Promise<{success: boolean, isCliCommand: boolean, processedProviders: Array<string>, continueExecution: boolean}>}
+     * @returns {Promise<{success: boolean, isCliCommand: boolean, continueExecution: boolean}>}
      */
     async execute(args) {
         try {
@@ -85,8 +85,7 @@ class CLIRegistry {
                 this.showHelp();
                 return { 
                     success: true, 
-                    isCliCommand: true, 
-                    processedProviders: [],
+                    isCliCommand: true,
                     continueExecution: false
                 };
             }
@@ -97,7 +96,6 @@ class CLIRegistry {
             const result = {
                 success: true,
                 isCliCommand: false,
-                processedProviders: [],
                 continueExecution: true
             };
 
@@ -122,11 +120,6 @@ class CLIRegistry {
                             result.isCliCommand = true;
                         }
                         
-                        // Add provider to processed list if applicable
-                        if (moduleResult.provider) {
-                            result.processedProviders.push(moduleResult.provider);
-                        }
-                        
                         // Check if we should continue execution
                         if (moduleResult.continueExecution === false) {
                             result.continueExecution = false;
@@ -146,8 +139,7 @@ class CLIRegistry {
             log.error('Error executing CLI command:', error);
             return { 
                 success: false, 
-                isCliCommand: false, 
-                processedProviders: [],
+                isCliCommand: false,
                 continueExecution: false
             };
         }

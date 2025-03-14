@@ -74,7 +74,7 @@ async function initModules() {
 /**
  * Execute CLI command with provided arguments
  * @param {Array<string>} args - Command line arguments
- * @returns {Promise<{success: boolean, isCliCommand: boolean, processedProviders: Array<string>, context: Object}>} Command execution result
+ * @returns {Promise<{success: boolean, continueExecution: boolean, isCliCommand: boolean, processedProviders: Array<string>, context: Object}>} Command execution result
  */
 async function execute(args) {
     try {

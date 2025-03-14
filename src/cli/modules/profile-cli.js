@@ -141,7 +141,7 @@ class ProfileCLI extends BaseCLI {
         try {
             // Parse the arguments
             const parsedArgs = this.parseArgs(args);
-            
+
             if (!parsedArgs || !parsedArgs.command) {
                 return {
                     success: false,
@@ -175,7 +175,7 @@ class ProfileCLI extends BaseCLI {
                             profileName: parsedArgs.name,
                             profileProvider: parsedArgs.provider
                         },
-                        continueExecution: true,
+                        continueExecution: false,
                         provider: parsedArgs.provider
                     };
                 }
@@ -183,7 +183,7 @@ class ProfileCLI extends BaseCLI {
                 return {
                     success,
                     context,
-                    continueExecution: true
+                    continueExecution: false
                 };
             }
             
@@ -192,14 +192,14 @@ class ProfileCLI extends BaseCLI {
             return {
                 success: false,
                 context,
-                continueExecution: true
+                continueExecution: false
             };
         } catch (error) {
             log.error('Error executing profile command:', error);
             return {
                 success: false,
                 context,
-                continueExecution: true
+                continueExecution: false
             };
         }
     }
@@ -243,13 +243,13 @@ Examples:
             log.info('Listing all profiles');
             const profiles = await profileManager.getAllProfiles();
             
-            if (profiles.length === 0) {
+            if (Object.keys(profiles).length === 0) {
                 console.log('No profiles found.');
             } else {
                 console.log('Available profiles:');
-                profiles.forEach(profile => {
+                Object.values(profiles).forEach(profile => {
                     const isActive = profile.active ? ' (active)' : '';
-                    console.log(`  - ${profile.name} (${profile.provider})${isActive}`);
+                    console.log(`  - ${profile.profileName} (${profile.providerName})${isActive}`);
                 });
             }
             

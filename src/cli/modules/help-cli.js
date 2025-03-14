@@ -5,7 +5,6 @@
 
 const BaseCLI = require('../abstract/base-cli');
 const log = require('electron-log');
-const { app } = require('electron');
 
 /**
  * CLI module for displaying help information.

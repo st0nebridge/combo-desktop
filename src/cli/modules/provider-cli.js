@@ -5,7 +5,6 @@
 
 const BaseCLI = require('../abstract/base-cli');
 const providerRegistry = require('../../providers');
-const appManager = require('../../services/app.manager');
 const logger = require('../../services/logging.service');
 
 /**

@@ -38,11 +38,8 @@ class BaseCLI {
      */
     getBaseResultObject() {
         return {
-            help: false,
-            manual: false,
-            version: false,
             context: {},
-            continueExecution: true
+            continueExecution: false
         };
     }
 
