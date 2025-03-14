@@ -126,6 +126,40 @@
    - Maintain backup copies
    - Support recovery operations
 
+## Inter-Process Communication
+1. ALL inter-process communication MUST use Windows named pipes:
+   - Each instance MUST create a unique pipe: `\\?\pipe\combo-desktop-{pid}`
+   - Pipe names MUST be derived from process PID
+   - Pipe server MUST be initialized during instance construction
+   - Pipe server MUST be cleaned up during instance shutdown
+
+2. Command delegation MUST:
+   - Use JSON messages with type, requestId, and payload
+   - Include proper error handling and timeouts
+   - Clean up connections after use
+   - Log all communication attempts
+
+3. Named pipe messages MUST include:
+   - `type`: Message type (e.g., 'delegate-command', 'delegate-response')
+   - `requestId`: Unique ID for tracking requests
+   - `targetPid`: Target process PID
+   - `args`: Command arguments (for commands)
+   - `success`: Boolean success status (for responses)
+   - `error`: Error message if applicable (for responses)
+
+4. Pipe communication MUST handle:
+   - Connection timeouts (30 seconds max)
+   - Connection errors
+   - Invalid JSON data
+   - Missing or dead target processes
+   - Cleanup of resources
+
+5. Error handling MUST:
+   - Log all communication errors
+   - Clean up connections on error
+   - Provide meaningful error messages
+   - Fall back to local execution when delegation fails
+
 ## Error Handling
 1. All operations MUST be atomic:
    - Roll back on failure

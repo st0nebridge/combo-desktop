@@ -3,12 +3,13 @@
 # AI Response Rules
 ## Always Check the Relevant Rules Before Making Changes:
 - `./rules/urgent.md` → Urgent rules that must always be adhered to
-- `./rules/app_instances.md` → Application instance management
+- `./rules/app_instances.md` → Application instance management & IPC
 - `./rules/cli.md` → CLI arguments and commands
 - `./rules/code_documentation.md` → Code documentation
 - `./rules/code_guidelines.md` → Code guidelines & practices
 - `./rules/code_organisation.md` → Code organisation & project structure
 - `./rules/dependencies.md` → Project libraries & dependencies
+- `./rules/ipc.md` → Inter-process communication (IPC) rules
 - `./rules/performance.md` → Application performance
 - `./rules/profile_management.md` → Internal profile management
 - `./rules/provider.md` → Application service providers
