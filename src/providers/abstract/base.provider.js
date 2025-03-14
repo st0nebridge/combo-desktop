@@ -161,43 +161,43 @@ class BaseProvider {
      * @param {string} profile - Profile name
      * @returns {string} Window name in format providerName:profile
      */
-    getWindowName(profile = 'default') {
+    getWindowName(profile) {
         return `${this.getName()}:${profile}`;
     }
 
     /**
-     * Initialize the provider window
+     * Initialize the provider with a specific profile
      * @method initializeProvider
      * @param {string} profile - Profile name
      * @returns {Promise<void>}
      */
-    async initializeProvider(profile = 'default') {
+    async initializeProvider(profile) {
         try {
-            // Store profile reference
-            this.profile = profile;
-
-            const windowName = this.getWindowName(profile);
-            log.info(`Initializing ${this.getName()} provider with profile: ${profile}`);
-
-            // Create window first
-            const window = await this.spawnWindow(profile);
-            if (!window) {
-                throw new Error(`Failed to create window for ${this.getName()}`);
+            if (!profile) {
+                throw new Error('Profile name is required');
             }
 
-            // Store window reference
-            this.window = window;
+            // Check if window already exists
+            const windowName = this.getWindowName(profile);
+            const existingWindow = windowService.getWindow(windowName);
+            if (existingWindow && !existingWindow.isDestroyed()) {
+                log.info(`Window already exists for ${this.getName()} with profile: ${profile}`);
+                this.window = existingWindow;
+                return;
+            }
+
+            // Create new window if it doesn't exist
+            await this.spawnWindow(profile);
+            if (!this.window) {
+                throw new Error('Failed to create window');
+            }
 
             // Initialize window content
             await this.initializeWindow(profile);
 
-            // Now that window exists, set up event handlers
-            if (!this.eventsSetup) {
-                this.setupEventHandlers();
-                this.eventsSetup = true;
-            }
+            log.info(`Provider ${this.getName()} initialized with profile: ${profile}`);
         } catch (error) {
-            log.error(`Error initializing ${this.getName()} provider:`, error);
+            log.error(`Error initializing provider ${this.getName()}:`, error);
             throw error;
         }
     }
@@ -237,7 +237,7 @@ class BaseProvider {
             // Register keyboard shortcuts after window is fully initialized
             this.registerKeyboardShortcuts();
 
-            log.info(`Window initialized for ${this.getName()}`);
+            log.info(`Window initialized for ${this.getName()} with profile: ${profile}`);
         } catch (error) {
             log.error(`Error initializing window for ${this.getName()}:`, error);
             throw error;
@@ -333,12 +333,18 @@ class BaseProvider {
                 log.warn('Partition property in web preferences will be ignored. Use profiles instead.');
             }
 
+            // Get partition name following the required format: ${app.getName()}:${providerName}:${profileName}
+            const partitionName = this.getPartitionName(profile);
+            log.info(`Using partition: ${partitionName}`);
+
             windowConfig.webPreferences = {
                 ...webPreferences,
-                partition: this.getPartitionName(profile)
+                partition: partitionName
             };
             
             const windowName = this.getWindowName(profile);
+            log.info(`Creating window: ${windowName} with profile: ${profile}`);
+
             this.window = windowService.createWindow(windowConfig, windowName, {
                 ...metadata,
                 provider: this,

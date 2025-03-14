@@ -191,16 +191,24 @@ class ProviderRegistry {
                 return {
                     name: provider.getName(),
                     commandArg: provider.getCommandArg(),
-                    spawn: (profile = 'default') =>{
-                        let new_provider = new ProviderClass();
-                        new_provider.initializeProvider(profile);
-                        return new_provider;
+                    spawn: async (profile = 'default') => {
+                        try {
+                            let new_provider = new ProviderClass();
+                            await new_provider.initializeProvider(profile);
+                            if (!new_provider.window) {
+                                throw new Error(`Failed to initialize window for ${provider.getName()} with profile ${profile}`);
+                            }
+                            return new_provider;
+                        } catch (error) {
+                            log.error(`Error spawning provider ${provider.getName()}:`, error);
+                            throw error;
+                        }
                     }
                 };
             });
         } catch (error) {
             log.error('Error getting available providers:', error);
-            return [];
+            throw error;
         }
     }
 }

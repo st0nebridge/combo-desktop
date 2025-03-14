@@ -3,7 +3,7 @@
  * of all application windows. Provides centralized window control and event handling.
  */
 
-const { BrowserWindow, app } = require('electron');
+const { BrowserWindow, app, session } = require('electron');
 const log = require('electron-log');
 
 /**
@@ -40,24 +40,18 @@ class WindowService {
     /**
      * Create a new window or get existing window
      * @method createWindow
-     * @param {string} windowName - Name for the window
      * @param {Object} options - Window creation options
+     * @param {string} windowName - Name for the window
      * @param {Object} [metadata={}] - Additional metadata to attach to the window
      * @returns {Electron.BrowserWindow} Created or existing window
      */
-    createWindow(windowName, options = {}, metadata = {}) {
+    createWindow(options = {}, windowName, metadata = {}) {
         try {
             // Check if window already exists
             log.info(`Checking if window ${windowName} already exists...`);
             const existingWindow = this.windows.get(windowName);
             if (existingWindow && !existingWindow.isDestroyed()) {
-                log.info(`Window ${windowName} already exists, showing without focus...`);
-                
-                // Show the window if it's not visible, but don't focus it
-                if (!existingWindow.isVisible()) {
-                    existingWindow.show();
-                }
-                
+                log.info(`Window ${windowName} already exists, returning existing window`);
                 return existingWindow;
             }
 
@@ -75,7 +69,8 @@ class WindowService {
             log.info(`Creating new window: ${windowName} with options:`, JSON.stringify({
                 width: windowOptions.width,
                 height: windowOptions.height,
-                show: windowOptions.show
+                show: windowOptions.show,
+                partition: windowOptions.webPreferences?.partition
             }));
 
             const window = new BrowserWindow(windowOptions);
@@ -89,7 +84,7 @@ class WindowService {
             // Set up window event handlers
             this.setupWindowEvents(window, windowName);
             
-            log.info(`Created window: ${windowName}`);
+            log.info(`Created window: ${windowName} with profile: ${metadata.profile}`);
             return window;
         } catch (error) {
             log.error(`Error creating window ${windowName}:`, error);
@@ -135,6 +130,18 @@ class WindowService {
                 // Remove from our map
                 this.windows.delete(windowName);
 
+                // Clean up provider session if this is a provider window
+                if (window.metadata && window.metadata.provider && window.metadata.profile) {
+                    const { provider, profile } = window.metadata;
+                    const partitionName = provider.getPartitionName(profile);
+                    const { session } = require('electron');
+                    const partitionSession = session.fromPartition(partitionName);
+                    if (partitionSession) {
+                        await partitionSession.clearStorageData();
+                        log.info(`Cleared session data for ${windowName}`);
+                    }
+                }
+
                 // Check if this was the last window
                 if (this.windows.size === 0) {
                     // Set quitting flag to prevent windows from being hidden
@@ -150,7 +157,6 @@ class WindowService {
                         await instanceManager.cleanup();
                     } catch (cleanupError) {
                         // Log but continue with quit even if cleanup fails
-                        const log = require('../services/logging.service');
                         log.error('Error during final cleanup:', cleanupError);
                     }
                     
@@ -164,7 +170,6 @@ class WindowService {
                     });
                 }
             } catch (error) {
-                const log = require('../services/logging.service');
                 log.error(`Error cleaning up window ${windowName}:`, error);
                 
                 // Ensure app quits even if there's an error

@@ -106,8 +106,13 @@ class ProviderCLI extends BaseCLI {
                     let profile = 'default';
                     
                     // Check for profile value after provider flag
-                    if (flagIndex + 1 < args.length && !args[flagIndex + 1].startsWith('--')) {
-                        profile = args[flagIndex + 1];
+                    if (flagIndex !== -1 && flagIndex + 1 < args.length) {
+                        const nextArg = args[flagIndex + 1];
+                        // Only use as profile if it's not another flag
+                        if (!nextArg.startsWith('--')) {
+                            profile = nextArg;
+                            logger.info(`Found profile for ${providerName}: ${profile}`);
+                        }
                     }
                     
                     // Add to sessions array, ensuring no duplicates
@@ -120,6 +125,7 @@ class ProviderCLI extends BaseCLI {
                             provider: providerName,
                             profile: profile
                         });
+                        logger.info(`Added session: ${providerName}:${profile}`);
                     }
                     
                     // Check for tray flag
@@ -168,6 +174,7 @@ class ProviderCLI extends BaseCLI {
             // Parse the arguments
             const parsedArgs = this.parseArgs(args);
 
+            // Update context with provider information
             context.providers = parsedArgs.providers;
             context.sessions = parsedArgs.sessions;
             
@@ -203,39 +210,33 @@ class ProviderCLI extends BaseCLI {
                 }
             }
             
-            // If we're handling this request but no valid command found, show usage
+            // If we're handling this request but no valid command found
             if (this.canHandle(args)) {
                 // Check for provider args
                 const providerArgs = this.moduleFlags.filter(key => args.includes(key));
                 if (providerArgs.length > 0) {
+                    logger.info('Provider CLI context:', context);
                     return {
                         success: true,
                         context,
                         continueExecution: true
                     };
                 }
-
-                logger.warn('No valid provider command found');
-                this.showUsage();
-                return {
-                    success: true,
-                    context,
-                    continueExecution: false
-                };
             }
             
-            // Let other modules handle it
+            // Default to showing usage if no specific command found
+            this.showUsage();
             return {
                 success: false,
                 context,
-                continueExecution: true
+                continueExecution: false
             };
         } catch (error) {
             logger.error('Error executing provider command:', error);
             return {
                 success: false,
                 context,
-                continueExecution: true
+                continueExecution: false
             };
         }
     }

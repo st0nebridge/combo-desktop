@@ -4,7 +4,7 @@
  */
 
 const { app, BrowserWindow } = require('electron');
-const logger = require('electron-log');
+const log = require('electron-log');
 const { ipcMain } = require('electron');
 const windowService = require('./window.service');
 const trayService = require('./tray.service');
@@ -111,66 +111,55 @@ class AppManager {
     }
 
     /**
-     * Initialize application
+     * Initialize the application
      * @method initializeApp
-     * @param {Object} cliResult - Result from CLI execution
+     * @param {Object} context - Initialization context from CLI
      * @returns {Promise<void>}
      */
-    async initializeApp(cliResult) {
+    async initializeApp(context = {}) {
         try {
-            // Check if we've already initialized to prevent duplicate messages
-            if (this.initialized) {
-                logger.debug('App already initialized, skipping duplicate initialization');
-                return;
+            log.info('Initializing app with context:', context);
+
+            // Initialize profile manager first
+            await profileManager.init();
+
+            // Initialize sessions if defined
+            if (context.sessions && Array.isArray(context.sessions) && context.sessions.length > 0) {
+                log.info('Initializing sessions:', context.sessions);
+                await this.initializeSessions(context.sessions);
             }
-            
-            // Don't log "Application starting..." here since it's already logged in main.js
-            logger.debug('CLI execution result:', cliResult);
-
-            // Initialize instance manager for non-CLI commands
-            await instanceManager.ensureDirectories();
-
-            // Process any providers that were handled by CLI modules
-            if (cliResult && cliResult.context.providers && cliResult.context.providers.length > 0) {
-                logger.info('Processing providers from CLI context:', cliResult.context.providers);
-                // Handle any provider-specific initialization based on CLI results
-                await this.initializeProviders(cliResult.context.providers, cliResult.context);
-            } else {
-                // Initialize default providers if no specific ones were processed
-                // await this.initializeDefaultProviders();
+            // Initialize providers if defined and no sessions
+            else if (context.providers && Array.isArray(context.providers) && context.providers.length > 0) {
+                log.info('Initializing providers:', context.providers);
+                await this.initializeProviders(context.providers);
             }
-
-            // Create main window if needed
-            if (windowService.getAllWindows().length === 0) {
-                this.createMainWindow();
+            // No sessions or providers defined
+            else {
+                log.info('No sessions or providers defined, initializing default providers');
+                await this.initializeProviders([]);
             }
 
-            // Initialize tray service
-            // await trayService.initialize();
-
-            // Mark as initialized to prevent duplicate initialization
-            this.initialized = true;
-            logger.info('App Manager initialized');
+            log.info('App initialization complete');
         } catch (error) {
-            logger.error('Error initializing app:', error);
+            log.error('Error initializing app:', error);
             throw error;
         }
     }
 
     /**
-     * Initialize provider sessions based on CLI context
+     * Initialize sessions with specified profiles
      * @method initializeSessions
-     * @param {Array<{provider: string, profile: string}>} sessions - Array of provider:profile pairs
-     * @returns {Promise<Array<BaseProvider>>} Array of initialized providers
+     * @param {Array<Object>} sessions - Array of session objects with provider and profile
+     * @returns {Promise<Array>} Array of initialized provider instances
      */
     async initializeSessions(sessions) {
         try {
             if (!sessions || !Array.isArray(sessions)) {
-                logger.warn('No sessions to initialize');
+                log.warn('No sessions to initialize');
                 return [];
             }
 
-            logger.info('Initializing sessions:', sessions);
+            log.info('Initializing sessions:', sessions);
 
             // Get all available providers
             const providers = providerRegistry.getAvailableProviders();
@@ -183,34 +172,67 @@ class AppManager {
                     // Find the provider instance
                     const provider = providers.find(p => p.commandArg.replace(/^--/, '') === providerName);
                     if (!provider) {
-                        logger.error(`Provider not found: ${providerName}`);
+                        log.error(`Provider not found: ${providerName}`);
                         continue;
                     }
 
                     // Get partition name following the required format: ${app.getName()}:${providerName}:${profileName}
                     const partitionName = profileManager.getPartitionName(providerName, profile);
-                    logger.info(`Using partition: ${partitionName}`);
+                    log.info(`Using partition: ${partitionName}`);
 
                     // Ensure profile exists, create if it doesn't
                     if (!profileManager.getProfile(providerName, profile)) {
-                        logger.info(`Creating new profile for ${providerName}: ${profile}`);
-                        profileManager.createProfile(providerName, profile);
+                        log.info(`Creating new profile for ${providerName}: ${profile}`);
+                        await profileManager.createProfile(providerName, profile);
                     }
 
                     // Initialize the provider with the specified profile
-                    output.push(
-                        provider.spawn(profile)
-                    );
-                    logger.info(`Initialized ${providerName} with profile: ${profile}`);
+                    log.info(`Spawning ${providerName} with profile: ${profile}`);
+                    const instance = await provider.spawn(profile);
+                    
+                    // Verify instance was created successfully
+                    if (!instance) {
+                        throw new Error(`Failed to spawn provider ${providerName} with profile ${profile}`);
+                    }
+
+                    output.push(instance);
+                    log.info(`Initialized ${providerName} with profile: ${profile}`);
                 } catch (error) {
-                    logger.error(`Error initializing session:`, error);
+                    log.error(`Error initializing session:`, error);
                     // Continue with other sessions even if one fails
                 }
             }
 
             return output;
         } catch (error) {
-            logger.error('Error initializing sessions:', error);
+            log.error('Error initializing sessions:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Initialize providers with default profile
+     * @method initializeProviders
+     * @param {Array<string>} providers - Array of provider names
+     * @returns {Promise<void>}
+     */
+    async initializeProviders(providers = []) {
+        try {
+            if (!providers || !Array.isArray(providers)) {
+                log.warn('No providers to initialize');
+                return;
+            }
+
+            // Convert providers to sessions with default profile
+            const sessions = providers.map(provider => ({
+                provider,
+                profile: 'default'
+            }));
+
+            // Initialize sessions
+            await this.initializeSessions(sessions);
+        } catch (error) {
+            log.error('Error initializing providers:', error);
             throw error;
         }
     }
@@ -223,7 +245,7 @@ class AppManager {
      */
     async handleSecondInstance(args) {
         try {
-            logger.info('Handling second instance with args:', args);
+            log.info('Handling second instance with args:', args);
             
             // Process the arguments through CLI first
             const cli = require('../cli');
@@ -240,7 +262,7 @@ class AppManager {
                 }
             }
         } catch (error) {
-            logger.error('Error handling second instance:', error);
+            log.error('Error handling second instance:', error);
         }
     }
 
@@ -251,21 +273,21 @@ class AppManager {
      */
     async initializeDefaultProviders() {
         try {
-            logger.info('Initializing default providers');
+            log.info('Initializing default providers');
             // Get active profile
             const activeProfile = await profileManager.getActiveProfile();
             
             if (activeProfile) {
-                logger.info(`Using active profile: ${activeProfile.name} (${activeProfile.provider})`);
+                log.info(`Using active profile: ${activeProfile.name} (${activeProfile.provider})`);
                 await this.initializeProviders([activeProfile.provider]);
             } else {
-                logger.info('No active profile found, using default providers');
+                log.info('No active profile found, using default providers');
                 // Initialize default providers
                 const defaultProviders = ['whatsapp'];
                 await this.initializeProviders(defaultProviders);
             }
         } catch (error) {
-            logger.error('Error initializing default providers:', error);
+            log.error('Error initializing default providers:', error);
             throw error;
         }
     }
@@ -280,7 +302,7 @@ class AppManager {
     async initializeProviders(providers, context = {}) {
         try {
             if (!providers || !Array.isArray(providers)) {
-                logger.warn('No providers to initialize');
+                log.warn('No providers to initialize');
                 return;
             }
 
@@ -293,7 +315,7 @@ class AppManager {
             // Initialize sessions
             await this.initializeSessions(sessions);
         } catch (error) {
-            logger.error('Error initializing providers:', error);
+            log.error('Error initializing providers:', error);
             throw error;
         }
     }
@@ -314,7 +336,7 @@ class AppManager {
 
             // Process any sessions that were handled by CLI modules
             if (cliResult && cliResult.context.sessions && cliResult.context.sessions.length > 0) {
-                logger.info('Processing sessions from CLI context:', cliResult.context.sessions);
+                log.info('Processing sessions from CLI context:', cliResult.context.sessions);
                 await this.initializeSessions(cliResult.context.sessions);
             } else {
                 // Initialize default providers if no specific ones were processed
@@ -326,7 +348,7 @@ class AppManager {
 
             return true;
         } catch (error) {
-            logger.error('Error starting application:', error);
+            log.error('Error starting application:', error);
             return false;
         }
     }
@@ -341,7 +363,7 @@ class AppManager {
         }
         
         this.isQuitting = true;
-        logger.info('Application quitting...');
+        log.info('Application quitting...');
         
         // Clean up resources
         trayService.destroy();

@@ -29,14 +29,13 @@ async function main() {
         const cliResult = await cli.execute(args);
         
         // Only initialize app manager if CLI execution didn't handle everything
-        // cliResult.isCliCommand
         if (!cliResult.continueExecution) {
             app.quit();
             return;
         }
         
         // Initialize app manager after app is ready
-        await appManager.initializeApp(cliResult);
+        await appManager.initializeApp(cliResult.context);
 
         // Handle window-all-closed event
         app.on('window-all-closed', () => {
