@@ -233,19 +233,20 @@ class ProviderCLI extends BaseCLI {
      * @method showUsage
      */
     showUsage() {
+        const cmd = this.getExecBaseCommand();
         console.log(`
 Provider Management Commands:
   --provider list                          List available providers
   --<provider> [options]                   Start a specific provider
 
 Provider Options:
-  --profile <name>                         Use specific profile
+  --profile <n>                         Use specific profile
   --tray                                   Start in tray mode
   --options <json>                         Provider-specific options as JSON
 
 Examples:
-  yarn start --provider list               List all available providers
-  yarn start --whatsapp --profile work     Start WhatsApp with work profile
+  ${cmd} --provider list               List all available providers
+  ${cmd} --whatsapp --profile work     Start WhatsApp with work profile
 `);
     }
 
@@ -254,6 +255,7 @@ Examples:
      * @method showManual
      */
     showManual() {
+        const cmd = this.getExecBaseCommand();
         console.log(`
 Provider Management Module Manual
 ================================
@@ -271,17 +273,16 @@ COMMANDS
 
 OPTIONS
 -------
---profile <name>                         Use specific profile configuration
+--profile <n>                         Use specific profile configuration
 --tray                                   Start in tray mode (minimized)
 --options <json>                         Provider-specific options as JSON string
 
 EXAMPLES
 --------
-yarn start --provider list               List all available providers
-yarn start --whatsapp                    Start WhatsApp with default profile
-yarn start --whatsapp --profile work     Start WhatsApp with work profile
-yarn start --telegram --tray             Start Telegram in tray mode
-yarn start --discord --options '{"theme":"dark"}'  Start Discord with dark theme
+${cmd} --provider list               List all available providers
+${cmd} --whatsapp                    Start WhatsApp with default profile
+${cmd} --whatsapp --profile work     Start WhatsApp with work profile
+${cmd} --facebook --tray             Start Facebook in tray mode
 
 NOTES
 -----

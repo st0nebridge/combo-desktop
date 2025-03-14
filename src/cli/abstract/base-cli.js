@@ -207,6 +207,39 @@ class BaseCLI {
 
         return resolvedPath;
     }
+
+    /**
+     * Get the base command used to execute the application.
+     * This determines if we're running via package manager, as a compiled exe,
+     * or directly with electron.
+     * @method getExecBaseCommand
+     * @returns {string} The base command used to execute the application
+     */
+    getExecBaseCommand() {
+        // Check if running via package manager (yarn/npm)
+        const npm_lifecycle_script = process.env.npm_lifecycle_script;
+        if (npm_lifecycle_script) {
+            // Extract the package manager command (e.g., 'yarn start' from 'electron .')
+            const packageManager = process.env.npm_config_user_agent;
+            if (packageManager && packageManager.startsWith('yarn/')) {
+                return 'yarn start';
+            }
+            if (packageManager && packageManager.startsWith('npm/')) {
+                return 'npm start';
+            }
+        }
+
+        // Check if running as compiled exe
+        const exePath = process.execPath;
+        if (exePath && !exePath.includes('node_modules')) {
+            // Get the exe filename without path
+            const exeName = path.basename(exePath);
+            return exeName;
+        }
+
+        // Default to electron . if not running via package manager or as exe
+        return 'electron .';
+    }
 }
 
 module.exports = BaseCLI;

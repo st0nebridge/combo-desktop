@@ -209,6 +209,7 @@ class ProfileCLI extends BaseCLI {
      * @method showUsage
      */
     showUsage() {
+        const cmd = this.getExecBaseCommand();
         console.log(`
 Profile Management Commands:
   --profile list                     List all available profiles
@@ -224,11 +225,11 @@ Options:
   --force                            Force operation without confirmation
 
 Examples:
-  yarn start --profile list                       List all profiles
-  yarn start --profile create --name work --provider whatsapp
+  ${cmd} --profile list                       List all profiles
+  ${cmd} --profile create --name work --provider whatsapp
                                                   Create a new WhatsApp profile named 'work'
-  yarn start --profile delete --name work --force Delete the 'work' profile without confirmation
-  yarn start --profile switch --name personal     Switch to the 'personal' profile
+  ${cmd} --profile delete --name work --force Delete the 'work' profile without confirmation
+  ${cmd} --profile switch --name personal     Switch to the 'personal' profile
 `);
     }
 
@@ -237,6 +238,7 @@ Examples:
      * @method showManual
      */
     showManual() {
+        const cmd = this.getExecBaseCommand();
         console.log(`
 Profile Management Module Manual
 ===============================
@@ -276,13 +278,13 @@ OPTIONS
 
 EXAMPLES
 --------
-yarn start --profile list
+${cmd} --profile list
     List all available profiles and show which one is currently active.
 
-yarn start --profile create --name work --provider whatsapp
+${cmd} --profile create --name work --provider whatsapp
     Create a new WhatsApp profile named 'work'.
 
-yarn start --whatsapp --profile work
+${cmd} --whatsapp --profile work
     Start WhatsApp using the 'work' profile.
 
 NOTES

@@ -5,6 +5,9 @@
 
 const BaseCLI = require('../abstract/base-cli');
 const log = require('electron-log');
+const ProfileCLI = require('./profile-cli');
+const ProviderCLI = require('./provider-cli');
+const InstanceCLI = require('./instance-cli');
 
 /**
  * CLI module for displaying help information.
@@ -25,6 +28,13 @@ class HelpCLI extends BaseCLI {
         
         // Define entry flag for help commands
         this.entryFlag = 'help';
+
+        // Initialize CLI modules
+        this.cliModules = {
+            'profile': new ProfileCLI(),
+            'provider': new ProviderCLI(),
+            'instance': new InstanceCLI()
+        };
 
         // Bind command functions using .bind() pattern for command mapping
         this.commands = {
@@ -180,6 +190,7 @@ class HelpCLI extends BaseCLI {
      */
     async showUsage(args) {
         try {
+            const baseCommand = this.getExecBaseCommand();
             console.log(`
 Help Commands:
   --help                    Show this help information
@@ -187,8 +198,8 @@ Help Commands:
   --manual [topic]         Show detailed manual (optional topic)
 
 Examples:
-  yarn start --help                Show help information
-  yarn start --manual profiles     Show manual for profiles
+  ${baseCommand} --help                Show help information
+  ${baseCommand} --manual profiles     Show manual for profiles
 `);
             return true;
         } catch (error) {
@@ -230,6 +241,7 @@ Version Information:
         try {
             // Handle both object and string input
             let topic = null;
+            const cmd = this.getExecBaseCommand();
             
             if (typeof args === 'string') {
                 topic = args;
@@ -238,45 +250,14 @@ Version Information:
             }
             
             if (topic) {
-                console.log(`\nManual for topic: ${topic}\n`);
-                
-                // Show topic-specific manual
-                switch (topic.toLowerCase()) {
-                    case 'profiles':
-                    case 'profile': {
-                        console.log(`
-Profile Management:
-  Profiles allow you to manage multiple configurations for different accounts.
-  Each profile is associated with a specific provider (e.g., WhatsApp, Telegram).
-  
-  Commands:
-    --profile list                     List all available profiles
-    --profile create --name NAME --provider PROVIDER
-                                       Create a new profile
-    --profile delete --name NAME [--force]
-                                       Delete an existing profile
-`);
-                        break;
-                    }
-                    case 'providers':
-                    case 'provider': {
-                        console.log(`
-Provider Management:
-  Providers are the messaging services that can be used with this application.
-  
-  Available Providers:
-    whatsapp       WhatsApp messaging service
-    facebook       Facebook messaging service
-    
-  Usage:
-    --provider NAME         Specify provider to use
-`);
-                        break;
-                    }
-                    default: {
-                        console.log(`No manual entry for topic: ${topic}`);
-                        console.log('Available topics: profiles, providers');
-                    }
+                // Get the CLI module based on topic
+                const cliModule = this.cliModules[topic.toLowerCase()];
+                if (cliModule) {
+                    // Call the module's showManual method
+                    cliModule.showManual();
+                } else {
+                    console.log(`No manual entry for topic: ${topic}`);
+                    console.log('Available topics: ' + Object.keys(this.cliModules).join(', '));
                 }
             } else {
                 // Show general manual
@@ -287,11 +268,12 @@ This application allows you to manage multiple messaging service accounts
 through a unified desktop interface.
 
 Available Topics:
-  profiles    Profile management
-  providers   Provider management
+  profile     Profile management
+  provider    Provider management
+  instance    Instance management
 
 To view topic-specific manual:
-  yarn start --manual TOPIC
+  ${cmd} --manual TOPIC
 `);
             }
             

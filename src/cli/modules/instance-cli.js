@@ -219,6 +219,7 @@ class InstanceCLI extends BaseCLI {
      * @method showUsage
      */
     showUsage() {
+        const cmd = this.getExecBaseCommand();
         console.log(`
 Instance Management Commands:
   --instance reset-lock [--force]     Reset instance lock
@@ -237,10 +238,10 @@ Options:
   --id <id>                           Specify instance ID for kill command
 
 Examples:
-  yarn start --instance reset-lock    Reset instance lock
-  yarn start --instance new           Create a new instance
-  yarn start --instance list          List all running instances
-  yarn start --instance kill --id 123 Kill specific instance
+  ${cmd} --instance reset-lock    Reset instance lock
+  ${cmd} --instance new           Create a new instance
+  ${cmd} --instance list          List all running instances
+  ${cmd} --instance kill --id 123 Kill specific instance
 `);
     }
 
@@ -249,6 +250,7 @@ Examples:
      * @method showManual
      */
     showManual() {
+        const cmd = this.getExecBaseCommand();
         console.log(`
 Instance Management Module Manual
 ================================
@@ -291,11 +293,11 @@ OPTIONS
 
 EXAMPLES
 --------
-yarn start --instance reset-lock --force    Reset instance lock without confirmation
-yarn start --new-instance                   Create a new instance (shorthand)
-yarn start --instance list                  List all running instances
-yarn start --instance kill --id 123         Kill instance with ID 123
-yarn start --instance kill --force          Kill all instances without confirmation
+${cmd} --instance reset-lock --force    Reset instance lock without confirmation
+${cmd} --new-instance                   Create a new instance (shorthand)
+${cmd} --instance list                  List all running instances
+${cmd} --instance kill --id 123         Kill instance with ID 123
+${cmd} --instance kill --force          Kill all instances without confirmation
 
 NOTES
 -----
