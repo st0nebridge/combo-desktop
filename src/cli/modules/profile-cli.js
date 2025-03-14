@@ -1,7 +1,7 @@
 /**
  * @module ProfileCLI
  * @description CLI module for managing application profiles.
- * Handles profile creation, deletion, and switching.
+ * Handles profile listing and deletion.
  */
 
 const BaseCLI = require('../abstract/base-cli');
@@ -11,9 +11,8 @@ const profileManager = require('../../services/profile.manager');
 /**
  * CLI module for managing application profiles.
  * Extends BaseCLI to provide profile management functionality:
- * - Profile creation and deletion
- * - Profile listing and switching
- * - Profile configuration
+ * - Profile listing
+ * - Profile deletion (single or all)
  * @class ProfileCLI
  * @extends {BaseCLI}
  */
@@ -34,9 +33,8 @@ class ProfileCLI extends BaseCLI {
         // Bind command functions using .bind() pattern for command mapping
         this.commands = {
             'list': this.listProfiles.bind(this),
-            'create': this.createProfile.bind(this),
             'delete': this.deleteProfile.bind(this),
-            'switch': this.switchProfile.bind(this)
+            'delete-all': this.deleteAllProfiles.bind(this)
         };
     }
 
@@ -85,24 +83,18 @@ class ProfileCLI extends BaseCLI {
                 if (this.commands[command]) {
                     result.command = command;
                     
-                    // Parse additional arguments
-                    for (let i = profileIndex + 2; i < args.length; i++) {
-                        if (args[i] === '--name' && i + 1 < args.length) {
-                            result.name = args[i + 1];
-                            i++; // Skip the next argument as it's the value
-                        } else if (args[i] === '--provider' && i + 1 < args.length) {
-                            result.provider = args[i + 1];
-                            i++; // Skip the next argument as it's the value
-                        } else if (args[i] === '--force') {
-                            result.force = true;
+                    // Parse additional arguments for delete command
+                    if (command === 'delete' && profileIndex + 2 < args.length) {
+                        // Next argument after 'delete' is the profile name
+                        result.profileName = args[profileIndex + 2];
+                        
+                        // Check for provider-specific flags
+                        const providerFlags = this.getProviderFlags(args);
+                        if (providerFlags.length > 0) {
+                            result.providerName = providerFlags[0].replace('--', '');
                         }
                     }
                 }
-            }
-            
-            // Default to list if no command specified
-            if (!result.command) {
-                result.command = 'list';
             }
             
             return result;
@@ -110,6 +102,28 @@ class ProfileCLI extends BaseCLI {
             log.error('Error parsing profile arguments:', error);
             return null;
         }
+    }
+
+    /**
+     * Get provider flags from arguments
+     * @method getProviderFlags
+     * @param {Array<string>} args - Command line arguments
+     * @returns {Array<string>} Provider flags found in arguments
+     * @private
+     */
+    getProviderFlags(args) {
+        // Check for provider flags like --whatsapp, --telegram, etc.
+        const providerFlags = [];
+        const knownProviders = ['whatsapp', 'telegram', 'facebook', 'slack', 'discord'];
+        
+        for (const provider of knownProviders) {
+            const flag = `--${provider}`;
+            if (args.includes(flag)) {
+                providerFlags.push(flag);
+            }
+        }
+        
+        return providerFlags;
     }
 
     /**
@@ -127,7 +141,7 @@ class ProfileCLI extends BaseCLI {
      * @method execute
      * @param {Array<string>} args - Command line arguments
      * @param {Object} context - Execution context
-     * @returns {Promise<{success: boolean, context: Object, continueExecution: boolean, provider: string}>} Execution result
+     * @returns {Promise<{success: boolean, context: Object, continueExecution: boolean}>} Execution result
      */
     async execute(args, context) {
         try {
@@ -156,21 +170,6 @@ class ProfileCLI extends BaseCLI {
             const handler = this.commands[parsedArgs.command];
             if (handler) {
                 const success = await handler(parsedArgs);
-                
-                // Update context with profile information if applicable
-                if (success && parsedArgs.provider) {
-                    return {
-                        success: true,
-                        context: {
-                            ...context,
-                            profileCommand: parsedArgs.command,
-                            profileName: parsedArgs.name,
-                            profileProvider: parsedArgs.provider
-                        },
-                        continueExecution: false,
-                        provider: parsedArgs.provider
-                    };
-                }
                 
                 return {
                     success,
@@ -204,24 +203,17 @@ class ProfileCLI extends BaseCLI {
         const cmd = this.getExecBaseCommand();
         console.log(`
 Profile Management Commands:
-  --profile list                     List all available profiles
-  --profile create --name NAME --provider PROVIDER
-                                     Create a new profile
-  --profile delete --name NAME [--force]
-                                     Delete an existing profile
-  --profile switch --name NAME       Switch to a different profile
-
-Options:
-  --name NAME                        Profile name
-  --provider PROVIDER                Profile provider (e.g., 'whatsapp', 'facebook')
-  --force                            Force operation without confirmation
+  --profile list                     List all available profiles, grouped by provider
+  --profile delete PROFILE_NAME      Delete a profile with the specified name for all providers
+  --profile delete PROFILE_NAME --provider
+                                     Delete a profile for a specific provider only
+  --profile delete-all               Delete all profiles
 
 Examples:
   ${cmd} --profile list                       List all profiles
-  ${cmd} --profile create --name work --provider whatsapp
-                                                  Create a new WhatsApp profile named 'work'
-  ${cmd} --profile delete --name work --force Delete the 'work' profile without confirmation
-  ${cmd} --profile switch --name personal     Switch to the 'personal' profile
+  ${cmd} --profile delete work                Delete the 'work' profile for all providers
+  ${cmd} --profile delete work --whatsapp     Delete the 'work' profile for WhatsApp only
+  ${cmd} --profile delete-all                 Delete all profiles
 `);
     }
 
@@ -243,49 +235,33 @@ such as work and personal profiles for the same messaging service.
 
 COMMANDS
 --------
---profile list                     List all available profiles with their provider and active status.
+--profile list                     List all available profiles with their provider.
                                    This is the default command when only --profile is specified.
 
---profile create --name NAME --provider PROVIDER
-                                   Create a new profile with the specified name for the given provider.
-                                   Each profile stores its own configuration and session data.
+--profile delete PROFILE_NAME      Delete a profile with the specified name for all providers.
+                                   Use with a provider flag to delete only for that provider.
 
---profile delete --name NAME [--force]
-                                   Delete an existing profile and all associated data.
-                                   Use --force to bypass the confirmation prompt.
-
---profile switch --name NAME       Switch the active profile to the specified profile.
-                                   This affects which profile will be used by default.
-
-OPTIONS
--------
---name NAME                        Specify the profile name for create, delete, or switch commands.
-                                   Names should be alphanumeric and descriptive (e.g., 'work', 'personal').
-
---provider PROVIDER                Specify the service provider for the profile (e.g., 'whatsapp', 'telegram').
-                                   Required when creating a new profile.
-
---force                            Force operations without confirmation prompts.
-                                   Primarily used with the delete command.
+--profile delete-all               Delete all profiles for all providers.
 
 EXAMPLES
 --------
 ${cmd} --profile list
-    List all available profiles and show which one is currently active.
+    List all available profiles grouped by provider.
 
-${cmd} --profile create --name work --provider whatsapp
-    Create a new WhatsApp profile named 'work'.
+${cmd} --profile delete work
+    Delete the 'work' profile for all providers.
 
-${cmd} --whatsapp --profile work
-    Start WhatsApp using the 'work' profile.
+${cmd} --profile delete work --whatsapp
+    Delete the 'work' profile for WhatsApp only.
+
+${cmd} --profile delete-all
+    Delete all profiles for all providers.
 
 NOTES
 -----
 - Profiles are stored in the application data directory
 - Each profile maintains separate cookies, cache, and settings
-- The active profile is used by default when starting a provider
 - Multiple profiles can exist for the same provider
-- Profile names must be unique across all providers
 `);
     }
 
@@ -311,97 +287,101 @@ NOTES
             
             if (Object.keys(profiles).length === 0) {
                 console.log('No profiles found.');
-            } else {
-                console.log('Available profiles:');
-                Object.values(profiles).forEach(profile => {
+                return true;
+            }
+            
+            // Group profiles by provider
+            const profilesByProvider = {};
+            
+            Object.values(profiles).forEach(profile => {
+                const providerName = profile.providerName;
+                if (!profilesByProvider[providerName]) {
+                    profilesByProvider[providerName] = [];
+                }
+                profilesByProvider[providerName].push(profile);
+            });
+            
+            console.log('Available profiles:');
+            
+            // Display profiles grouped by provider
+            for (const [provider, providerProfiles] of Object.entries(profilesByProvider)) {
+                console.log(`\n${provider.charAt(0).toUpperCase() + provider.slice(1)}:`);
+                
+                for (const profile of providerProfiles) {
                     const isActive = profile.active ? ' (active)' : '';
-                    console.log(`  - ${profile.profileName} (${profile.providerName})${isActive}`);
-                });
+                    console.log(`  - ${profile.profileName}${isActive}`);
+                }
             }
             
             return true;
         } catch (error) {
             log.error('Error listing profiles:', error);
+            console.log(`Error listing profiles: ${error.message}`);
             return false;
         }
     }
 
     /**
-     * Create a new profile
-     * @method createProfile
-     * @param {Object} args - Command arguments
-     * @returns {Promise<boolean>} True if creation was successful
-     */
-    async createProfile(args) {
-        try {
-            if (!args.name) {
-                console.log('Error: Profile name is required');
-                console.log('Usage: --profile create --name NAME --provider PROVIDER');
-                return false;
-            }
-            
-            if (!args.provider) {
-                console.log('Error: Provider is required');
-                console.log('Usage: --profile create --name NAME --provider PROVIDER');
-                return false;
-            }
-            
-            log.info(`Creating profile: ${args.name} (${args.provider})`);
-            
-            // Check if profile already exists
-            const exists = await profileManager.profileExists(args.name);
-            if (exists) {
-                console.log(`Error: Profile '${args.name}' already exists`);
-                return false;
-            }
-            
-            // Create the profile
-            await profileManager.createProfile(args.name, args.provider);
-            console.log(`Profile '${args.name}' created successfully`);
-            
-            return true;
-        } catch (error) {
-            log.error('Error creating profile:', error);
-            console.log(`Error creating profile: ${error.message}`);
-            return false;
-        }
-    }
-
-    /**
-     * Delete an existing profile
+     * Delete a profile
      * @method deleteProfile
      * @param {Object} args - Command arguments
      * @returns {Promise<boolean>} True if deletion was successful
      */
     async deleteProfile(args) {
         try {
-            if (!args.name) {
+            if (!args.profileName) {
                 console.log('Error: Profile name is required');
-                console.log('Usage: --profile delete --name NAME [--force]');
+                console.log('Usage: --profile delete PROFILE_NAME [--provider]');
                 return false;
             }
             
-            log.info(`Deleting profile: ${args.name}`);
+            const profileName = args.profileName;
+            const providerName = args.providerName;
             
-            // Check if profile exists
-            const exists = await profileManager.profileExists(args.name);
-            if (!exists) {
-                console.log(`Error: Profile '${args.name}' does not exist`);
-                return false;
+            if (providerName) {
+                // Delete profile for specific provider
+                log.info(`Deleting profile: ${profileName} (${providerName})`);
+                
+                try {
+                    await profileManager.deleteProfile(providerName, profileName);
+                    console.log(`Profile '${profileName}' for ${providerName} deleted successfully`);
+                    return true;
+                } catch (error) {
+                    if (error.message.includes('does not exist')) {
+                        console.log(`Profile '${profileName}' does not exist for ${providerName}`);
+                    } else {
+                        console.log(`Error deleting profile: ${error.message}`);
+                    }
+                    return false;
+                }
+            } else {
+                // Delete profile for all providers
+                log.info(`Deleting profile: ${profileName} (all providers)`);
+                
+                const profiles = await profileManager.getAllProfiles();
+                const matchingProfiles = Object.values(profiles).filter(
+                    profile => profile.profileName === profileName
+                );
+                
+                if (matchingProfiles.length === 0) {
+                    console.log(`Error: Profile '${profileName}' does not exist for any provider`);
+                    return false;
+                }
+                
+                let success = true;
+                
+                for (const profile of matchingProfiles) {
+                    try {
+                        await profileManager.deleteProfile(profile.providerName, profileName);
+                        console.log(`Profile '${profileName}' for ${profile.providerName} deleted successfully`);
+                    } catch (error) {
+                        console.log(`Error deleting profile for ${profile.providerName}: ${error.message}`);
+                        success = false;
+                    }
+                }
+                
+                return success;
             }
-            
-            // Confirm deletion if not forced
-            if (!args.force) {
-                console.log(`Warning: This will delete the profile '${args.name}' and all its data`);
-                console.log('Use --force to confirm deletion');
-                return false;
-            }
-            
-            // Delete the profile
-            await profileManager.deleteProfile(args.name);
-            console.log(`Profile '${args.name}' deleted successfully`);
-            
-            return true;
         } catch (error) {
             log.error('Error deleting profile:', error);
             console.log(`Error deleting profile: ${error.message}`);
@@ -410,36 +390,31 @@ NOTES
     }
 
     /**
-     * Switch to a different profile
-     * @method switchProfile
-     * @param {Object} args - Command arguments
-     * @returns {Promise<boolean>} True if switch was successful
+     * Delete all profiles
+     * @method deleteAllProfiles
+     * @returns {Promise<boolean>} True if deletion was successful
      */
-    async switchProfile(args) {
+    async deleteAllProfiles() {
         try {
-            if (!args.name) {
-                console.log('Error: Profile name is required');
-                console.log('Usage: --profile switch --name NAME');
-                return false;
+            log.info('Deleting all profiles');
+            
+            // Get current profiles to show count
+            const profiles = await profileManager.getAllProfiles();
+            const count = Object.keys(profiles).length;
+            
+            if (count === 0) {
+                console.log('No profiles to delete.');
+                return true;
             }
             
-            log.info(`Switching to profile: ${args.name}`);
-            
-            // Check if profile exists
-            const exists = await profileManager.profileExists(args.name);
-            if (!exists) {
-                console.log(`Error: Profile '${args.name}' does not exist`);
-                return false;
-            }
-            
-            // Switch to the profile
-            await profileManager.setActiveProfile(args.name);
-            console.log(`Switched to profile '${args.name}'`);
+            // Delete all profiles
+            await profileManager.deleteAllProfiles();
+            console.log(`All profiles (${count}) deleted successfully`);
             
             return true;
         } catch (error) {
-            log.error('Error switching profile:', error);
-            console.log(`Error switching profile: ${error.message}`);
+            log.error('Error deleting all profiles:', error);
+            console.log(`Error deleting all profiles: ${error.message}`);
             return false;
         }
     }
