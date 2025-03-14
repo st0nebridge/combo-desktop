@@ -70,6 +70,24 @@ class ProviderCLI extends BaseCLI {
     }
 
     /**
+     * Find all occurrences of a value in an array
+     * @method findAllIndices
+     * @param {Array} array - The array to search in
+     * @param {*} value - The value to search for
+     * @returns {Array<number>} Array of indices where the value was found
+     * @private
+     */
+    findAllIndices(array, value) {
+        const indices = [];
+        let idx = array.indexOf(value);
+        while (idx !== -1) {
+            indices.push(idx);
+            idx = array.indexOf(value, idx + 1);
+        }
+        return indices;
+    }
+
+    /**
      * Parse command line arguments
      * @method parseArgs
      * @param {Array<string>} args - Command line arguments
@@ -99,33 +117,41 @@ class ProviderCLI extends BaseCLI {
             for (const provider of providers) {
                 if (provider.commandArg && args.includes(provider.commandArg)) {
                     const providerName = provider.commandArg.replace(/^--/, '');
-                    result.providers.push(providerName);
                     
-                    // Get index of this provider flag
-                    const flagIndex = args.indexOf(provider.commandArg);
-                    let profile = 'default';
+                    // Find all occurrences of this provider flag
+                    const flagIndices = this.findAllIndices(args, provider.commandArg);
                     
-                    // Check for profile value after provider flag
-                    if (flagIndex !== -1 && flagIndex + 1 < args.length) {
-                        const nextArg = args[flagIndex + 1];
-                        // Only use as profile if it's not another flag
-                        if (!nextArg.startsWith('--')) {
-                            profile = nextArg;
-                            logger.info(`Found profile for ${providerName}: ${profile}`);
-                        }
+                    // Add to providers array only once
+                    if (!result.providers.includes(providerName)) {
+                        result.providers.push(providerName);
                     }
                     
-                    // Add to sessions array, ensuring no duplicates
-                    const existingIndex = result.sessions.findIndex(s => 
-                        s.provider === providerName && s.profile === profile
-                    );
-                    
-                    if (existingIndex === -1) {
-                        result.sessions.push({
-                            provider: providerName,
-                            profile: profile
-                        });
-                        logger.info(`Added session: ${providerName}:${profile}`);
+                    // Process each occurrence of the provider flag
+                    for (const flagIndex of flagIndices) {
+                        let profile = 'default';
+                        
+                        // Check for profile value after provider flag
+                        if (flagIndex !== -1 && flagIndex + 1 < args.length) {
+                            const nextArg = args[flagIndex + 1];
+                            // Only use as profile if it's not another flag
+                            if (!nextArg.startsWith('--')) {
+                                profile = nextArg;
+                                logger.info(`Found profile for ${providerName}: ${profile}`);
+                            }
+                        }
+                        
+                        // Add to sessions array, ensuring no duplicates
+                        const existingIndex = result.sessions.findIndex(s => 
+                            s.provider === providerName && s.profile === profile
+                        );
+                        
+                        if (existingIndex === -1) {
+                            result.sessions.push({
+                                provider: providerName,
+                                profile: profile
+                            });
+                            logger.info(`Added session: ${providerName}:${profile}`);
+                        }
                     }
                     
                     // Check for tray flag
