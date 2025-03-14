@@ -191,7 +191,7 @@ class ProviderCLI extends BaseCLI {
             // If we're handling this request but no valid command found, show usage
             if (this.canHandle(args)) {
                 // Check for provider args
-                const providerArgs = this.moduleFlags.filter(key => args.includes(`${key}`));
+                const providerArgs = this.moduleFlags.filter(key => args.includes(key));
                 if (providerArgs.length > 0) {
                     return {
                         success: true,
@@ -246,6 +246,48 @@ Provider Options:
 Examples:
   yarn start --provider list               List all available providers
   yarn start --whatsapp --profile work     Start WhatsApp with work profile
+`);
+    }
+
+    /**
+     * Show detailed manual for the provider module
+     * @method showManual
+     */
+    showManual() {
+        console.log(`
+Provider Management Module Manual
+================================
+
+DESCRIPTION
+-----------
+The Provider Management module handles service provider initialization, configuration, 
+and command execution. It allows users to list available providers and start specific 
+providers with various configuration options.
+
+COMMANDS
+--------
+--provider list                          List all available providers
+--<provider> [options]                   Start a specific provider
+
+OPTIONS
+-------
+--profile <name>                         Use specific profile configuration
+--tray                                   Start in tray mode (minimized)
+--options <json>                         Provider-specific options as JSON string
+
+EXAMPLES
+--------
+yarn start --provider list               List all available providers
+yarn start --whatsapp                    Start WhatsApp with default profile
+yarn start --whatsapp --profile work     Start WhatsApp with work profile
+yarn start --telegram --tray             Start Telegram in tray mode
+yarn start --discord --options '{"theme":"dark"}'  Start Discord with dark theme
+
+NOTES
+-----
+- Each provider may have additional specific options
+- The --options parameter accepts a valid JSON string
+- Multiple providers can be started simultaneously
 `);
     }
 

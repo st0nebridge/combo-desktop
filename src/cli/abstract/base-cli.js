@@ -7,6 +7,7 @@
  * - isCliCommand(): Check if command needs PID
  * - execute(args, context): Execute module logic
  * - showUsage(): Show module usage
+ * - showManual(): Show module manual
  */
 
 const fs = require('fs');
@@ -155,6 +156,16 @@ class BaseCLI {
             });
         }
 
+        // Handle manual flag
+        if (args.includes('--manual')) {
+            this.showManual();
+            return Promise.resolve({
+                success: true,
+                context,
+                continueExecution: false
+            });
+        }
+
         throw new Error(`${this.constructor.name} must implement execute()`);
     }
 
@@ -166,6 +177,16 @@ class BaseCLI {
      */
     showUsage() {
         throw new Error(`${this.constructor.name} must implement showUsage()`);
+    }
+
+    /**
+     * Show detailed manual for the module. Must be implemented by child classes.
+     * @abstract
+     * @method showManual
+     * @throws {Error} If not implemented by child class
+     */
+    showManual() {
+        throw new Error(`${this.constructor.name} must implement showManual()`);
     }
 
     /**

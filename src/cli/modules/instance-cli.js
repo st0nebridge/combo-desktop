@@ -245,6 +245,68 @@ Examples:
     }
 
     /**
+     * Show detailed manual for the instance module
+     * @method showManual
+     */
+    showManual() {
+        console.log(`
+Instance Management Module Manual
+================================
+
+DESCRIPTION
+-----------
+The Instance Management module handles application instance creation, locking, 
+and management. It provides functionality to create new instances, list running 
+instances, check instance status, and terminate instances.
+
+COMMANDS
+--------
+--instance reset-lock [--force]     Reset the instance lock file, allowing new instances
+                                    to be created even if the lock file indicates another
+                                    instance is running. Use --force to bypass confirmation.
+
+--instance new                      Create a new application instance with a unique ID.
+                                    This will launch a separate process.
+
+--instance list                     List all currently running instances with their IDs,
+                                    process IDs (PIDs), and start times.
+
+--instance status                   Show detailed status information about the instance
+                                    manager, including lock file status and running count.
+
+--instance kill [--id <id>]         Terminate a specific instance by ID, or all instances
+                                    if no ID is specified. Use --force to bypass confirmation
+                                    when killing all instances.
+
+SHORTHAND FLAGS
+--------------
+--reset-lock                        Shorthand for '--instance reset-lock'
+--new-instance                      Shorthand for '--instance new'
+--one-instance                      Allow only one instance to run at a time
+
+OPTIONS
+-------
+--force                             Force operations without confirmation prompts
+--id <id>                           Specify instance ID for the kill command
+
+EXAMPLES
+--------
+yarn start --instance reset-lock --force    Reset instance lock without confirmation
+yarn start --new-instance                   Create a new instance (shorthand)
+yarn start --instance list                  List all running instances
+yarn start --instance kill --id 123         Kill instance with ID 123
+yarn start --instance kill --force          Kill all instances without confirmation
+
+NOTES
+-----
+- Instance locks prevent multiple instances from conflicting
+- Each instance has a unique ID and runs in its own process
+- The status command provides diagnostic information
+- Use caution when resetting locks or killing instances
+`);
+    }
+
+    /**
      * Reset the instance lock
      * @method resetLock
      * @param {Object} args - Command arguments

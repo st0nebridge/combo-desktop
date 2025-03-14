@@ -23,9 +23,6 @@ class HelpCLI extends BaseCLI {
     constructor() {
         super();
         
-        // Define module-specific flags
-        this.moduleFlags = ['--help', '--manual', '--version'];
-        
         // Define entry flag for help commands
         this.entryFlag = 'help';
 
@@ -258,7 +255,6 @@ Profile Management:
                                        Create a new profile
     --profile delete --name NAME [--force]
                                        Delete an existing profile
-    --profile switch --name NAME       Switch to a different profile
 `);
                         break;
                     }
@@ -270,7 +266,7 @@ Provider Management:
   
   Available Providers:
     whatsapp       WhatsApp messaging service
-    telegram       Telegram messaging service
+    facebook       Facebook messaging service
     
   Usage:
     --provider NAME         Specify provider to use

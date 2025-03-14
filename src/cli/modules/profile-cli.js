@@ -233,6 +233,69 @@ Examples:
     }
 
     /**
+     * Show detailed manual for the profile module
+     * @method showManual
+     */
+    showManual() {
+        console.log(`
+Profile Management Module Manual
+===============================
+
+DESCRIPTION
+-----------
+The Profile Management module handles application profiles for different messaging services.
+Profiles allow users to maintain separate configurations for different accounts or use cases,
+such as work and personal profiles for the same messaging service.
+
+COMMANDS
+--------
+--profile list                     List all available profiles with their provider and active status.
+                                   This is the default command when only --profile is specified.
+
+--profile create --name NAME --provider PROVIDER
+                                   Create a new profile with the specified name for the given provider.
+                                   Each profile stores its own configuration and session data.
+
+--profile delete --name NAME [--force]
+                                   Delete an existing profile and all associated data.
+                                   Use --force to bypass the confirmation prompt.
+
+--profile switch --name NAME       Switch the active profile to the specified profile.
+                                   This affects which profile will be used by default.
+
+OPTIONS
+-------
+--name NAME                        Specify the profile name for create, delete, or switch commands.
+                                   Names should be alphanumeric and descriptive (e.g., 'work', 'personal').
+
+--provider PROVIDER                Specify the service provider for the profile (e.g., 'whatsapp', 'telegram').
+                                   Required when creating a new profile.
+
+--force                            Force operations without confirmation prompts.
+                                   Primarily used with the delete command.
+
+EXAMPLES
+--------
+yarn start --profile list
+    List all available profiles and show which one is currently active.
+
+yarn start --profile create --name work --provider whatsapp
+    Create a new WhatsApp profile named 'work'.
+
+yarn start --whatsapp --profile work
+    Start WhatsApp using the 'work' profile.
+
+NOTES
+-----
+- Profiles are stored in the application data directory
+- Each profile maintains separate cookies, cache, and settings
+- The active profile is used by default when starting a provider
+- Multiple profiles can exist for the same provider
+- Profile names must be unique across all providers
+`);
+    }
+
+    /**
      * List all available profiles
      * @method listProfiles
      * @param {Object} args - Command arguments
