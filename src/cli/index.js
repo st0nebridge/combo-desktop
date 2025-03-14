@@ -31,7 +31,7 @@ async function initModules() {
         // Auto-register modules from modules directory
         const modulesDir = path.join(__dirname, 'modules');
         const moduleFiles = fs.readdirSync(modulesDir)
-            .filter(file => file.endsWith('-cli.js') && file !== 'base-cli.js');
+            .filter(file => file.endsWith('-cli.js'));
 
         // Track registered modules to prevent duplicates
         const registeredModules = new Set();
@@ -74,36 +74,32 @@ async function initModules() {
 /**
  * Execute CLI command with provided arguments
  * @param {Array<string>} args - Command line arguments
- * @returns {Promise<{success: boolean, isCliCommand: boolean, processedProviders: Array<string>}>} Command execution result
+ * @returns {Promise<{success: boolean, isCliCommand: boolean, processedProviders: Array<string>, context: Object}>} Command execution result
  */
 async function execute(args) {
     try {
         // Initialize modules first
         await initModules();
 
-        // Show help if no arguments provided
-        if (!args || args.length === 0) {
-            cliRegistry.showHelp();
-            return { success: true, isCliCommand: true, processedProviders: [] };
-        }
-
-        // Remove electron and script path from args if present
-        const cliArgs = args.slice(process.defaultApp ? 2 : 1);
-        log.debug('Command line arguments:', cliArgs);
-
         // Execute command through registry
-        const result = await cliRegistry.execute(cliArgs);
+        const result = await cliRegistry.execute(args);
+        
         if (!result.success) {
             log.error('CLI command failed');
             cliRegistry.showHelp();
-            process.exit(1);
         }
 
         return result;
     } catch (error) {
         log.error('Error executing CLI command:', error);
         cliRegistry.showHelp();
-        process.exit(1);
+        return {
+            success: false,
+            isCliCommand: false,
+            processedProviders: [],
+            continueExecution: false,
+            context: {}
+        };
     }
 }
 

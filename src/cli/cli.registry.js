@@ -3,10 +3,10 @@
  */
 
 const log = require('../services/logging.service');
-const instanceManager = require('../services/instance.manager');
 
 /**
  * CLI Registry that manages CLI modules and command execution
+ * @class CLIRegistry
  */
 class CLIRegistry {
     /**
@@ -17,7 +17,6 @@ class CLIRegistry {
         /** @type {Map<string, Object>} */
         this.modules = new Map();
         this.initialized = false;
-        this.lastParsedArgs = null;
         log.info('CLI Registry initialized');
     }
 
@@ -27,8 +26,8 @@ class CLIRegistry {
      */
     clear() {
         this.modules.clear();
-        this.lastParsedArgs = null;
-        log.info('CLI Registry cleared');
+        this.initialized = false;
+        log.debug('CLI Registry cleared');
     }
 
     /**
@@ -39,35 +38,33 @@ class CLIRegistry {
      */
     register(module) {
         try {
-            if (!module || typeof module !== 'object') {
-                log.error('Invalid CLI module: module must be an object');
+            // Validate module
+            if (!module) {
+                log.error('Cannot register null or undefined module');
                 return false;
             }
 
-            const requiredMethods = ['execute', 'parseArgs', 'showUsage'];
-            const missingMethods = requiredMethods.filter(
-                method => !module[method] || typeof module[method] !== 'function'
-            );
-
-            if (missingMethods.length > 0) {
-                log.error(`Invalid CLI module: missing required methods: ${missingMethods.join(', ')}`);
-                return false;
+            // Check if module has required methods
+            const requiredMethods = ['execute', 'canHandle', 'showUsage', 'isCliCommand'];
+            for (const method of requiredMethods) {
+                if (typeof module[method] !== 'function') {
+                    log.error(`Module ${module.constructor.name} is missing required method: ${method}`);
+                    return false;
+                }
             }
 
-            const name = module.constructor.name;
-            if (!name) {
-                log.error('Invalid CLI module: missing constructor name');
-                return false;
-            }
-
+            // Get module name
+            const moduleName = module.constructor.name;
+            
             // Check if module is already registered
-            if (this.modules.has(name)) {
-                log.debug(`CLI module ${name} already registered, skipping duplicate registration`);
-                return true;
+            if (this.modules.has(moduleName)) {
+                log.warn(`Module ${moduleName} is already registered`);
+                return false;
             }
 
-            this.modules.set(name, module);
-            log.info(`Registered CLI module: ${name}`);
+            // Register module
+            this.modules.set(moduleName, module);
+            log.info(`Registered CLI module: ${moduleName}`);
             return true;
         } catch (error) {
             log.error('Error registering CLI module:', error);
@@ -79,204 +76,100 @@ class CLIRegistry {
      * Execute CLI command with given arguments
      * @method execute
      * @param {Array<string>} args - Command line arguments
-     * @returns {Promise<{success: boolean, isCliCommand: boolean, processedProviders: Array<string>}>}
+     * @returns {Promise<{success: boolean, isCliCommand: boolean, processedProviders: Array<string>, continueExecution: boolean}>}
      */
     async execute(args) {
-        if (!args || args.length === 0) {
-            log.info('No arguments provided, showing help');
-            this.showHelp();
-            return { success: true, isCliCommand: true, processedProviders: [] };
-        }
-
         try {
-            // Remove electron and script path from args if present
-            const cliArgs = args.slice(process.defaultApp ? 2 : 1);
-            log.debug('CLI arguments:', cliArgs);
-
-            // Check for help flag first
-            if (cliArgs.includes('--help') || cliArgs.includes('--manual')) {
+            if (!args || args.length === 0) {
+                log.debug('No arguments provided, showing help');
                 this.showHelp();
-                return { success: true, isCliCommand: true, processedProviders: [] };
+                return { 
+                    success: true, 
+                    isCliCommand: true, 
+                    processedProviders: [],
+                    continueExecution: false
+                };
             }
 
-            // Initialize instance manager
-            await instanceManager.ensureDirectories();
+            log.debug('Processing command line arguments:', args);
 
-            // Handle special flags first
-            const hasResetLock = cliArgs.includes('--reset-lock');
-            const hasNewInstance = cliArgs.includes('--new-instance');
-            const hasOneInstance = cliArgs.includes('--one-instance');
+            // Track processed providers and execution state
+            const result = {
+                success: true,
+                isCliCommand: false,
+                processedProviders: [],
+                continueExecution: true
+            };
 
-            // Handle reset-lock command first
-            if (hasResetLock) {
-                log.info('Resetting instance locks');
-                await instanceManager.resetLock();
-                return { success: true, isCliCommand: true, processedProviders: [] };
-            }
-
-            // Check if this is a CLI command that should be delegated
-            const shouldDelegate = !hasNewInstance && !hasOneInstance && await this.shouldDelegateCommand(cliArgs);
-            if (shouldDelegate) {
-                log.info('Delegating command to existing instance');
-                await instanceManager.delegateCommand(cliArgs);
-                return { success: true, isCliCommand: true, processedProviders: [] };
-            }
-
-            // Track if any module successfully handled arguments
-            let anySuccess = false;
-            let isCliCommand = true;
-            let processedProviders = [];
+            // Create execution context that can be passed between modules
+            const executionContext = {};
             
-            // Try each module until one successfully handles the command
-            for (const [name, module] of this.modules) {
+            // Try each module to see if it can handle the command
+            for (const [_, module] of this.modules) {
                 try {
-                    const result = await module.parseArgs(cliArgs);
-                    if (result) {
-                        log.info(`CLI command detected in module: ${name}`);
+                    // Check if module can handle these arguments
+                    if (module.canHandle(args)) {
+                        log.info(`Module ${module.constructor.name} can handle the command`);
                         
-                        // Store parsed args for app initialization
-                        this.lastParsedArgs = result;
-
-                        // Execute command
-                        const success = await module.execute(result);
-                        if (success) {
-                            anySuccess = true;
-                            // If any module is not a CLI command, mark the overall result as not a CLI command
-                            if (module.isCliCommand && typeof module.isCliCommand === 'function') {
-                                isCliCommand = isCliCommand && module.isCliCommand();
-                            }
-                            
-                            // If this is a provider module, track processed providers
-                            if (name === 'ProviderCLI' && result.providers && result.providers.length > 0) {
-                                processedProviders = processedProviders.concat(result.providers);
-                            }
-                            
-                            // Stop processing other modules since this one handled the command
+                        // Execute the module with the arguments and context
+                        const moduleResult = await module.execute(args, executionContext);
+                        
+                        // Update the execution context with module result
+                        Object.assign(executionContext, moduleResult.context || {});
+                        
+                        // Check if this is a CLI command
+                        if (module.isCliCommand()) {
+                            result.isCliCommand = true;
+                        }
+                        
+                        // Add provider to processed list if applicable
+                        if (moduleResult.provider) {
+                            result.processedProviders.push(moduleResult.provider);
+                        }
+                        
+                        // Check if we should continue execution
+                        if (moduleResult.continueExecution === false) {
+                            result.continueExecution = false;
                             break;
-                        } else {
-                            log.error(`Command execution failed in module: ${name}`);
-                            module.showUsage();
                         }
                     }
                 } catch (error) {
-                    log.error(`Error in module ${name}:`, error);
-                    module.showUsage();
+                    log.error(`Error executing CLI module ${module.constructor.name}:`, error);
                 }
             }
 
-            if (!anySuccess) {
-                log.warn('No module found to handle arguments:', cliArgs);
-                this.showHelp();
-                return { success: false, isCliCommand: true, processedProviders: [] };
-            }
-
-            return { success: true, isCliCommand, processedProviders };
+            // Add the execution context to the result
+            result.context = executionContext;
+            
+            return result;
         } catch (error) {
             log.error('Error executing CLI command:', error);
-            this.showHelp();
-            throw error;
+            return { 
+                success: false, 
+                isCliCommand: false, 
+                processedProviders: [],
+                continueExecution: false
+            };
         }
     }
 
     /**
-     * Check if command should be delegated to existing instance
-     * @method shouldDelegateCommand
-     * @param {Array<string>} args - Command line arguments
-     * @returns {Promise<boolean>} True if command should be delegated
-     */
-    async shouldDelegateCommand(args) {
-        try {
-            // Never delegate help or manual commands
-            if (args.includes('--help') || args.includes('--manual')) {
-                return false;
-            }
-
-            // Never delegate if --new-instance flag is present
-            if (args.includes('--new-instance')) {
-                return false;
-            }
-
-            // Never delegate if --one-instance flag is present
-            if (args.includes('--one-instance')) {
-                return false;
-            }
-
-            // Never delegate if --reset-lock flag is present
-            if (args.includes('--reset-lock')) {
-                return false;
-            }
-
-            // Never delegate instance management commands
-            if (args.includes('--instances')) {
-                return false;
-            }
-
-            // Check if this is a profile command
-            if (args.includes('--profiles')) {
-                // Only delegate if it's not a list/create/delete command
-                const profileCommands = ['list', 'create', 'delete', 'delete-all'];
-                const hasProfileCommand = profileCommands.some(cmd => args.includes(cmd));
-                return !hasProfileCommand;
-            }
-
-            // Check if there's an existing instance that can handle this command
-            const hasExistingInstance = await instanceManager.hasRunningInstance();
-            if (!hasExistingInstance) {
-                return false;
-            }
-
-            // Get profile from command line arguments
-            const profileIndex = args.findIndex(arg => arg.startsWith('--') && arg !== '--profiles');
-            const profile = profileIndex >= 0 && profileIndex + 1 < args.length ? args[profileIndex + 1] : 'default';
-
-            // Check if existing instance can handle this profile
-            const canHandleProfile = await instanceManager.canHandleProfile(profile);
-            if (!canHandleProfile) {
-                return false;
-            }
-
-            // By default, delegate to existing instance if one exists and can handle the profile
-            return true;
-        } catch (error) {
-            log.error('Error checking command delegation:', error);
-            return false;
-        }
-    }
-
-    /**
-     * Get last successfully parsed arguments
-     * @method getLastParsedArgs
-     * @returns {Object|null} Last parsed arguments or null if none
-     */
-    getLastParsedArgs() {
-        return this.lastParsedArgs;
-    }
-
-    /**
-     * Show help for all registered modules
+     * Show help information for all modules
      * @method showHelp
      */
     showHelp() {
-        console.log(`
-Combo Desktop - Multi-Provider Chat Client
-
-Usage:
-  yarn start [options] [command]
-
-Standard Flags:
-  --help                    Show this help information
-  --version                 Show version information
-  --manual [topic]         Show detailed help (topics: providers, profiles, flags)
-  --tray                   Start application minimized to tray
-  --new-instance           Force new instance creation
-  --one-instance           Allow only one instance to run
-  --reset-lock             Reset instance locks
-  --config <path>          Specify config file path
-
-For more information on specific commands, use:
-  yarn start --help
-  yarn start --manual [topic]
-`);
+        console.log('Available commands:');
+        console.log('--help                 Show this help message');
+        console.log('--version              Show version information');
+        
+        // Show help for each module
+        for (const [_, module] of this.modules) {
+            try {
+                module.showUsage();
+            } catch (error) {
+                log.error(`Error showing usage for module ${module.constructor.name}:`, error);
+            }
+        }
     }
 }
 

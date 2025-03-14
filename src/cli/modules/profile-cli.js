@@ -25,6 +25,9 @@ class ProfileCLI extends BaseCLI {
     constructor() {
         super();
         
+        // Define module-specific flags
+        this.moduleFlags = ['--profile', '--profiles'];
+        
         // Define entry flag for profile commands
         this.entryFlag = 'profile';
 
@@ -38,36 +41,78 @@ class ProfileCLI extends BaseCLI {
     }
 
     /**
+     * Check if this module can handle the given arguments
+     * @method canHandle
+     * @param {Array<string>} args - Command line arguments
+     * @returns {boolean} True if module can handle these arguments
+     */
+    canHandle(args) {
+        try {
+            if (!args || args.length === 0) {
+                return false;
+            }
+            
+            // Check for direct profile flags
+            if (args.includes('--profile') || args.includes('--profiles')) {
+                return true;
+            }
+            
+            return false;
+        } catch (error) {
+            log.error('Error checking if profile module can handle arguments:', error);
+            return false;
+        }
+    }
+
+    /**
      * Parse profile-specific command line arguments
      * @method parseArgs
-     * @param {Object} args - Command line arguments
-     * @returns {Object|null} Parsed arguments or null if no profile flags found
+     * @param {Array<string>} args - Command line arguments
+     * @returns {Object} Parsed arguments
      */
-    async parseArgs(args) {
+    parseArgs(args) {
         try {
-            // Check for entry flag first
-            if (!args[this.entryFlag]) {
-                return null;
-            }
-
-            // Get the subcommand
-            const subcommand = args._[0];
+            // Initialize result object
+            const result = this.getBaseResultObject();
             
-            // Check if subcommand exists in our command map
-            if (this.commands[subcommand]) {
-                return {
-                    command: subcommand,
-                    handler: this.commands[subcommand],
-                    args: {
-                        name: args.name || null,
-                        provider: args.provider || null,
-                        force: args.force || false
+            // Parse common flags
+            this.parseCommonFlags(args, result);
+            
+            // Check for direct flags
+            if (args.includes('--profile') || args.includes('--profiles')) {
+                // Get the index of the flag
+                const flagIndex = args.indexOf('--profile') !== -1 ? 
+                    args.indexOf('--profile') : args.indexOf('--profiles');
+                
+                // Get the command (next argument after the flag)
+                if (flagIndex !== -1 && flagIndex + 1 < args.length && !args[flagIndex + 1].startsWith('--')) {
+                    const command = args[flagIndex + 1];
+                    
+                    if (this.commands[command]) {
+                        result.command = command;
+                        
+                        // Parse additional arguments
+                        for (let i = flagIndex + 2; i < args.length; i++) {
+                            if (args[i] === '--name' && i + 1 < args.length) {
+                                result.name = args[i + 1];
+                                i++; // Skip the next argument as it's the value
+                            } else if (args[i] === '--provider' && i + 1 < args.length) {
+                                result.provider = args[i + 1];
+                                i++; // Skip the next argument as it's the value
+                            } else if (args[i] === '--force') {
+                                result.force = true;
+                            }
+                        }
+                        
+                        return result;
                     }
-                };
+                }
+                
+                // Default to list if no command specified
+                result.command = 'list';
+                return result;
             }
-
-            // If no valid subcommand but entry flag is present, show usage
-            this.showUsage();
+            
             return null;
         } catch (error) {
             log.error('Error parsing profile arguments:', error);
@@ -76,22 +121,86 @@ class ProfileCLI extends BaseCLI {
     }
 
     /**
+     * Check if this is a CLI command that shouldn't register a PID
+     * @method isCliCommand
+     * @returns {boolean} True if this is a CLI command
+     */
+    isCliCommand() {
+        // Profile commands are CLI commands that don't need to register a PID
+        return true;
+    }
+
+    /**
      * Execute profile-specific commands based on parsed arguments
      * @method execute
-     * @param {Object} args - Parsed arguments from parseArgs()
-     * @returns {Promise<boolean>} True if execution successful
+     * @param {Array<string>} args - Command line arguments
+     * @param {Object} context - Execution context
+     * @returns {Promise<{success: boolean, context: Object, continueExecution: boolean, provider: string}>} Execution result
      */
-    async execute(args) {
+    async execute(args, context) {
         try {
-            if (!args || !args.command || !args.handler) {
-                return false;
+            // Parse the arguments
+            const parsedArgs = this.parseArgs(args);
+            
+            if (!parsedArgs || !parsedArgs.command) {
+                return {
+                    success: false,
+                    context,
+                    continueExecution: true
+                };
             }
 
-            // Execute the command handler with parsed arguments
-            return await args.handler(args.args);
+            // Handle common flags first
+            if (parsedArgs.help) {
+                this.showUsage();
+                return {
+                    success: true,
+                    context,
+                    continueExecution: false
+                };
+            }
+            
+            // Execute the command handler based on the command name
+            const handler = this.commands[parsedArgs.command];
+            if (handler) {
+                const success = await handler(parsedArgs);
+                
+                // Update context with profile information if applicable
+                if (success && parsedArgs.provider) {
+                    return {
+                        success: true,
+                        context: {
+                            ...context,
+                            profileCommand: parsedArgs.command,
+                            profileName: parsedArgs.name,
+                            profileProvider: parsedArgs.provider
+                        },
+                        continueExecution: true,
+                        provider: parsedArgs.provider
+                    };
+                }
+                
+                return {
+                    success,
+                    context,
+                    continueExecution: true
+                };
+            }
+            
+            // Default to showing usage if no specific command found
+            this.showUsage();
+            return {
+                success: false,
+                context,
+                continueExecution: true
+            };
         } catch (error) {
             log.error('Error executing profile command:', error);
-            return false;
+            return {
+                success: false,
+                context,
+                continueExecution: true
+            };
         }
     }
 
@@ -155,25 +264,39 @@ Examples:
      * Create a new profile
      * @method createProfile
      * @param {Object} args - Command arguments
-     * @returns {Promise<boolean>} True if profile creation successful
+     * @returns {Promise<boolean>} True if creation was successful
      */
     async createProfile(args) {
         try {
-            const { name, provider } = args;
-            
-            if (!name || !provider) {
-                log.error('Error creating profile: --provider and --name are required');
-                console.error('Error: --provider and --name are required');
+            if (!args.name) {
+                console.log('Error: Profile name is required');
+                console.log('Usage: --profile create --name NAME --provider PROVIDER');
                 return false;
             }
             
-            log.info(`Creating new profile: ${name} (${provider})`);
-            await profileManager.createProfile(name, provider);
-            console.log(`Profile '${name}' created successfully.`);
+            if (!args.provider) {
+                console.log('Error: Provider is required');
+                console.log('Usage: --profile create --name NAME --provider PROVIDER');
+                return false;
+            }
+            
+            log.info(`Creating profile: ${args.name} (${args.provider})`);
+            
+            // Check if profile already exists
+            const exists = await profileManager.profileExists(args.name);
+            if (exists) {
+                console.log(`Error: Profile '${args.name}' already exists`);
+                return false;
+            }
+            
+            // Create the profile
+            await profileManager.createProfile(args.name, args.provider);
+            console.log(`Profile '${args.name}' created successfully`);
+            
             return true;
         } catch (error) {
             log.error('Error creating profile:', error);
-            console.error(`Error creating profile: ${error.message}`);
+            console.log(`Error creating profile: ${error.message}`);
             return false;
         }
     }
@@ -182,31 +305,40 @@ Examples:
      * Delete an existing profile
      * @method deleteProfile
      * @param {Object} args - Command arguments
-     * @returns {Promise<boolean>} True if profile deletion successful
+     * @returns {Promise<boolean>} True if deletion was successful
      */
     async deleteProfile(args) {
         try {
-            const { name, force } = args;
-            
-            if (!name) {
-                log.error('Error deleting profile: --name is required');
-                console.error('Error: --name is required');
+            if (!args.name) {
+                console.log('Error: Profile name is required');
+                console.log('Usage: --profile delete --name NAME [--force]');
                 return false;
             }
             
-            if (!force) {
-                console.log(`Warning: This will permanently delete the '${name}' profile.`);
-                console.log('Use --force to bypass this warning.');
+            log.info(`Deleting profile: ${args.name}`);
+            
+            // Check if profile exists
+            const exists = await profileManager.profileExists(args.name);
+            if (!exists) {
+                console.log(`Error: Profile '${args.name}' does not exist`);
                 return false;
             }
             
-            log.info(`Deleting profile: ${name}`);
-            await profileManager.deleteProfile(name);
-            console.log(`Profile '${name}' deleted successfully.`);
+            // Confirm deletion if not forced
+            if (!args.force) {
+                console.log(`Warning: This will delete the profile '${args.name}' and all its data`);
+                console.log('Use --force to confirm deletion');
+                return false;
+            }
+            
+            // Delete the profile
+            await profileManager.deleteProfile(args.name);
+            console.log(`Profile '${args.name}' deleted successfully`);
+            
             return true;
         } catch (error) {
             log.error('Error deleting profile:', error);
-            console.error(`Error deleting profile: ${error.message}`);
+            console.log(`Error deleting profile: ${error.message}`);
             return false;
         }
     }
@@ -215,25 +347,33 @@ Examples:
      * Switch to a different profile
      * @method switchProfile
      * @param {Object} args - Command arguments
-     * @returns {Promise<boolean>} True if profile switch successful
+     * @returns {Promise<boolean>} True if switch was successful
      */
     async switchProfile(args) {
         try {
-            const { name } = args;
-            
-            if (!name) {
-                log.error('Error switching profile: --name is required');
-                console.error('Error: --name is required');
+            if (!args.name) {
+                console.log('Error: Profile name is required');
+                console.log('Usage: --profile switch --name NAME');
                 return false;
             }
             
-            log.info(`Switching to profile: ${name}`);
-            await profileManager.switchProfile(name);
-            console.log(`Switched to profile '${name}' successfully.`);
+            log.info(`Switching to profile: ${args.name}`);
+            
+            // Check if profile exists
+            const exists = await profileManager.profileExists(args.name);
+            if (!exists) {
+                console.log(`Error: Profile '${args.name}' does not exist`);
+                return false;
+            }
+            
+            // Switch to the profile
+            await profileManager.setActiveProfile(args.name);
+            console.log(`Switched to profile '${args.name}'`);
+            
             return true;
         } catch (error) {
             log.error('Error switching profile:', error);
-            console.error(`Error switching profile: ${error.message}`);
+            console.log(`Error switching profile: ${error.message}`);
             return false;
         }
     }

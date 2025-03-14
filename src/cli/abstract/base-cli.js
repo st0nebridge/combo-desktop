@@ -3,9 +3,9 @@
  * Must remain abstract and not implement specific configuration.
  * 
  * Required implementations by child classes:
- * - parseArgs(): Parse module-specific args
+ * - canHandle(): Check if module can handle given args
  * - isCliCommand(): Check if command needs PID
- * - execute(args): Execute module logic
+ * - execute(args, context): Execute module logic
  * - showUsage(): Show module usage
  */
 
@@ -25,8 +25,11 @@ class BaseCLI {
             throw new Error('BaseCLI cannot be instantiated directly');
         }
 
-        this.args = process.argv.slice(process.defaultApp ? 2 : 1);
+        // Each module should define its own moduleFlags
         this.moduleFlags = [];
+        
+        // Each module should define its own command map
+        this.commands = {};
     }
 
     /**
@@ -37,40 +40,46 @@ class BaseCLI {
         return {
             help: false,
             manual: false,
-            version: false
+            version: false,
+            context: {},
+            continueExecution: true
         };
     }
 
     /**
      * Parse common flags shared by all CLI modules
+     * @param {Array<string>} args - Command line arguments
      * @param {Object} result - Result object to update
-     * @param {number} index - Current index in args array
      * @returns {Object} Result with handled and skipNext flags
      */
-    parseCommonFlags(result, index) {
-        if (!result || typeof index !== 'number') {
+    parseCommonFlags(args, result) {
+        if (!args || !result) {
             return { handled: false, skipNext: false };
         }
 
-        const arg = this.args[index];
-        let handled = true;
+        let handled = false;
         let skipNext = false;
         
-        switch (arg) {
-            case '--help': {
-                result.help = true;
-                break;
-            }
-            case '--manual': {
-                result.manual = true;
-                break;
-            }
-            case '--version': {
-                result.version = true;
-                break;
-            }
-            default: {
-                handled = false;
+        // Check for common flags
+        for (let i = 0; i < args.length; i++) {
+            const arg = args[i];
+            
+            switch (arg) {
+                case '--help': {
+                    result.help = true;
+                    handled = true;
+                    break;
+                }
+                case '--manual': {
+                    result.manual = true;
+                    handled = true;
+                    break;
+                }
+                case '--version': {
+                    result.version = true;
+                    handled = true;
+                    break;
+                }
             }
         }
 
@@ -86,22 +95,24 @@ class BaseCLI {
             const packagePath = path.join(__dirname, '..', '..', '..', 'package.json');
             const packageJson = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
             logger.info(`Version: ${packageJson.version}`);
-            process.exit(0);
+            console.log(`Version: ${packageJson.version}`);
+            return true;
         } catch (error) {
             logger.error('Error reading package version:', error);
-            process.exit(1);
+            return false;
         }
     }
 
     /**
-     * Parse module-specific arguments. Must be implemented by child classes.
+     * Check if module can handle the given arguments
      * @abstract
-     * @method parseArgs
-     * @returns {Object|null} Parsed arguments or null if not applicable
+     * @method canHandle
+     * @param {Array<string>} args - Command line arguments
+     * @returns {boolean} True if module can handle these arguments
      * @throws {Error} If not implemented by child class
      */
-    parseArgs() {
-        throw new Error(`${this.constructor.name} must implement parseArgs()`);
+    canHandle(args) {
+        throw new Error(`${this.constructor.name} must implement canHandle()`);
     }
 
     /**
@@ -120,18 +131,38 @@ class BaseCLI {
      * Execute module-specific logic. Must be implemented by child classes.
      * @abstract
      * @method execute
-     * @param {Object} args - Parsed arguments from parseArgs()
-     * @throws {Error} If not implemented by child class or args is invalid
+     * @param {Array<string>} args - Command line arguments
+     * @param {Object} context - Execution context that can be modified
+     * @returns {Promise<{success: boolean, context: Object, continueExecution: boolean, provider: string}>} Execution result
+     * @throws {Error} If not implemented by child class
      */
-    execute(args) {
-        if (!args || typeof args !== 'object') {
+    execute(args, context) {
+        if (!args || !Array.isArray(args)) {
             throw new Error('Invalid args parameter provided to execute()');
         }
 
-        // Handle version flag before module-specific execution
-        if (args.version) {
-            this.showVersion();
-            return true;
+        if (!context || typeof context !== 'object') {
+            context = {};
+        }
+
+        // Handle version flag
+        if (args.includes('--version')) {
+            const success = this.showVersion();
+            return Promise.resolve({
+                success,
+                context,
+                continueExecution: false
+            });
+        }
+
+        // Handle help flag
+        if (args.includes('--help')) {
+            this.showUsage();
+            return Promise.resolve({
+                success: true,
+                context,
+                continueExecution: false
+            });
         }
 
         throw new Error(`${this.constructor.name} must implement execute()`);

@@ -11,7 +11,6 @@ const trayService = require('./tray.service');
 const profileManager = require('./profile.manager');
 const instanceManager = require('./instance.manager');
 const providerRegistry = require('../providers');
-const cliRegistry = require('../cli/cli.registry');
 const path = require('path');
 const fs = require('fs');
 
@@ -34,7 +33,6 @@ class AppManager {
         /** @property {boolean} isQuitting - Whether the app is in the process of quitting */
         this.isQuitting = false;
         this.initialized = false;
-        this.cliInitialized = false;
         
         this.setupEventHandlers();
         // Don't log initialization here as it's misleading
@@ -114,10 +112,10 @@ class AppManager {
     /**
      * Initialize application
      * @method initializeApp
-     * @param {Array<string>} args - Command line arguments
+     * @param {Object} cliResult - Result from CLI execution
      * @returns {Promise<void>}
      */
-    async initializeApp(args) {
+    async initializeApp(cliResult) {
         try {
             // Check if we've already initialized to prevent duplicate messages
             if (this.initialized) {
@@ -126,26 +124,28 @@ class AppManager {
             }
             
             // Don't log "Application starting..." here since it's already logged in main.js
-            logger.debug('Command line arguments:', args);
-
-            // Initialize CLI registry (only if not already initialized)
-            if (!this.cliInitialized) {
-                await this.initializeCLI();
-            } else {
-                logger.info('CLI already initialized, skipping');
-            }
-
-            // Process command line arguments
-            if (args && args.length > 0) {
-                const cliResult = await this.processCLIArguments(args);
-                if (cliResult && cliResult.isCliCommand) {
-                    // Don't continue with app initialization for CLI commands
-                    return;
-                }
-            }
+            logger.debug('CLI execution result:', cliResult);
 
             // Initialize instance manager for non-CLI commands
             await instanceManager.ensureDirectories();
+
+            // Process any providers that were handled by CLI modules
+            if (cliResult && cliResult.processedProviders && cliResult.processedProviders.length > 0) {
+                logger.info('Processing providers from CLI result:', cliResult.processedProviders);
+                // Handle any provider-specific initialization based on CLI results
+                await this.initializeProviders(cliResult.processedProviders);
+            } else {
+                // Initialize default providers if no specific ones were processed
+                // await this.initializeDefaultProviders();
+            }
+
+            // Create main window if needed
+            if (windowService.getAllWindows().length === 0) {
+                this.createMainWindow();
+            }
+
+            // Initialize tray service
+            // await trayService.initialize();
 
             // Mark as initialized to prevent duplicate initialization
             this.initialized = true;
@@ -157,130 +157,86 @@ class AppManager {
     }
 
     /**
-     * Initialize CLI modules
-     * @method initializeCLI
+     * Handle second instance arguments
+     * @method handleSecondInstance
+     * @param {Array<string>} args - Command line arguments from second instance
      * @returns {Promise<void>}
      */
-    async initializeCLI() {
+    async handleSecondInstance(args) {
         try {
-            // Use the CLI index.js initialization method
-            const cliInit = require('../cli/index');
-            await cliInit.initModules();
-            this.cliInitialized = true;
-            logger.info('CLI initialized');
+            logger.info('Handling second instance with args:', args);
+            
+            // Process the arguments through CLI first
+            const cli = require('../cli');
+            const cliResult = await cli.execute(args);
+            
+            // If it's not a CLI command, focus the main window
+            if (!cliResult.isCliCommand) {
+                const mainWindow = windowService.getWindow('main');
+                if (mainWindow) {
+                    if (mainWindow.isMinimized()) {
+                        mainWindow.restore();
+                    }
+                    mainWindow.focus();
+                }
+            }
         } catch (error) {
-            logger.error('Error initializing CLI:', error);
+            logger.error('Error handling second instance:', error);
+        }
+    }
+
+    /**
+     * Initialize default providers
+     * @method initializeDefaultProviders
+     * @returns {Promise<void>}
+     */
+    async initializeDefaultProviders() {
+        try {
+            logger.info('Initializing default providers');
+            // Get active profile
+            const activeProfile = await profileManager.getActiveProfile();
+            
+            if (activeProfile) {
+                logger.info(`Using active profile: ${activeProfile.name} (${activeProfile.provider})`);
+                await this.initializeProviders([activeProfile.provider]);
+            } else {
+                logger.info('No active profile found, using default providers');
+                // Initialize default providers
+                const defaultProviders = ['whatsapp'];
+                await this.initializeProviders(defaultProviders);
+            }
+        } catch (error) {
+            logger.error('Error initializing default providers:', error);
             throw error;
         }
     }
 
     /**
-     * Process CLI arguments
-     * @method processCLIArguments
-     * @param {Array<string>} args - CLI arguments
-     * @returns {Promise<{success: boolean, isCliCommand: boolean, processedProviders: Array<string>}>}
+     * Initialize specific providers
+     * @method initializeProviders
+     * @param {Array<string>} providers - Provider names to initialize
+     * @returns {Promise<void>}
      */
-    async processCLIArguments(args) {
-        if (!args || args.length === 0) {
-            logger.info('No CLI arguments to process');
-            return { success: true, isCliCommand: false, processedProviders: [] };
-        }
-
-        logger.debug('CLI arguments:', args);
-
-        // Check for help or manual flags directly
-        if (args.includes('--help') || args.includes('--manual')) {
-            logger.info('Help or manual flag detected, executing CLI command');
-            // Execute CLI command
-            await cliRegistry.execute(args);
-            // Exit the process after showing help
-            if (args.includes('--manual')) {
-                logger.info('Manual flag detected, exiting after showing help');
-                process.exit(0);
-            }
-            return { success: true, isCliCommand: true, processedProviders: [] };
-        }
-
-        // Execute CLI command
-        const result = await cliRegistry.execute(args);
-        if (result.success && result.isCliCommand) {
-            // If this is a CLI command and it succeeded, don't continue with app initialization
-            return result;
-        }
-
-        // Find provider arguments (starting with --)
-        const providerArgs = args.filter(arg => arg.startsWith('--') && arg !== '--tray' && arg !== '--profile');
-        if (providerArgs.length === 0) {
-            logger.info('No provider arguments found');
-            return result;
-        }
-
-        // Get profile argument if present
-        let profile = 'default';
-        const profileIndex = args.indexOf('--profile');
-        if (profileIndex !== -1 && profileIndex + 1 < args.length) {
-            profile = args[profileIndex + 1];
-        }
-
-        // Check if tray mode is enabled
-        const trayMode = args.includes('--tray');
-
-        // Track which providers have been initialized to prevent duplicates
-        const initializedProviders = new Set();
-
-        // Process each provider argument
-        for (const arg of providerArgs) {
-            const providerName = arg.substring(2);
-            
-            // Skip if this provider has already been initialized
-            if (initializedProviders.has(providerName)) {
-                logger.info(`Provider ${providerName} already initialized, skipping...`);
-                continue;
-            }
-            
-            try {
-                // Get provider class
-                const Provider = providerRegistry.getProvider(providerName);
-                if (!Provider) {
-                    logger.error(`Provider ${providerName} not found`);
-                    continue;
-                }
-
-                // Create provider instance
-                const provider = new Provider();
-                await provider.initialize({ profile, trayMode });
-                initializedProviders.add(providerName);
-                logger.info(`Initialized provider: ${providerName}`);
-            } catch (error) {
-                logger.error(`Error initializing provider ${providerName}:`, error);
-            }
-        }
-
-        return result;
-    }
-
-    /**
-     * Handle second instance launch
-     * @method handleSecondInstance
-     * @param {Array<string>} argv - Command line arguments from second instance
-     */
-    handleSecondInstance(argv) {
+    async initializeProviders(providers) {
         try {
-            // Process CLI arguments from second instance
-            this.processCLIArguments(argv).catch(error => {
-                logger.error('Error processing second instance arguments:', error);
-            });
-
-            // Focus the main window if it exists
-            const mainWindow = windowService.getWindow('main');
-            if (mainWindow) {
-                if (mainWindow.isMinimized()) {
-                    mainWindow.restore();
+            if (!providers || providers.length === 0) {
+                logger.warn('No providers specified for initialization');
+                return;
+            }
+            
+            logger.info(`Initializing providers: ${providers.join(', ')}`);
+            
+            for (const providerName of providers) {
+                try {
+                    await providerRegistry.initializeProvider(providerName);
+                } catch (providerError) {
+                    logger.error(`Error initializing provider ${providerName}:`, providerError);
+                    // Continue with other providers instead of failing completely
                 }
-                mainWindow.focus();
             }
         } catch (error) {
-            logger.error('Error handling second instance:', error);
+            logger.error('Error initializing providers:', error);
+            throw error;
         }
     }
 
@@ -289,13 +245,18 @@ class AppManager {
      * @method quit
      */
     quit() {
-        try {
-            this.isQuitting = true;
-            app.quit();
-        } catch (error) {
-            logger.error('Error quitting app:', error);
-            process.exit(1);
+        if (this.isQuitting) {
+            return;
         }
+        
+        this.isQuitting = true;
+        logger.info('Application quitting...');
+        
+        // Clean up resources
+        trayService.destroy();
+        
+        // Quit the app
+        app.quit();
     }
 }
 

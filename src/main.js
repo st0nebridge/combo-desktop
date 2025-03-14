@@ -6,6 +6,7 @@
 const { app, BrowserWindow } = require('electron');
 const logger = require('electron-log');
 const appManager = require('./services/app.manager');
+const cli = require('./cli');
 
 /**
  * Main application entry point
@@ -45,8 +46,17 @@ async function main() {
         // This ensures we don't have race conditions with Electron's lifecycle
         await app.whenReady();
         
+        // Process CLI arguments first
+        const cliResult = await cli.execute(args);
+        
+        // Only initialize app manager if CLI execution didn't handle everything
+        // cliResult.isCliCommand
+        if (cliResult.continueExecution) {
+            app.quit();
+        }
+        
         // Initialize app manager after app is ready
-        await appManager.initializeApp(args);
+        await appManager.initializeApp(cliResult);
 
         // Handle window-all-closed event
         app.on('window-all-closed', () => {
