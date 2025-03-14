@@ -4,9 +4,7 @@
  */
 
 const BaseCLI = require('../abstract/base-cli');
-const log = require('electron-log');
-const fs = require('fs');
-const path = require('path');
+const log = require('../../services/logging.service');
 
 /**
  * CLI module for displaying help information.
@@ -31,42 +29,49 @@ class HelpCLI extends BaseCLI {
         // Initialize CLI modules map
         this.cliModules = {};
 
-        // Load all CLI modules
-        this.loadCliModules();
-
         // Bind command functions using .bind() pattern for command mapping
         this.commands = {
             'version': this.showVersion.bind(this),
             'help': this.showUsage.bind(this),
             'manual': this.showManual.bind(this)
         };
+
+        // Wait for next tick to ensure registry is initialized
+        process.nextTick(() => {
+            this.loadCliModules();
+        });
     }
 
     /**
-     * Load all CLI modules from the modules directory
+     * Load all CLI modules from the registry
      * @private
      */
     loadCliModules() {
         try {
-            const modulesDir = path.join(__dirname);
-            const files = fs.readdirSync(modulesDir);
+            // Clear existing modules
+            this.cliModules = {};
 
-            for (const file of files) {
-                if (file.endsWith('-cli.js') && file !== 'help-cli.js') {
-                    try {
-                        const ModuleClass = require(path.join(modulesDir, file));
-                        const module = new ModuleClass();
+            // Get modules from registry
+            const modules = global.cliRegistry.getModules();
+            if (!modules) {
+                log.error('CLI Registry not initialized');
+                return;
+            }
 
-                        // Only register modules that implement getManualTopic
-                        const topic = module.getManualTopic();
-                        if (topic) {
-                            this.cliModules[topic] = module;
-                        }
-                    } catch (error) {
-                        log.error(`Error loading CLI module ${file}:`, error);
+            // Iterate through all registered modules
+            for (const module of modules.values()) {
+                try {
+                    // Only register modules that implement getManualTopic
+                    const topic = module.getManualTopic && module.getManualTopic();
+                    if (topic) {
+                        this.cliModules[topic] = module;
                     }
+                } catch (error) {
+                    log.error(`Error loading CLI module ${module.constructor.name}:`, error);
                 }
             }
+
+            log.debug('Loaded manual topics:', Object.keys(this.cliModules));
         } catch (error) {
             log.error('Error loading CLI modules:', error);
         }
@@ -277,12 +282,22 @@ Version Information:
                 topic = args.topic;
             }
             
+            // Reload modules to ensure we have latest
+            this.loadCliModules();
+            
             if (topic) {
                 // Get the CLI module based on topic
                 const cliModule = this.cliModules[topic.toLowerCase()];
                 if (cliModule) {
-                    // Call the module's showManual method
-                    cliModule.showManual();
+                    try {
+                        // Call the module's showManual method
+                        await cliModule.showManual();
+                        return true;
+                    } catch (error) {
+                        log.error(`Error showing manual for topic ${topic}:`, error);
+                        console.log(`Error displaying manual for topic: ${topic}`);
+                        return false;
+                    }
                 } else {
                     console.log(`No manual entry for topic: ${topic}`);
                     console.log('Available topics: ' + Object.keys(this.cliModules).join(', '));

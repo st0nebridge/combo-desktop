@@ -1,12 +1,12 @@
 /**
- * @file CLI entry point that initializes and manages CLI modules.
- * Follows auto-registration pattern for CLI modules.
+ * @file CLI entry point that handles module registration and command execution
  */
 
 const fs = require('fs');
 const path = require('path');
 const log = require('electron-log');
 const cliRegistry = require('./cli.registry');
+global.cliRegistry = cliRegistry;
 
 // Track if modules have been initialized
 let modulesInitialized = false;
@@ -78,9 +78,6 @@ async function initModules() {
  */
 async function execute(args) {
     try {
-        // Initialize modules first
-        await initModules();
-
         // Execute command through registry
         const result = await cliRegistry.execute(args);
         
@@ -103,8 +100,10 @@ async function execute(args) {
     }
 }
 
+// Initialize modules first
+initModules();
+
 // Export functions for external use
 module.exports = {
-    initModules,
     execute
 };

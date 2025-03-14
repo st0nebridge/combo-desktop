@@ -73,6 +73,15 @@ class CLIRegistry {
     }
 
     /**
+     * Get all registered CLI modules
+     * @method getModules
+     * @returns {Map<string, Object>} Map of registered modules
+     */
+    getModules() {
+        return this.modules; 
+    }
+
+    /**
      * Execute CLI command with given arguments
      * @method execute
      * @param {Array<string>} args - Command line arguments
