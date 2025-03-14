@@ -125,12 +125,10 @@ class AppManager {
 
             // Initialize sessions if defined
             if (context.sessions && Array.isArray(context.sessions) && context.sessions.length > 0) {
-                log.info('Initializing sessions:', context.sessions);
                 await this.initializeSessions(context.sessions);
             }
             // Initialize providers if defined and no sessions
             else if (context.providers && Array.isArray(context.providers) && context.providers.length > 0) {
-                log.info('Initializing providers:', context.providers);
                 await this.initializeProviders(context.providers);
             }
             // No sessions or providers defined
@@ -211,33 +209,6 @@ class AppManager {
     }
 
     /**
-     * Initialize providers with default profile
-     * @method initializeProviders
-     * @param {Array<string>} providers - Array of provider names
-     * @returns {Promise<void>}
-     */
-    async initializeProviders(providers = []) {
-        try {
-            if (!providers || !Array.isArray(providers)) {
-                log.warn('No providers to initialize');
-                return;
-            }
-
-            // Convert providers to sessions with default profile
-            const sessions = providers.map(provider => ({
-                provider,
-                profile: 'default'
-            }));
-
-            // Initialize sessions
-            await this.initializeSessions(sessions);
-        } catch (error) {
-            log.error('Error initializing providers:', error);
-            throw error;
-        }
-    }
-
-    /**
      * Handle second instance arguments
      * @method handleSecondInstance
      * @param {Array<string>} args - Command line arguments from second instance
@@ -305,6 +276,8 @@ class AppManager {
                 log.warn('No providers to initialize');
                 return;
             }
+
+            log.info('Initializing providers:', providers, context);
 
             // Convert providers array to sessions array with proper profile handling
             const sessions = providers.map(provider => ({
