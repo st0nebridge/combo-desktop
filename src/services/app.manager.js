@@ -47,7 +47,10 @@ class AppManager {
     setupEventHandlers() {
         // Handle window-all-closed event
         app.on('window-all-closed', () => {
-            if (process.platform !== 'darwin' || this.isQuitting) {
+            log.info('All windows closed, initiating application quit');
+            // When the last window is closed, this is triggered automatically
+            // and will call quit to clean up and exit the application
+            if (!this.isQuitting) {
                 this.quit();
             }
         });
@@ -65,8 +68,14 @@ class AppManager {
         });
 
         // Handle quit events
-        app.on('before-quit', () => {
-            this.isQuitting = true;
+        app.on('before-quit', async (event) => {
+            log.info('Before-quit event triggered');
+            
+            if (!this.isQuitting) {
+                // Prevent quit until cleanup is done
+                event.preventDefault();
+                await this.quit();
+            }
         });
 
         // Handle IPC messages
@@ -294,6 +303,23 @@ class AppManager {
     }
 
     /**
+     * Initialize services required for application functionality
+     * @method initializeServices
+     * @returns {Promise<void>}
+     */
+    async initializeServices() {
+        try {
+            log.info('Initializing core services');
+            await trayService.init();
+            await windowService.init();
+            log.info('Core services initialized');
+        } catch (error) {
+            log.error('Error initializing services:', error);
+            throw error;
+        }
+    }
+
+    /**
      * Start the application
      * @method start
      * @param {Object} cliResult - Result from CLI execution
@@ -313,7 +339,7 @@ class AppManager {
                 await this.initializeSessions(cliResult.context.sessions);
             } else {
                 // Initialize default providers if no specific ones were processed
-                // await this.initializeDefaultProviders();
+                await this.initializeDefaultProviders();
             }
 
             // Set up global shortcuts
@@ -330,19 +356,44 @@ class AppManager {
      * Quit the application
      * @method quit
      */
-    quit() {
+    async quit() {
         if (this.isQuitting) {
+            log.info('Quit already in progress');
             return;
         }
-        
-        this.isQuitting = true;
-        log.info('Application quitting...');
-        
-        // Clean up resources
-        trayService.destroy();
-        
-        // Quit the app
-        app.quit();
+
+        log.info('Initiating application quit');
+
+        try {
+            // Set quit flags first to prevent window hiding
+            this.isQuitting = true;
+            windowService.isQuitting = true;
+
+            // Clean up tray first to prevent user interaction
+            const trayService = require('./tray.service');
+            await trayService.cleanup();
+
+            // Clean up instance manager
+            const instanceManager = require('./instance.manager');
+            await instanceManager.cleanup();
+
+            // Force close any remaining windows
+            const windows = windowService.getAllWindows();
+            for (const window of windows) {
+                if (!window.isDestroyed()) {
+                    log.info(`Force closing window: ${window.windowName || 'unnamed'}`);
+                    window.forceClose = true;
+                    window.close();
+                }
+            }
+
+            // Exit application
+            log.info('Exiting application');
+            app.exit(0);
+        } catch (error) {
+            log.error('Error during quit:', error);
+            app.exit(1);
+        }
     }
 }
 

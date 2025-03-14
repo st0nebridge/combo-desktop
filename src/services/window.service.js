@@ -27,6 +27,9 @@ class WindowService {
         /** @property {boolean} isQuitting - Whether the app is in the process of quitting */
         this.isQuitting = false;
         
+        /** @property {boolean} initialized - Whether the service has been initialized */
+        this.initialized = false;
+        
         this.defaultOptions = {
             webPreferences: {
                 contextIsolation: true,
@@ -35,6 +38,35 @@ class WindowService {
                 enableRemoteModule: false
             }
         };
+
+        // Listen for app quit event
+        const { app } = require('electron');
+        app.on('before-quit', () => {
+            this.isQuitting = true;
+        });
+    }
+
+    /**
+     * Initialize the window service
+     * @method init
+     * @returns {Promise<void>}
+     */
+    async init() {
+        if (this.initialized) {
+            log.debug('Window service already initialized');
+            return;
+        }
+
+        try {
+            log.info('Initializing window service');
+            // Clean up any existing windows
+            await this.cleanup();
+            this.initialized = true;
+            log.info('Window service initialized');
+        } catch (error) {
+            log.error('Error initializing window service:', error);
+            throw error;
+        }
     }
 
     /**
@@ -99,7 +131,8 @@ class WindowService {
      * @param {string} windowName - Name of the window
      */
     setupWindowEvents(window, windowName) {
-        if (!window || !windowName) {
+        if (!window || window.isDestroyed()) {
+            log.error('Cannot setup events - window is destroyed or not available');
             return;
         }
 
@@ -113,120 +146,116 @@ class WindowService {
             }
         });
 
-        // Handle window close attempt
-        window.on('close', async (event) => {
+        // Handle window close event
+        window.on('close', (event) => {
+            // Skip if window is already destroyed
+            if (window.isDestroyed()) {
+                return;
+            }
+
+            const appManager = require('./app.manager');
+            log.info(`Window close event: ${windowName}, forceClose=${window.forceClose}, isQuitting=${this.isQuitting || appManager.isQuitting}`);
+
+            // Allow close if force flag is set or if app is quitting
+            if (window.forceClose || this.isQuitting || appManager.isQuitting) {
+                return;
+            }
+
+            // Prevent default close and hide instead
+            event.preventDefault();
+            window.hide();
+            log.info(`Window ${windowName} hidden instead of closed`);
+            
             try {
-                // Only prevent close if window should be hidden instead
-                const shouldPreventClose = !window.forceClose && !this.isQuitting;
-                if (shouldPreventClose) {
-                    event.preventDefault();
-                    window.hide();
-                    // Update tray icon state
-                    const trayService = require('./tray.service');
-                    trayService.updateTrayIcon(windowName, false);
-                    return;
-                }
-
-                // Remove from our map
-                this.windows.delete(windowName);
-
-                // Clean up provider session if this is a provider window
-                if (window.metadata && window.metadata.provider && window.metadata.profile) {
-                    const { provider, profile } = window.metadata;
-                    const partitionName = provider.getPartitionName(profile);
-                    const { session } = require('electron');
-                    const partitionSession = session.fromPartition(partitionName);
-                    if (partitionSession) {
-                        await partitionSession.clearStorageData();
-                        log.info(`Cleared session data for ${windowName}`);
-                    }
-                }
-
-                // Check if this was the last window
-                if (this.windows.size === 0) {
-                    // Set quitting flag to prevent windows from being hidden
-                    this.isQuitting = true;
-                    
-                    try {
-                        // Clean up tray icons to allow app to exit
-                        const trayService = require('./tray.service');
-                        trayService.cleanup();
-                        
-                        // Clean up instance manager
-                        const instanceManager = require('./instance.manager');
-                        await instanceManager.cleanup();
-                    } catch (cleanupError) {
-                        // Log but continue with quit even if cleanup fails
-                        log.error('Error during final cleanup:', cleanupError);
-                    }
-                    
-                    // Force quit the application
-                    const { app } = require('electron');
-                    
-                    // Use a timeout to ensure all async operations have time to complete
-                    // but don't emit events that could trigger race conditions
-                    process.nextTick(() => {
-                        app.exit(0); // Force immediate exit
-                    });
-                }
+                const trayService = require('./tray.service');
+                trayService.updateTrayIcon(windowName, false);
             } catch (error) {
-                log.error(`Error cleaning up window ${windowName}:`, error);
-                
-                // Ensure app quits even if there's an error
-                const { app } = require('electron');
-                app.exit(1);
+                log.error(`Error updating tray icon for ${windowName}:`, error);
+            }
+        });
+
+        // Handle window closed event (after window is actually closed)
+        window.on('closed', () => {
+            try {
+                this.windows.delete(windowName);
+                log.info(`Window ${windowName} closed. Windows remaining: ${this.windows.size}`);
+            } catch (error) {
+                log.error(`Error handling window closed event for ${windowName}:`, error);
             }
         });
 
         // Handle window hide event
         window.on('hide', () => {
-            // Only update tray if we're not quitting
-            if (!this.isQuitting) {
-                // Update tray icon state
-                const trayService = require('./tray.service');
-                trayService.updateTrayIcon(windowName, false);
-
-                if (window.metadata && window.metadata.provider) {
-                    const { provider } = window.metadata;
-                    if (provider.onWindowHide) {
-                        provider.onWindowHide();
-                    }
+            if (!this.isQuitting && !window.isDestroyed()) {
+                log.info(`Window ${windowName} hidden`);
+                try {
+                    const trayService = require('./tray.service');
+                    trayService.updateTrayIcon(windowName, false);
+                } catch (error) {
+                    log.error(`Error updating tray icon for ${windowName}:`, error);
                 }
             }
         });
 
         // Handle window show event
         window.on('show', () => {
-            // Only update tray if we're not quitting
-            if (!this.isQuitting) {
-                // Update tray icon state
-                const trayService = require('./tray.service');
-                trayService.updateTrayIcon(windowName, true);
-
-                if (window.metadata && window.metadata.provider) {
-                    const { provider } = window.metadata;
-                    if (provider.onWindowShow) {
-                        provider.onWindowShow();
-                    }
+            if (!window.isDestroyed()) {
+                log.info(`Window ${windowName} shown`);
+                try {
+                    const trayService = require('./tray.service');
+                    trayService.updateTrayIcon(windowName, true);
+                } catch (error) {
+                    log.error(`Error updating tray icon for ${windowName}:`, error);
                 }
             }
         });
+    }
 
-        // Clear event listeners on window destruction
-        window.on('closed', async () => {
-            try {
-                // Cleanup session if provider exists
-                if (window.metadata && window.metadata.provider) {
-                    const { provider, profile } = window.metadata;
-                    const instanceManager = require('./instance.manager');
-                    await instanceManager.unregisterSession(provider, profile);
+    /**
+     * Clean up provider sessions and data for a window
+     * @private
+     * @method cleanupProviderSessions
+     * @param {Electron.BrowserWindow} window - Window to clean up
+     * @param {string} windowName - Name of the window
+     * @returns {Promise<void>}
+     */
+    async cleanupProviderSessions(window, windowName) {
+        if (window.isDestroyed()) {
+            return;
+        }
+
+        try {
+            log.info(`Cleaning up provider sessions for ${windowName}`);
+
+            // Get provider and profile from window metadata
+            if (window.metadata && window.metadata.provider && window.metadata.profile) {
+                const { provider, profile } = window.metadata;
+                const providerName = provider.getName ? provider.getName() : provider.name;
+                log.info(`Unregistering session for ${providerName}:${profile}`);
+
+                // Unregister provider session
+                const instanceManager = require('./instance.manager');
+                await instanceManager.unregisterSession(providerName, profile);
+
+                // Clear session data if this is a provider window
+                const partitionName = provider.getPartitionName(profile);
+                const { session } = require('electron');
+                const partitionSession = session.fromPartition(partitionName);
+                if (partitionSession) {
+                    await partitionSession.clearStorageData();
+                    log.info(`Cleared session data for ${windowName}`);
                 }
-            } catch (error) {
-                log.error(`Error cleaning up session for window ${windowName}:`, error);
-            } finally {
+            }
+
+            // Remove all listeners if window still exists
+            if (!window.isDestroyed()) {
                 window.removeAllListeners();
+                log.info(`Removed all window listeners for ${windowName}`);
             }
-        });
+        } catch (error) {
+            log.error(`Error cleaning up provider sessions for ${windowName}:`, error);
+            throw error;
+        }
     }
 
     /**

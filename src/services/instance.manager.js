@@ -59,6 +59,9 @@ class InstanceManager {
             ipcMain.handle('add-provider', async (event, { provider, profile }) => {
                 return await this.registerSession(provider, profile);
             });
+            ipcMain.handle('remove-provider', async (event, { provider, profile }) => {
+                return await this.unregisterSession(provider, profile);
+            });
         }
 
         // Register cleanup handlers
@@ -443,30 +446,177 @@ class InstanceManager {
     /**
      * Clean up instance resources
      * @method cleanup
-     * @returns {Promise<void>}
      */
     async cleanup() {
         try {
-            // Skip cleanup for CLI commands that don't need it
-            if (process.argv.includes('--profiles') && process.argv.includes('list')) {
+            log.info('Cleaning up instance manager');
+
+            // Create a copy of session keys to avoid modification during iteration
+            const sessionKeys = [...this.providerSessions.keys()];
+            log.info(`Cleaning up ${sessionKeys.length} provider sessions`);
+
+            // Clean up each session
+            for (const sessionKey of sessionKeys) {
+                try {
+                    const [provider, profile] = sessionKey.split(':');
+                    log.info(`Cleaning up session for ${provider}:${profile}`);
+                    await this.unregisterSession(provider, profile);
+                } catch (error) {
+                    log.error(`Error cleaning up session ${sessionKey}:`, error);
+                }
+            }
+
+            // Clear all maps
+            this.providerSessions.clear();
+
+            log.info('Instance manager cleanup complete');
+        } catch (error) {
+            log.error('Error during instance cleanup:', error);
+            // Force cleanup on error
+            this.providerSessions.clear();
+        }
+    }
+
+    /**
+     * Unregister a provider session
+     * @method unregisterSession
+     * @param {Object} provider - Provider instance
+     * @param {string} [profile] - Optional profile name (if not provided, uses provider.profile)
+     */
+    async unregisterSession(provider, profile) {
+        try {
+            // Get provider name and profile
+            const providerName = provider.getName();
+            const profileName = profile || provider.profile;
+            
+            if (!profileName) {
+                log.warn(`Cannot unregister session - no profile for ${providerName}`);
                 return;
             }
+            
+            const sessionKey = `${providerName}:${profileName}`;
+            log.info(`Processing unregister for session ${sessionKey}`);
+            
+            if (this.providerSessions.has(sessionKey)) {
+                log.info(`Found session for ${sessionKey}, starting cleanup`);
+                const session = this.providerSessions.get(sessionKey);
 
-            // Remove PID from file
-            const pids = await this.readPidFile();
-            const newPids = pids.filter(pid => pid !== process.pid);
-            await this.writePidFile(newPids);
+                // Delete session first to prevent hanging
+                this.providerSessions.delete(sessionKey);
+                log.info(`Removed session from registry: ${sessionKey}`);
 
-            // Remove instance from lock file
-            if (this.instanceId) {
-                const lockData = await this.readLockFile();
-                delete lockData.instances[this.instanceId];
-                await this.writeLockFile(lockData);
+                // Destroy tray icon
+                try {
+                    const windowName = provider.getWindowName(profileName);
+                    const trayService = require('./tray.service');
+                    trayService.destroyTray(windowName);
+                    log.info(`Destroyed tray icon for ${windowName}`);
+                } catch (error) {
+                    log.error(`Error destroying tray for ${sessionKey}:`, error);
+                }
+
+                // Close the window if it exists
+                try {
+                    const windowService = require('./window.service');
+                    const windowName = provider.getWindowName(profileName);
+                    const { window } = windowService.resolveWindow(windowName);
+                    if (window && !window.isDestroyed()) {
+                        window.forceClose = true;
+                        window.close();
+                        log.info(`Closed window for ${windowName}`);
+                    }
+                } catch (error) {
+                    log.error(`Error closing window for ${sessionKey}:`, error);
+                }
+
+                // Try to clean up session data, but don't wait for it
+                try {
+                    log.info(`Attempting to clear session data for ${sessionKey}`);
+                    // Don't await this - it might be hanging
+                    session.clearData().catch(error => {
+                        log.error(`Error clearing session data for ${sessionKey}:`, error);
+                    });
+                    log.info(`Session data cleanup initiated for ${sessionKey}`);
+                } catch (error) {
+                    log.error(`Error initiating session data cleanup for ${sessionKey}:`, error);
+                }
+
+                // Try to remove listeners, but don't wait for it
+                try {
+                    session.removeAllListeners();
+                    log.info(`Removed all session listeners for ${sessionKey}`);
+                } catch (error) {
+                    log.error(`Error removing session listeners for ${sessionKey}:`, error);
+                }
+                
+                // Emit event when no sessions remain
+                if (this.providerSessions.size === 0) {
+                    log.info('All sessions closed, emitting last-session-closed event');
+                    const { app } = require('electron');
+                    app.emit('last-session-closed');
+                }
+            } else {
+                log.warn(`No session found for ${sessionKey}`);
+                
+                // Still try to close window and destroy tray
+                try {
+                    const windowName = provider.getWindowName(profileName);
+                    
+                    // Destroy tray
+                    try {
+                        const trayService = require('./tray.service');
+                        trayService.destroyTray(windowName);
+                        log.info(`Destroyed tray icon for ${windowName} (no session)`);
+                    } catch (trayError) {
+                        log.error(`Error destroying tray for ${windowName} (no session):`, trayError);
+                    }
+                    
+                    // Close window
+                    try {
+                        const windowService = require('./window.service');
+                        const { window } = windowService.resolveWindow(windowName);
+                        if (window && !window.isDestroyed()) {
+                            window.forceClose = true;
+                            window.close();
+                            log.info(`Closed window for ${windowName} (no session)`);
+                        }
+                    } catch (windowError) {
+                        log.error(`Error closing window for ${windowName} (no session):`, windowError);
+                    }
+                } catch (error) {
+                    log.error(`Error handling cleanup for ${sessionKey} (no session):`, error);
+                }
             }
-
-            log.info('Instance cleaned up');
+            
+            log.info(`Unregister session completed for ${sessionKey}`);
+            return true;
         } catch (error) {
-            log.error('Error cleaning up instance:', error);
+            log.error(`Error unregistering session:`, error);
+            
+            // Try to get session key even after error
+            let sessionKey = null;
+            try {
+                const providerName = provider.getName();
+                const profileName = profile || provider.profile;
+                if (providerName && profileName) {
+                    sessionKey = `${providerName}:${profileName}`;
+                    this.providerSessions.delete(sessionKey);
+                    log.info(`Force-removed session from registry: ${sessionKey}`);
+                    
+                    // Check if this was the last session
+                    if (this.providerSessions.size === 0) {
+                        log.info('All sessions closed (after error), emitting last-session-closed event');
+                        const { app } = require('electron');
+                        app.emit('last-session-closed');
+                    }
+                    
+                    return true;
+                }
+            } catch (keyError) {
+                log.error('Error getting session key for cleanup:', keyError);
+            }
+            
+            return false;
         }
     }
 
@@ -535,6 +685,23 @@ class InstanceManager {
         } catch (error) {
             log.error('Error getting instances:', error);
             return [];
+        }
+    }
+
+    /**
+     * Register a provider session
+     * @method registerSession
+     * @param {string} provider - Provider name
+     * @param {string} profile - Profile name
+     * @returns {Promise<void>}
+     */
+    async registerSession(provider, profile) {
+        try {
+            const sessionKey = `${provider}:${profile}`;
+            this.providerSessions.set(sessionKey, { provider, profile });
+            log.info(`Registered session for ${sessionKey}`);
+        } catch (error) {
+            log.error(`Error registering session for ${provider}:${profile}:`, error);
         }
     }
 }

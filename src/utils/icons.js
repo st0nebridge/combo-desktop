@@ -292,7 +292,9 @@ function getIconPath(serviceName, hasNotification = false, isMinimized = false) 
     if (hasNotification) {
         iconVariants.push(
             path.join(baseDir, themeFolder, 'tray_notif.ico'),
-            path.join(baseDir, 'tray_notif.ico')
+            path.join(baseDir, themeFolder, 'tray-notification.ico'),
+            path.join(baseDir, 'tray_notif.ico'),
+            path.join(baseDir, 'tray-notification.ico')
         );
     }
 
@@ -300,7 +302,9 @@ function getIconPath(serviceName, hasNotification = false, isMinimized = false) 
     if (isMinimized) {
         iconVariants.push(
             path.join(baseDir, themeFolder, 'tray_min.ico'),
-            path.join(baseDir, 'tray_min.ico')
+            path.join(baseDir, themeFolder, 'tray-min.ico'),
+            path.join(baseDir, 'tray_min.ico'),
+            path.join(baseDir, 'tray-min.ico')
         );
     }
 

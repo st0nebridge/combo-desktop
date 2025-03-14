@@ -48,6 +48,9 @@ class BaseProvider {
         
         /** @property {string} profile - Profile name */
         this.profile = null;
+        
+        /** @property {boolean} isQuitting - Whether provider is quitting */
+        this.isQuitting = false;
     }
 
     /**
@@ -177,6 +180,9 @@ class BaseProvider {
                 throw new Error('Profile name is required');
             }
 
+            // Store profile name
+            this.profile = profile;
+
             // Check if window already exists
             const windowName = this.getWindowName(profile);
             const existingWindow = windowService.getWindow(windowName);
@@ -194,6 +200,9 @@ class BaseProvider {
 
             // Initialize window content
             await this.initializeWindow(profile);
+
+            // Create tray icon after window is initialized
+            await trayService.createTray(this, windowName);
 
             log.info(`Provider ${this.getName()} initialized with profile: ${profile}`);
         } catch (error) {
@@ -300,7 +309,12 @@ class BaseProvider {
 
         // Handle window close event
         this.window.on('close', (event) => {
-            if (!this.isQuitting) {
+            // Get app manager to check quitting state
+            const appManager = require('../../services/app.manager');
+            const windowService = require('../../services/window.service');
+            
+            // Check both provider's isQuitting flag and global isQuitting flags
+            if (!this.window.forceClose && !this.isQuitting && !appManager.isQuitting && !windowService.isQuitting) {
                 event.preventDefault();
                 this.window.hide();
                 const trayService = require('../../services/tray.service');
@@ -492,21 +506,34 @@ class BaseProvider {
                 }
             },
             { type: 'separator' },
-            {
-                label: 'Quit',
-                click: () => {
-                    // Remove tray icon first
-                    trayService.destroyTray(windowName);
-                    
-                    // Then close window with force flag
-                    const { window } = windowService.resolveWindow(windowName);
-                    if (window && !window.isDestroyed()) {
-                        window.forceClose = true;
-                        window.close();
-                    }
+            this.getQuitMenuItem()
+        ];
+    }
+
+    /**
+     * Get a reusable Quit menu item for tray and context menus
+     * @method getQuitMenuItem
+     * @private
+     * @returns {Object} Quit menu item
+     */
+    getQuitMenuItem() {
+        return {
+            label: 'Quit',
+            click: async () => {
+                try {
+                    // Unregister the session - this will handle:
+                    // 1. Cleaning up the session
+                    // 2. Destroying the tray icon
+                    // 3. Closing the window with forceClose
+                    // 4. Triggering the last-session-closed event if needed
+                    const instanceManager = require('../../services/instance.manager');
+                    log.info(`Requesting session close for ${this.getName()}:${this.profile}`);
+                    await instanceManager.unregisterSession(this);
+                } catch (error) {
+                    log.error('Error in Quit action:', error);
                 }
             }
-        ];
+        };
     }
 
     /**
@@ -529,15 +556,7 @@ class BaseProvider {
                 ]
             },
             { type: 'separator' },
-            {
-                label: 'Quit',
-                click: () => {
-                    if (this.window) {
-                        this.window.forceClose = true;
-                        this.window.close();
-                    }
-                }
-            }
+            this.getQuitMenuItem()
         ];
     }
 

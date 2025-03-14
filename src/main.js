@@ -43,6 +43,12 @@ async function main() {
                 app.quit();
             }
         });
+        
+        // Handle last-session-closed event from instance manager
+        app.on('last-session-closed', () => {
+            logger.info('Last session closed, quitting application');
+            app.quit();
+        });
 
         // Handle activate event (macOS)
         app.on('activate', () => {
