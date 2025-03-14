@@ -3,8 +3,8 @@
  * and coordination between various services and providers.
  */
 
-const { app } = require('electron');
-const logger = require('./logging.service');
+const { app, BrowserWindow } = require('electron');
+const logger = require('electron-log');
 const { ipcMain } = require('electron');
 const windowService = require('./window.service');
 const trayService = require('./tray.service');
@@ -13,6 +13,7 @@ const instanceManager = require('./instance.manager');
 const providerRegistry = require('../providers');
 const path = require('path');
 const fs = require('fs');
+const { globalShortcut } = require('electron');
 
 /**
  * Core application manager that handles lifecycle and coordination.
@@ -130,10 +131,10 @@ class AppManager {
             await instanceManager.ensureDirectories();
 
             // Process any providers that were handled by CLI modules
-            if (cliResult && cliResult.processedProviders && cliResult.processedProviders.length > 0) {
-                logger.info('Processing providers from CLI result:', cliResult.processedProviders);
+            if (cliResult && cliResult.context.providers && cliResult.context.providers.length > 0) {
+                logger.info('Processing providers from CLI context:', cliResult.context.providers);
                 // Handle any provider-specific initialization based on CLI results
-                await this.initializeProviders(cliResult.processedProviders);
+                await this.initializeProviders(cliResult.context.providers, cliResult.context);
             } else {
                 // Initialize default providers if no specific ones were processed
                 // await this.initializeDefaultProviders();
@@ -152,6 +153,64 @@ class AppManager {
             logger.info('App Manager initialized');
         } catch (error) {
             logger.error('Error initializing app:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Initialize provider sessions based on CLI context
+     * @method initializeSessions
+     * @param {Array<{provider: string, profile: string}>} sessions - Array of provider:profile pairs
+     * @returns {Promise<Array<BaseProvider>>} Array of initialized providers
+     */
+    async initializeSessions(sessions) {
+        try {
+            if (!sessions || !Array.isArray(sessions)) {
+                logger.warn('No sessions to initialize');
+                return [];
+            }
+
+            logger.info('Initializing sessions:', sessions);
+
+            // Get all available providers
+            const providers = providerRegistry.getAvailableProviders();
+            const output = [];
+
+            for (const session of sessions) {
+                try {
+                    const { provider: providerName, profile = 'default' } = session;
+                    
+                    // Find the provider instance
+                    const provider = providers.find(p => p.commandArg.replace(/^--/, '') === providerName);
+                    if (!provider) {
+                        logger.error(`Provider not found: ${providerName}`);
+                        continue;
+                    }
+
+                    // Get partition name following the required format: ${app.getName()}:${providerName}:${profileName}
+                    const partitionName = profileManager.getPartitionName(providerName, profile);
+                    logger.info(`Using partition: ${partitionName}`);
+
+                    // Ensure profile exists, create if it doesn't
+                    if (!profileManager.getProfile(providerName, profile)) {
+                        logger.info(`Creating new profile for ${providerName}: ${profile}`);
+                        profileManager.createProfile(providerName, profile);
+                    }
+
+                    // Initialize the provider with the specified profile
+                    output.push(
+                        provider.spawn(profile)
+                    );
+                    logger.info(`Initialized ${providerName} with profile: ${profile}`);
+                } catch (error) {
+                    logger.error(`Error initializing session:`, error);
+                    // Continue with other sessions even if one fails
+                }
+            }
+
+            return output;
+        } catch (error) {
+            logger.error('Error initializing sessions:', error);
             throw error;
         }
     }
@@ -212,31 +271,63 @@ class AppManager {
     }
 
     /**
-     * Initialize specific providers
+     * Initialize specified providers
      * @method initializeProviders
-     * @param {Array<string>} providers - Provider names to initialize
+     * @param {Array<string>} providers - List of provider names to initialize
+     * @param {Object} context - Execution context
      * @returns {Promise<void>}
      */
-    async initializeProviders(providers) {
+    async initializeProviders(providers, context = {}) {
         try {
-            if (!providers || providers.length === 0) {
-                logger.warn('No providers specified for initialization');
+            if (!providers || !Array.isArray(providers)) {
+                logger.warn('No providers to initialize');
                 return;
             }
-            
-            logger.info(`Initializing providers: ${providers.join(', ')}`);
-            
-            for (const providerName of providers) {
-                try {
-                    await providerRegistry.initializeProvider(providerName);
-                } catch (providerError) {
-                    logger.error(`Error initializing provider ${providerName}:`, providerError);
-                    // Continue with other providers instead of failing completely
-                }
-            }
+
+            // Convert providers array to sessions array with proper profile handling
+            const sessions = providers.map(provider => ({
+                provider,
+                profile: context.profile || 'default'
+            }));
+
+            // Initialize sessions
+            await this.initializeSessions(sessions);
         } catch (error) {
             logger.error('Error initializing providers:', error);
             throw error;
+        }
+    }
+
+    /**
+     * Start the application
+     * @method start
+     * @param {Object} cliResult - Result from CLI execution
+     * @returns {Promise<boolean>}
+     */
+    async start(cliResult = null) {
+        try {
+            // Initialize core services
+            await this.initializeServices();
+            
+            // Ensure instance directories exist
+            await instanceManager.ensureDirectories();
+
+            // Process any sessions that were handled by CLI modules
+            if (cliResult && cliResult.context.sessions && cliResult.context.sessions.length > 0) {
+                logger.info('Processing sessions from CLI context:', cliResult.context.sessions);
+                await this.initializeSessions(cliResult.context.sessions);
+            } else {
+                // Initialize default providers if no specific ones were processed
+                // await this.initializeDefaultProviders();
+            }
+
+            // Set up global shortcuts
+            this.setupGlobalShortcuts();
+
+            return true;
+        } catch (error) {
+            logger.error('Error starting application:', error);
+            return false;
         }
     }
 

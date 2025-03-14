@@ -190,7 +190,12 @@ class ProviderRegistry {
                 const provider = new ProviderClass();
                 return {
                     name: provider.getName(),
-                    commandArg: provider.getCommandArg()
+                    commandArg: provider.getCommandArg(),
+                    spawn: (profile = 'default') =>{
+                        let new_provider = new ProviderClass();
+                        new_provider.initializeProvider(profile);
+                        return new_provider;
+                    }
                 };
             });
         } catch (error) {
