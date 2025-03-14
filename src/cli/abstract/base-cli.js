@@ -190,6 +190,16 @@ class BaseCLI {
     }
 
     /**
+     * Get the manual topic for this CLI module. If implemented, this allows the help module
+     * to automatically discover and register this module's manual.
+     * @method getManualTopic
+     * @returns {string|null} The topic name for this module's manual, or null if not available
+     */
+    getManualTopic() {
+        return null;
+    }
+
+    /**
      * Validate that a file path exists
      * @param {string} filePath - Path to validate
      * @throws {Error} If the file path is invalid or file does not exist

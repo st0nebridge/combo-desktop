@@ -298,6 +298,15 @@ NOTES
     }
 
     /**
+     * Get the manual topic for this CLI module
+     * @method getManualTopic
+     * @returns {string} The topic name for this module's manual
+     */
+    getManualTopic() {
+        return 'profile';
+    }
+
+    /**
      * List all available profiles
      * @method listProfiles
      * @param {Object} args - Command arguments

@@ -293,6 +293,15 @@ NOTES
     }
 
     /**
+     * Get the manual topic for this CLI module
+     * @method getManualTopic
+     * @returns {string} The topic name for this module's manual
+     */
+    getManualTopic() {
+        return 'provider';
+    }
+
+    /**
      * List all available providers
      * @method listProviders
      * @param {Object} args - Command arguments

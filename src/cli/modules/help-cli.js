@@ -5,9 +5,8 @@
 
 const BaseCLI = require('../abstract/base-cli');
 const log = require('electron-log');
-const ProfileCLI = require('./profile-cli');
-const ProviderCLI = require('./provider-cli');
-const InstanceCLI = require('./instance-cli');
+const fs = require('fs');
+const path = require('path');
 
 /**
  * CLI module for displaying help information.
@@ -29,12 +28,11 @@ class HelpCLI extends BaseCLI {
         // Define entry flag for help commands
         this.entryFlag = 'help';
 
-        // Initialize CLI modules
-        this.cliModules = {
-            'profile': new ProfileCLI(),
-            'provider': new ProviderCLI(),
-            'instance': new InstanceCLI()
-        };
+        // Initialize CLI modules map
+        this.cliModules = {};
+
+        // Load all CLI modules
+        this.loadCliModules();
 
         // Bind command functions using .bind() pattern for command mapping
         this.commands = {
@@ -42,6 +40,36 @@ class HelpCLI extends BaseCLI {
             'help': this.showUsage.bind(this),
             'manual': this.showManual.bind(this)
         };
+    }
+
+    /**
+     * Load all CLI modules from the modules directory
+     * @private
+     */
+    loadCliModules() {
+        try {
+            const modulesDir = path.join(__dirname);
+            const files = fs.readdirSync(modulesDir);
+
+            for (const file of files) {
+                if (file.endsWith('-cli.js') && file !== 'help-cli.js') {
+                    try {
+                        const ModuleClass = require(path.join(modulesDir, file));
+                        const module = new ModuleClass();
+
+                        // Only register modules that implement getManualTopic
+                        const topic = module.getManualTopic();
+                        if (topic) {
+                            this.cliModules[topic] = module;
+                        }
+                    } catch (error) {
+                        log.error(`Error loading CLI module ${file}:`, error);
+                    }
+                }
+            }
+        } catch (error) {
+            log.error('Error loading CLI modules:', error);
+        }
     }
 
     /**
@@ -261,6 +289,9 @@ Version Information:
                 }
             } else {
                 // Show general manual
+                const topics = Object.entries(this.cliModules)
+                    .map(([topic, module]) => `  ${topic.padEnd(12)} ${module.constructor.name.replace('CLI', '')} management`);
+
                 console.log(`
 Application Manual:
 
@@ -268,9 +299,7 @@ This application allows you to manage multiple messaging service accounts
 through a unified desktop interface.
 
 Available Topics:
-  profile     Profile management
-  provider    Provider management
-  instance    Instance management
+${topics.join('\n')}
 
 To view topic-specific manual:
   ${cmd} --manual TOPIC

@@ -306,6 +306,16 @@ NOTES
 - The status command provides diagnostic information
 - Use caution when resetting locks or killing instances
 `);
+
+    }
+
+    /**
+     * Get the manual topic for this CLI module
+     * @method getManualTopic
+     * @returns {string} The topic name for this module's manual
+     */
+    getManualTopic() {
+        return 'instance';
     }
 
     /**
