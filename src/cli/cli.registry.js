@@ -100,7 +100,7 @@ class CLIRegistry {
             };
 
             // Create execution context that can be passed between modules
-            const executionContext = {};
+            let executionContext = {};
             
             // Try each module to see if it can handle the command
             for (const [_, module] of this.modules) {
@@ -113,7 +113,10 @@ class CLIRegistry {
                         const moduleResult = await module.execute(args, executionContext);
                         
                         // Update the execution context with module result
-                        Object.assign(executionContext, moduleResult.context || {});
+                        executionContext = {
+                            ...moduleResult.context,
+                            ...executionContext
+                        };
                         
                         // Check if this is a CLI command
                         if (module.isCliCommand()) {

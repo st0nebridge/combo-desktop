@@ -190,7 +190,7 @@ class ProviderRegistry {
                 const provider = new ProviderClass();
                 return {
                     name: provider.getName(),
-                    commandArg: arg
+                    commandArg: provider.getCommandArg()
                 };
             });
         } catch (error) {

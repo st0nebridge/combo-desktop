@@ -50,7 +50,7 @@ class HelpCLI extends BaseCLI {
             }
             
             // Check for direct help flags
-            if (args.includes('--help') || args.includes('--manual') || args.includes('--version')) {
+            if (Object.keys(this.commands).some(cmd => args.includes(`--${cmd}`))) {
                 return true;
             }
             
@@ -71,42 +71,22 @@ class HelpCLI extends BaseCLI {
         try {
             // Initialize result object
             const result = this.getBaseResultObject();
-            
-            // Parse common flags
-            this.parseCommonFlags(args, result);
-            
-            // Check for direct flags first
-            if (args.includes('--help')) {
-                result.command = 'help';
+
+            // Check for direct flags
+            for (const flag of Object.keys(this.commands)) {
+                const fullFlag = `--${flag}`;
+                const flagIndex = args.indexOf(fullFlag);
                 
-                // Check for help command format (--help <command>)
-                const helpIndex = args.indexOf('--help');
-                if (helpIndex !== -1 && helpIndex + 1 < args.length && !args[helpIndex + 1].startsWith('--')) {
-                    const subcommand = args[helpIndex + 1];
+                if (flagIndex !== -1) {
+                    result.command = flag;
                     
-                    if (this.commands[subcommand]) {
-                        result.command = subcommand;
+                    // Check for additional argument
+                    if (flagIndex + 1 < args.length && !args[flagIndex + 1].startsWith('--')) {
+                        result.topic = args[flagIndex + 1];
                     }
+                    
+                    return result;
                 }
-                
-                return result;
-            }
-            
-            if (args.includes('--version')) {
-                result.command = 'version';
-                return result;
-            }
-            
-            if (args.includes('--manual')) {
-                result.command = 'manual';
-                
-                // Check for manual topic
-                const manualIndex = args.indexOf('--manual');
-                if (manualIndex !== -1 && manualIndex + 1 < args.length && !args[manualIndex + 1].startsWith('--')) {
-                    result.topic = args[manualIndex + 1];
-                }
-                
-                return result;
             }
             
             return result;
@@ -206,15 +186,11 @@ class HelpCLI extends BaseCLI {
             console.log(`
 Help Commands:
   --help                    Show this help information
-  --help version           Show version information
-  --help manual [topic]    Show detailed manual (optional topic)
   --version                Show version information
   --manual [topic]         Show detailed manual (optional topic)
 
 Examples:
   yarn start --help                Show help information
-  yarn start --help version        Show version information
-  yarn start --help manual         Show detailed manual
   yarn start --manual profiles     Show manual for profiles
 `);
             return true;
@@ -298,7 +274,6 @@ Provider Management:
     
   Usage:
     --provider NAME         Specify provider to use
-    --provider-config PATH  Specify provider configuration file
 `);
                         break;
                     }

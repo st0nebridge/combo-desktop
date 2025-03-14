@@ -220,7 +220,7 @@ Profile Management Commands:
 
 Options:
   --name NAME                        Profile name
-  --provider PROVIDER                Profile provider (e.g., 'whatsapp', 'telegram')
+  --provider PROVIDER                Profile provider (e.g., 'whatsapp', 'facebook')
   --force                            Force operation without confirmation
 
 Examples:

@@ -42,8 +42,6 @@ class ProviderCLI extends BaseCLI {
         this.commands = {
             'list': this.listProviders.bind(this)
         };
-
-        // Removed auto-registration of provider commands since initProvider was removed
     }
 
     /**
@@ -57,16 +55,9 @@ class ProviderCLI extends BaseCLI {
             if (!args || args.length === 0) {
                 return false;
             }
-            
-            // Check for --provider flag
-            if (args.includes('--provider')) {
-                return true;
-            }
-            
-            // Check for provider-specific flags
-            const providers = providerRegistry.getAvailableProviders();
-            for (const provider of providers) {
-                if (provider.commandArg && args.includes(provider.commandArg)) {
+
+            for (const flag of this.moduleFlags) {
+                if (args.includes(flag)) {
                     return true;
                 }
             }
@@ -162,6 +153,8 @@ class ProviderCLI extends BaseCLI {
         try {
             // Parse the arguments
             const parsedArgs = this.parseArgs(args);
+
+            context.providers = parsedArgs.providers;
             
             // Handle common flags first
             if (parsedArgs.help) {
@@ -197,6 +190,19 @@ class ProviderCLI extends BaseCLI {
             
             // If we're handling this request but no valid command found, show usage
             if (this.canHandle(args)) {
+                // Check for provider args
+                const providerArgs = this.moduleFlags.filter(key => args.includes(`${key}`));
+                if (providerArgs.length > 0) {
+                    return {
+                        success: true,
+                        context: {
+                            ...context,
+                            providers: providerArgs
+                        },
+                        continueExecution: true
+                    };
+                }
+
                 logger.warn('No valid provider command found');
                 this.showUsage();
                 return {

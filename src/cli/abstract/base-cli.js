@@ -64,17 +64,10 @@ class BaseCLI {
             switch (arg) {
                 case '--help': {
                     result.help = true;
-                    handled = true;
                     break;
                 }
                 case '--manual': {
                     result.manual = true;
-                    handled = true;
-                    break;
-                }
-                case '--version': {
-                    result.version = true;
-                    handled = true;
                     break;
                 }
             }
