@@ -39,22 +39,31 @@ async function main() {
         const instanceManagement = cliResult.context.instanceManagement || {};
         const forceNewInstance = instanceManagement.forceNewInstance || false;
         const oneInstance = instanceManagement.oneInstance || false;
+        // Profile isolation is true by default as per app_instances.md rules
+        const profileIsolation = instanceManagement.profileIsolation !== false;
         
         // Intercept sessions before app initialization and handle delegation
         if (cliResult.context.sessions && Array.isArray(cliResult.context.sessions) && cliResult.context.sessions.length > 0) {
             logger.info('Intercepting sessions for instance management:', cliResult.context.sessions);
+            logger.info('Instance management settings:', { forceNewInstance, oneInstance, profileIsolation });
             
             // Process sessions according to instance management rules
             const { localSessions, delegatedSessions } = await instanceManager.processSessions(
                 cliResult.context.sessions,
                 forceNewInstance,
-                oneInstance
+                oneInstance,
+                profileIsolation
             );
             
             // Delegate sessions to existing instances if needed
             if (delegatedSessions.length > 0) {
                 logger.info('Delegating sessions to existing instances:', delegatedSessions);
-                const delegationResult = await instanceManager.delegateSessions(delegatedSessions);
+                
+                // Delegate sessions to existing instances
+                const delegationResult = await instanceManager.delegateSessions(
+                    delegatedSessions,
+                    profileIsolation
+                );
                 
                 if (delegationResult) {
                     logger.info('Session delegation successful');
@@ -76,6 +85,15 @@ async function main() {
             cliResult.context.sessions = localSessions;
             logger.info('Updated context with local sessions:', localSessions);
         }
+        
+        // Initialize instance with profile from context
+        const profile = cliResult.context.profile || 'default';
+        logger.info(`Initializing instance with profile: ${profile}`);
+        
+        // Initialize instance with profile isolation setting
+        await instanceManager.initializeInstance(profile, {
+            profileIsolation: profileIsolation
+        });
         
         // Initialize app manager after app is ready
         await appManager.initializeApp(cliResult.context);

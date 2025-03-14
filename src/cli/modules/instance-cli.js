@@ -159,15 +159,30 @@ class InstanceCLI extends BaseCLI {
                 };
             }
             
+            // Initialize instance management context if not present
+            if (!context.instanceManagement) {
+                context.instanceManagement = {
+                    forceNewInstance: false,
+                    oneInstance: false,
+                    // Default to profile isolation as per app_instances.md rules
+                    profileIsolation: true
+                };
+            }
+            
             // Handle instance management flags
             if (parsedArgs.newInstance || parsedArgs.oneInstance) {
                 log.info('Instance management flags detected');
                 
-                // Set context properties for instance management
-                context.instanceManagement = {
-                    forceNewInstance: parsedArgs.newInstance,
-                    oneInstance: parsedArgs.oneInstance
-                };
+                // Update context properties for instance management
+                if (parsedArgs.newInstance) {
+                    context.instanceManagement.forceNewInstance = true;
+                    // New instance overrides one instance
+                    context.instanceManagement.oneInstance = false;
+                    context.instanceManagement.profileIsolation = false;
+                } else if (parsedArgs.oneInstance) {
+                    context.instanceManagement.oneInstance = true;
+                    context.instanceManagement.profileIsolation = false;
+                }
                 
                 log.info('Updated context with instance management flags:', context.instanceManagement);
                 

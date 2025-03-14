@@ -7,7 +7,8 @@ const { app, ipcMain } = require('electron');
 const log = require('electron-log');
 const path = require('path');
 const fs = require('fs');
-const properLock = require('proper-lockfile');
+const os = require('os');
+const lockfile = require('proper-lockfile');
 const { spawn } = require('child_process');
 
 /**
@@ -132,7 +133,7 @@ class InstanceManager {
                 return () => {};
             }
 
-            return await properLock.lock(file, {
+            return await lockfile.lock(file, {
                 retries: this.lockRetryCount,
                 retryWait: this.lockRetryDelay,
                 stale: 10000, // Consider lock stale after 10s
@@ -201,7 +202,7 @@ class InstanceManager {
         let release = null;
         try {
             // Acquire exclusive lock before reading/writing lock file
-            release = await properLock.lock(this.instanceLockFile, {
+            release = await lockfile.lock(this.instanceLockFile, {
                 retries: this.lockRetryCount,
                 retryWait: this.lockRetryDelay,
                 stale: 10000 // Consider lock stale after 10s
@@ -280,7 +281,7 @@ class InstanceManager {
         let release = null;
         try {
             // Acquire exclusive lock before writing lock file
-            release = await properLock.lock(this.instanceLockFile, {
+            release = await lockfile.lock(this.instanceLockFile, {
                 retries: this.lockRetryCount,
                 retryWait: this.lockRetryDelay,
                 stale: 10000 // Consider lock stale after 10s
@@ -310,7 +311,7 @@ class InstanceManager {
         let release = null;
         try {
             // Acquire exclusive lock before reading/writing PID file
-            release = await properLock.lock(this.pidFile, {
+            release = await lockfile.lock(this.pidFile, {
                 retries: this.lockRetryCount,
                 retryWait: this.lockRetryDelay,
                 stale: 10000 // Consider lock stale after 10s
@@ -390,7 +391,7 @@ class InstanceManager {
         let release = null;
         try {
             // Acquire exclusive lock before writing PID file
-            release = await properLock.lock(this.pidFile, {
+            release = await lockfile.lock(this.pidFile, {
                 retries: this.lockRetryCount,
                 retryWait: this.lockRetryDelay,
                 stale: 10000 // Consider lock stale after 10s
@@ -712,9 +713,10 @@ class InstanceManager {
      * @param {Array<Object>} sessions - Array of session objects with provider and profile
      * @param {boolean} forceNewInstance - Whether to force a new instance
      * @param {boolean} oneInstance - Whether to force all providers into one instance
+     * @param {boolean} profileIsolation - Whether to enforce profile isolation
      * @returns {Promise<{localSessions: Array<Object>, delegatedSessions: Array<Object>}>} Sessions to run locally and those delegated
      */
-    async processSessions(sessions, forceNewInstance = false, oneInstance = false) {
+    async processSessions(sessions, forceNewInstance = false, oneInstance = false, profileIsolation = true) {
         try {
             if (!sessions || !Array.isArray(sessions) || sessions.length === 0) {
                 log.info('No sessions to process');
@@ -722,7 +724,7 @@ class InstanceManager {
             }
 
             log.info('Processing sessions according to instance rules:', sessions);
-            log.info(`Force new instance: ${forceNewInstance}, One instance: ${oneInstance}`);
+            log.info(`Force new instance: ${forceNewInstance}, One instance: ${oneInstance}, Profile isolation: ${profileIsolation}`);
 
             // Initialize result
             const result = {
@@ -741,35 +743,48 @@ class InstanceManager {
             const instances = await this.getInstances();
             const lockData = await this.readLockFile();
             
-            // If no running instances, all sessions run in this instance
+            // Handle the case where we have multiple sessions of the same provider with different profiles
+            // and no running instances
             if (instances.length === 0) {
-                log.info('No running instances found, all sessions will run locally');
-                result.localSessions = [...sessions];
+                log.info('No running instances found, processing sessions');
+                
+                // If we have multiple sessions of the same provider with different profiles,
+                // we should run one locally and delegate the others
+                const providerMap = new Map();
+                
+                // Group sessions by provider
+                for (const session of sessions) {
+                    const provider = session.provider;
+                    if (!providerMap.has(provider)) {
+                        providerMap.set(provider, []);
+                    }
+                    providerMap.get(provider).push(session);
+                }
+                
+                // For each provider, if there are multiple sessions, keep one local and delegate others
+                for (const [provider, providerSessions] of providerMap.entries()) {
+                    if (providerSessions.length > 1 && profileIsolation) {
+                        // Keep the first session local and delegate the rest
+                        result.localSessions.push(providerSessions[0]);
+                        result.delegatedSessions.push(...providerSessions.slice(1));
+                        log.info(`Multiple sessions for provider ${provider}, keeping one local and delegating others`);
+                    } else {
+                        // If only one session or profile isolation is disabled, keep it local
+                        result.localSessions.push(...providerSessions);
+                    }
+                }
+                
                 return result;
             }
-
-            // Get unique profiles from sessions
-            const sessionProfiles = new Set(sessions.map(s => s.profile || 'default'));
-            log.info('Session profiles:', Array.from(sessionProfiles));
 
             // If --one-instance flag is set, delegate to first instance if possible
             if (oneInstance) {
                 log.info('One instance mode, attempting to delegate all sessions');
+                
                 // Check if any session already exists in any instance
                 for (const session of sessions) {
-                    const sessionKey = `${session.provider}:${session.profile || 'default'}`;
-                    let exists = false;
-
-                    // Check if this session already exists in any instance
-                    for (const instance of Object.values(lockData.instances)) {
-                        if (instance.sessions && instance.sessions.includes(sessionKey)) {
-                            exists = true;
-                            break;
-                        }
-                    }
-
-                    if (exists) {
-                        log.info(`Session ${sessionKey} already exists, cannot delegate`);
+                    if (await this.sessionExists(session.provider, session.profile || 'default')) {
+                        log.info(`Session ${session.provider}:${session.profile || 'default'} already exists, cannot delegate`);
                         return { 
                             localSessions: [...sessions], 
                             delegatedSessions: [] 
@@ -778,44 +793,97 @@ class InstanceManager {
                 }
 
                 // If we got here, no sessions exist yet, delegate all to first instance
-                log.info('No session conflicts found, delegating all to first instance');
+                const firstInstance = instances[0];
+                log.info(`No session conflicts found, delegating all to first instance: ${firstInstance.id}`);
                 return { 
                     localSessions: [], 
                     delegatedSessions: [...sessions] 
                 };
             }
 
-            // Default behavior: profile isolation
-            // Group sessions by profile
-            const sessionsByProfile = {};
-            for (const session of sessions) {
-                const profile = session.profile || 'default';
-                if (!sessionsByProfile[profile]) {
-                    sessionsByProfile[profile] = [];
+            // Default behavior: profile isolation (following app_instances.md rules)
+            if (profileIsolation) {
+                log.info('Profile isolation enabled, processing sessions by profile');
+                // Group sessions by profile
+                const sessionsByProfile = {};
+                for (const session of sessions) {
+                    const profile = session.profile || 'default';
+                    if (!sessionsByProfile[profile]) {
+                        sessionsByProfile[profile] = [];
+                    }
+                    sessionsByProfile[profile].push(session);
                 }
-                sessionsByProfile[profile].push(session);
-            }
 
-            // For each profile group, determine if it can be delegated
-            for (const [profile, profileSessions] of Object.entries(sessionsByProfile)) {
-                log.info(`Processing profile group: ${profile} with ${profileSessions.length} sessions`);
-                
-                // Check if this profile exists in any instance
-                let targetInstance = null;
-                for (const [id, instance] of Object.entries(lockData.instances)) {
-                    if (instance.profile === profile) {
-                        targetInstance = id;
-                        break;
+                // For each profile group, determine if it can be delegated
+                for (const [profile, profileSessions] of Object.entries(sessionsByProfile)) {
+                    log.info(`Processing profile group: ${profile} with ${profileSessions.length} sessions`);
+                    
+                    // Check if any session in this profile already exists in any instance
+                    let hasExistingSession = false;
+                    let existingSessionInstance = null;
+                    
+                    for (const session of profileSessions) {
+                        const sessionExists = await this.sessionExists(session.provider, profile);
+                        if (sessionExists) {
+                            hasExistingSession = true;
+                            
+                            // Find which instance has this session
+                            for (const instance of instances) {
+                                const instanceSessions = instance.sessions || [];
+                                if (instanceSessions.some(s => s.provider === session.provider && s.profile === profile)) {
+                                    existingSessionInstance = instance;
+                                    break;
+                                }
+                            }
+                            
+                            log.info(`Session ${session.provider}:${profile} already exists in instance ${existingSessionInstance?.id || 'unknown'}`);
+                            break;
+                        }
+                    }
+                    
+                    if (hasExistingSession) {
+                        // If any session in this profile exists in an instance, run all sessions in this profile locally
+                        // only if this is the instance where the session exists
+                        if (existingSessionInstance && existingSessionInstance.id === this.instanceId) {
+                            log.info(`Sessions for profile ${profile} will run locally in this instance`);
+                            result.localSessions.push(...profileSessions);
+                        } else {
+                            // Otherwise, delegate to the instance where the session exists
+                            log.info(`Sessions for profile ${profile} will be delegated to instance ${existingSessionInstance?.id || 'unknown'}`);
+                            result.delegatedSessions.push(...profileSessions);
+                        }
+                        continue;
+                    }
+                    
+                    // Check if this profile exists in any instance
+                    let targetInstance = null;
+                    for (const instance of instances) {
+                        if (instance.profile === profile) {
+                            targetInstance = instance;
+                            break;
+                        }
+                    }
+
+                    if (targetInstance) {
+                        log.info(`Found instance ${targetInstance.id} with profile ${profile}, delegating sessions`);
+                        result.delegatedSessions.push(...profileSessions);
+                    } else {
+                        // No instance found with this profile, check if this is the first instance with no providers
+                        if (this.isFirstInstance && this.providerSessions.size === 0) {
+                            log.info(`This is first instance with no providers, running profile ${profile} locally`);
+                            result.localSessions.push(...profileSessions);
+                        } else {
+                            // Following app_instances.md rules: create new instance for new profile
+                            log.info(`No instance found with profile ${profile}, creating new instance`);
+                            // Mark these for delegation - they'll be handled by creating a new process
+                            result.delegatedSessions.push(...profileSessions);
+                        }
                     }
                 }
-
-                if (targetInstance) {
-                    log.info(`Found instance ${targetInstance} with profile ${profile}, delegating sessions`);
-                    result.delegatedSessions.push(...profileSessions);
-                } else {
-                    log.info(`No instance found with profile ${profile}, sessions will run locally`);
-                    result.localSessions.push(...profileSessions);
-                }
+            } else {
+                // Profile isolation disabled, all sessions run in this instance
+                log.info('Profile isolation disabled, all sessions will run locally');
+                result.localSessions = [...sessions];
             }
 
             log.info('Session processing complete', result);
@@ -828,63 +896,79 @@ class InstanceManager {
     }
 
     /**
-     * Delegate sessions to existing instances
+     * Delegate sessions to existing instances or create new instances
      * @method delegateSessions
-     * @param {Array<Object>} sessions - Array of session objects to delegate
-     * @returns {Promise<boolean>} True if delegation successful
+     * @param {Array<Object>} sessions - Array of session objects with provider and profile
+     * @param {boolean} profileIsolation - Whether to enforce profile isolation
+     * @returns {Promise<boolean>} Success status
      */
-    async delegateSessions(sessions) {
+    async delegateSessions(sessions, profileIsolation = true) {
         try {
             if (!sessions || !Array.isArray(sessions) || sessions.length === 0) {
                 log.info('No sessions to delegate');
                 return true;
             }
 
-            log.info('Delegating sessions to existing instances:', sessions);
+            log.info('Delegating sessions:', sessions);
+            log.info(`Profile isolation: ${profileIsolation}`);
+
+            // Group sessions by profile if profile isolation is enabled
+            const sessionsByProfile = {};
             
+            if (profileIsolation) {
+                // Group by profile for profile isolation
+                for (const session of sessions) {
+                    const profile = session.profile || 'default';
+                    if (!sessionsByProfile[profile]) {
+                        sessionsByProfile[profile] = [];
+                    }
+                    sessionsByProfile[profile].push(session);
+                }
+            } else {
+                // If profile isolation is disabled, treat all sessions as one group
+                sessionsByProfile['all'] = [...sessions];
+            }
+
             // Get running instances
             const instances = await this.getInstances();
-            if (instances.length === 0) {
-                log.warn('No running instances found to delegate to');
-                return false;
-            }
-
-            // Group sessions by profile
-            const sessionsByProfile = {};
-            for (const session of sessions) {
-                const profile = session.profile || 'default';
-                if (!sessionsByProfile[profile]) {
-                    sessionsByProfile[profile] = [];
-                }
-                sessionsByProfile[profile].push(session);
-            }
-
-            // For each profile group, find the appropriate instance
+            
+            // For each profile group, find a suitable instance or create a new one
             for (const [profile, profileSessions] of Object.entries(sessionsByProfile)) {
-                // Find instance with matching profile
-                const targetInstance = instances.find(instance => instance.profile === profile);
+                log.info(`Delegating profile group: ${profile} with ${profileSessions.length} sessions`);
                 
-                if (!targetInstance) {
-                    log.warn(`No instance found with profile ${profile}`);
-                    continue;
-                }
-
-                log.info(`Delegating ${profileSessions.length} sessions to instance ${targetInstance.id}`);
+                let targetInstance = null;
                 
-                // Build command line arguments for delegation
-                const args = [];
-                for (const session of profileSessions) {
-                    args.push(`--${session.provider}`);
-                    if (session.profile && session.profile !== 'default') {
-                        args.push(session.profile);
+                if (profileIsolation) {
+                    // Find an instance with the same profile
+                    for (const instance of instances) {
+                        if (instance.profile === profile) {
+                            targetInstance = instance;
+                            break;
+                        }
+                    }
+                } else {
+                    // If profile isolation is disabled, use the first available instance
+                    if (instances.length > 0) {
+                        targetInstance = instances[0];
                     }
                 }
 
-                // Delegate to the target instance
-                const result = await this.delegateCommandToInstance(targetInstance.id, args);
-                if (!result) {
-                    log.error(`Failed to delegate sessions to instance ${targetInstance.id}`);
-                    return false;
+                if (targetInstance) {
+                    // Delegate to existing instance
+                    log.info(`Delegating to existing instance: ${targetInstance.id}`);
+                    const success = await this.delegateToInstance(targetInstance, profileSessions);
+                    if (!success) {
+                        log.error(`Failed to delegate to instance ${targetInstance.id}`);
+                        return false;
+                    }
+                } else {
+                    // Create new instance
+                    log.info(`Creating new instance for profile: ${profile}`);
+                    const success = await this.createNewInstance(profileSessions, profile);
+                    if (!success) {
+                        log.error(`Failed to create new instance for profile ${profile}`);
+                        return false;
+                    }
                 }
             }
 
@@ -997,6 +1081,155 @@ class InstanceManager {
                 runningCount: 0,
                 instances: []
             };
+        }
+    }
+
+    /**
+     * Initialize an instance with the given profile and settings
+     * @method initializeInstance
+     * @param {string} profile - Profile name for this instance
+     * @param {Object} options - Instance initialization options
+     * @param {boolean} [options.profileIsolation=true] - Whether to enforce profile isolation
+     * @returns {Promise<string>} Instance ID
+     */
+    async initializeInstance(profile, options = {}) {
+        try {
+            // Default to profile isolation as per app_instances.md rules
+            const profileIsolation = options.profileIsolation !== false;
+            
+            log.info(`Initializing instance with profile: ${profile}, profileIsolation: ${profileIsolation}`);
+            
+            // Generate a unique instance ID
+            const instanceId = `instance-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
+            this.instanceId = instanceId;
+            this.currentProfile = profile;
+            
+            // Update lock file with instance information
+            const lockData = await this.readLockFile();
+            
+            // Add this instance to the lock file
+            lockData.instances[instanceId] = {
+                pid: process.pid,
+                profile,
+                startTime: Date.now(),
+                sessions: [],
+                profileIsolation
+            };
+            
+            await this.writeLockFile(lockData);
+            
+            // Update PID file
+            const pids = await this.readPidFile();
+            if (!pids.includes(process.pid)) {
+                pids.push(process.pid);
+                await this.writePidFile(pids);
+            }
+            
+            // Check if this is the first instance
+            if (Object.keys(lockData.instances).length === 1) {
+                this.isFirstInstance = true;
+                log.info('This is the first instance');
+            }
+            
+            log.info(`Instance initialized with ID: ${instanceId}`);
+            return instanceId;
+        } catch (error) {
+            log.error('Error initializing instance:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Delegate sessions to an existing instance
+     * @method delegateToInstance
+     * @param {Object} instance - Target instance object
+     * @param {Array<Object>} sessions - Array of session objects to delegate
+     * @returns {Promise<boolean>} Success status
+     */
+    async delegateToInstance(instance, sessions) {
+        try {
+            if (!instance || !instance.id) {
+                log.error('Invalid instance provided for delegation');
+                return false;
+            }
+
+            log.info(`Delegating ${sessions.length} sessions to instance ${instance.id}`);
+            
+            // Build command line arguments for delegation
+            const args = [];
+            for (const session of sessions) {
+                args.push(`--${session.provider}`);
+                if (session.profile && session.profile !== 'default') {
+                    args.push(session.profile);
+                }
+            }
+
+            // Delegate to the target instance
+            const result = await this.delegateCommandToInstance(instance.id, args);
+            if (!result) {
+                log.error(`Failed to delegate to instance ${instance.id}`);
+                return false;
+            }
+
+            return true;
+        } catch (error) {
+            log.error('Error delegating to instance:', error);
+            return false;
+        }
+    }
+
+    /**
+     * Create a new instance for sessions
+     * @method createNewInstance
+     * @param {Array<Object>} sessions - Array of session objects
+     * @param {string} profile - Profile name for the new instance
+     * @returns {Promise<boolean>} Success status
+     */
+    async createNewInstance(sessions, profile) {
+        try {
+            log.info(`Creating new instance for profile ${profile} with ${sessions.length} sessions`);
+            
+            // Build command line arguments for new instance
+            const args = ['--new-instance'];
+            
+            // Add profile isolation flag
+            args.push('--profile-isolation');
+            
+            // Add profile if not default
+            if (profile && profile !== 'default') {
+                args.push('--profile', profile);
+            }
+            
+            // Add provider arguments
+            for (const session of sessions) {
+                args.push(`--${session.provider}`);
+                if (session.profile && session.profile !== 'default') {
+                    args.push(session.profile);
+                }
+            }
+
+            // Launch new instance process
+            const execPath = process.execPath;
+            const appArgs = [
+                ...process.argv.slice(1, 2), // First arg after execPath
+                ...args
+            ];
+            
+            log.info(`Spawning new instance process: ${execPath} ${appArgs.join(' ')}`);
+            
+            // Spawn the process
+            const child = spawn(execPath, appArgs, {
+                detached: true,
+                stdio: 'ignore'
+            });
+            
+            // Unref the child to allow this process to exit
+            child.unref();
+            
+            return true;
+        } catch (error) {
+            log.error('Error creating new instance:', error);
+            return false;
         }
     }
 }

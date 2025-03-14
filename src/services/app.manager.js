@@ -129,21 +129,33 @@ class AppManager {
         try {
             log.info('Initializing app with context:', context);
 
+            // Get instance management settings from context
+            const instanceManagement = context.instanceManagement || {};
+            const profileIsolation = instanceManagement.profileIsolation !== false;
+            
+            log.info(`Profile isolation setting: ${profileIsolation}`);
+
             // Initialize profile manager first
             await profileManager.init();
 
             // Initialize sessions if defined
             if (context.sessions && Array.isArray(context.sessions) && context.sessions.length > 0) {
-                await this.initializeSessions(context.sessions);
+                await this.initializeSessions(context.sessions, { profileIsolation });
             }
             // Initialize providers if defined and no sessions
             else if (context.providers && Array.isArray(context.providers) && context.providers.length > 0) {
-                await this.initializeProviders(context.providers);
+                await this.initializeProviders(context.providers, { 
+                    profile: context.profile || 'default',
+                    profileIsolation
+                });
             }
             // No sessions or providers defined
             else {
                 log.info('No sessions or providers defined, initializing default providers');
-                await this.initializeProviders([]);
+                await this.initializeProviders([], { 
+                    profile: context.profile || 'default',
+                    profileIsolation
+                });
             }
 
             log.info('App initialization complete');
@@ -157,9 +169,10 @@ class AppManager {
      * Initialize sessions with specified profiles
      * @method initializeSessions
      * @param {Array<Object>} sessions - Array of session objects with provider and profile
+     * @param {Object} context - Execution context
      * @returns {Promise<Array>} Array of initialized provider instances
      */
-    async initializeSessions(sessions) {
+    async initializeSessions(sessions, context = {}) {
         try {
             if (!sessions || !Array.isArray(sessions)) {
                 log.warn('No sessions to initialize');
@@ -167,11 +180,18 @@ class AppManager {
             }
 
             log.info('Initializing sessions:', sessions);
+            log.info('Session context:', context);
 
+            // Default to profile isolation as per app_instances.md rules
+            const profileIsolation = context.profileIsolation !== false;
+            
             // Get all available providers
             const providers = providerRegistry.getAvailableProviders();
             const output = [];
 
+            // Group sessions by profile if profile isolation is enabled
+            const sessionsByProfile = {};
+            
             for (const session of sessions) {
                 try {
                     const { provider: providerName, profile = 'default' } = session;
@@ -201,6 +221,9 @@ class AppManager {
                     if (!instance) {
                         throw new Error(`Failed to spawn provider ${providerName} with profile ${profile}`);
                     }
+
+                    // Register the session with the instance manager
+                    await instanceManager.registerSession(providerName, profile);
 
                     output.push(instance);
                     log.info(`Initialized ${providerName} with profile: ${profile}`);
@@ -295,7 +318,7 @@ class AppManager {
             }));
 
             // Initialize sessions
-            await this.initializeSessions(sessions);
+            await this.initializeSessions(sessions, context);
         } catch (error) {
             log.error('Error initializing providers:', error);
             throw error;
