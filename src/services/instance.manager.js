@@ -194,12 +194,106 @@ class InstanceManager {
      * @returns {Promise<Object>} Lock file data
      */
     async readLockFile() {
+        let release = null;
         try {
+            // Acquire exclusive lock before reading/writing lock file
+            release = await properLock.lock(this.instanceLockFile, {
+                retries: this.lockRetryCount,
+                retryWait: this.lockRetryDelay,
+                stale: 10000 // Consider lock stale after 10s
+            });
+
+            // Check if file exists first
+            if (!fs.existsSync(this.instanceLockFile)) {
+                const emptyLockData = { instances: {} };
+                await fs.promises.writeFile(this.instanceLockFile, JSON.stringify(emptyLockData, null, 2));
+                return emptyLockData;
+            }
+
             const data = await fs.promises.readFile(this.instanceLockFile, 'utf8');
-            return JSON.parse(data);
+            
+            // Handle empty file case
+            if (!data.trim()) {
+                const emptyLockData = { instances: {} };
+                await fs.promises.writeFile(this.instanceLockFile, JSON.stringify(emptyLockData, null, 2));
+                return emptyLockData;
+            }
+
+            const lockData = JSON.parse(data);
+            
+            // Validate lock data structure
+            if (!lockData || typeof lockData !== 'object' || !lockData.instances || typeof lockData.instances !== 'object') {
+                log.warn('Lock file contains invalid data, resetting');
+                const emptyLockData = { instances: {} };
+                await fs.promises.writeFile(this.instanceLockFile, JSON.stringify(emptyLockData, null, 2));
+                return emptyLockData;
+            }
+
+            // Clean up stale instances
+            const pids = await this.readPidFile();
+            let hasStaleInstances = false;
+            
+            for (const [id, instance] of Object.entries(lockData.instances)) {
+                if (!instance.pid || !pids.includes(instance.pid)) {
+                    delete lockData.instances[id];
+                    hasStaleInstances = true;
+                }
+            }
+
+            if (hasStaleInstances) {
+                await fs.promises.writeFile(this.instanceLockFile, JSON.stringify(lockData, null, 2));
+            }
+
+            return lockData;
         } catch (error) {
             log.error('Error reading lock file:', error);
-            return { instances: {} };
+            // Initialize with empty lock data on error
+            const emptyLockData = { instances: {} };
+            try {
+                await fs.promises.writeFile(this.instanceLockFile, JSON.stringify(emptyLockData, null, 2));
+            } catch (writeError) {
+                log.error('Error writing empty lock file:', writeError);
+            }
+            return emptyLockData;
+        } finally {
+            if (release) {
+                try {
+                    await release();
+                } catch (releaseError) {
+                    log.error('Error releasing lock file lock:', releaseError);
+                }
+            }
+        }
+    }
+
+    /**
+     * Write the lock file
+     * @method writeLockFile
+     * @param {Object} lockData - Lock file data to write
+     * @returns {Promise<void>}
+     */
+    async writeLockFile(lockData) {
+        let release = null;
+        try {
+            // Acquire exclusive lock before writing lock file
+            release = await properLock.lock(this.instanceLockFile, {
+                retries: this.lockRetryCount,
+                retryWait: this.lockRetryDelay,
+                stale: 10000 // Consider lock stale after 10s
+            });
+
+            await fs.promises.writeFile(this.instanceLockFile, JSON.stringify(lockData, null, 2));
+        } catch (error) {
+            log.error('Error writing lock file:', error);
+            throw error;
+        } finally {
+            if (release) {
+                try {
+                    await release();
+                } catch (releaseError) {
+                    log.error('Error releasing lock file lock:', releaseError);
+                }
+            }
         }
     }
 
@@ -209,12 +303,107 @@ class InstanceManager {
      * @returns {Promise<Array<number>>} List of PIDs
      */
     async readPidFile() {
+        let release = null;
         try {
+            // Acquire exclusive lock before reading/writing PID file
+            release = await properLock.lock(this.pidFile, {
+                retries: this.lockRetryCount,
+                retryWait: this.lockRetryDelay,
+                stale: 10000 // Consider lock stale after 10s
+            });
+
+            // Check if file exists first
+            if (!fs.existsSync(this.pidFile)) {
+                await fs.promises.writeFile(this.pidFile, JSON.stringify([], null, 2));
+                return [];
+            }
+
             const data = await fs.promises.readFile(this.pidFile, 'utf8');
-            return JSON.parse(data);
+            
+            // Handle empty file case
+            if (!data.trim()) {
+                await fs.promises.writeFile(this.pidFile, JSON.stringify([], null, 2));
+                return [];
+            }
+
+            const pids = JSON.parse(data);
+            
+            // Ensure the parsed data is an array
+            if (!Array.isArray(pids)) {
+                log.warn('PID file contains invalid data, resetting');
+                await fs.promises.writeFile(this.pidFile, JSON.stringify([], null, 2));
+                return [];
+            }
+
+            // Filter out any non-number PIDs and validate they still exist
+            const validPids = pids.filter(pid => {
+                if (typeof pid !== 'number') {
+                    return false;
+                }
+                try {
+                    // Check if process exists by sending signal 0
+                    process.kill(pid, 0);
+                    return true;
+                } catch (e) {
+                    // Process doesn't exist
+                    return false;
+                }
+            });
+
+            // If we filtered out any PIDs, update the file
+            if (validPids.length !== pids.length) {
+                await fs.promises.writeFile(this.pidFile, JSON.stringify(validPids, null, 2));
+            }
+
+            return validPids;
         } catch (error) {
             log.error('Error reading PID file:', error);
+            // Initialize with empty array on error
+            try {
+                await fs.promises.writeFile(this.pidFile, JSON.stringify([], null, 2));
+            } catch (writeError) {
+                log.error('Error writing empty PID file:', writeError);
+            }
             return [];
+        } finally {
+            if (release) {
+                try {
+                    await release();
+                } catch (releaseError) {
+                    log.error('Error releasing PID file lock:', releaseError);
+                }
+            }
+        }
+    }
+
+    /**
+     * Write the PID file
+     * @method writePidFile
+     * @param {Array<number>} pids - List of PIDs to write
+     * @returns {Promise<void>}
+     */
+    async writePidFile(pids) {
+        let release = null;
+        try {
+            // Acquire exclusive lock before writing PID file
+            release = await properLock.lock(this.pidFile, {
+                retries: this.lockRetryCount,
+                retryWait: this.lockRetryDelay,
+                stale: 10000 // Consider lock stale after 10s
+            });
+
+            await fs.promises.writeFile(this.pidFile, JSON.stringify(pids, null, 2));
+        } catch (error) {
+            log.error('Error writing PID file:', error);
+            throw error;
+        } finally {
+            if (release) {
+                try {
+                    await release();
+                } catch (releaseError) {
+                    log.error('Error releasing PID file lock:', releaseError);
+                }
+            }
         }
     }
 
@@ -235,11 +424,11 @@ class InstanceManager {
                 }
             }
 
-            // Remove PID file
-            await fs.promises.unlink(this.pidFile);
+            // Reset PID file to empty array
+            await this.writePidFile([]);
 
-            // Remove instance lock file
-            await fs.promises.unlink(this.instanceLockFile);
+            // Reset instance lock file to empty object
+            await this.writeLockFile({ instances: {} });
 
             // Re-initialize directories
             await this.ensureDirectories();
@@ -266,13 +455,13 @@ class InstanceManager {
             // Remove PID from file
             const pids = await this.readPidFile();
             const newPids = pids.filter(pid => pid !== process.pid);
-            await fs.promises.writeFile(this.pidFile, JSON.stringify(newPids, null, 2));
+            await this.writePidFile(newPids);
 
             // Remove instance from lock file
             if (this.instanceId) {
                 const lockData = await this.readLockFile();
                 delete lockData.instances[this.instanceId];
-                await fs.promises.writeFile(this.instanceLockFile, JSON.stringify(lockData, null, 2));
+                await this.writeLockFile(lockData);
             }
 
             log.info('Instance cleaned up');
@@ -316,6 +505,38 @@ class InstanceManager {
         } catch (error) {
             log.error('Error delegating command:', error);
             return false;
+        }
+    }
+
+    /**
+     * Get all running instances
+     * @method getInstances
+     * @returns {Promise<Array<Object>>} Array of running instances with their details
+     */
+    async getInstances() {
+        try {
+            const lockData = await this.readLockFile();
+            const pids = await this.readPidFile();
+            
+            // Filter instances to only include those with valid PIDs
+            const instances = Object.entries(lockData.instances)
+                .filter(([id, instance]) => {
+                    if (!instance.pid) {
+                        return false;
+                    }
+                    return pids.includes(instance.pid);
+                })
+                .map(([id, instance]) => ({
+                    id,
+                    pid: instance.pid,
+                    profile: instance.profile,
+                    startTime: instance.startTime
+                }));
+
+            return instances;
+        } catch (error) {
+            log.error('Error getting instances:', error);
+            return [];
         }
     }
 }
