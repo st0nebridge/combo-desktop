@@ -112,6 +112,18 @@ class ProviderCLI extends BaseCLI {
                 }
             }
             
+            // Check for global profile flag
+            let globalProfile = null;
+            const profileIndex = args.indexOf('--profile');
+            if (profileIndex !== -1 && profileIndex + 1 < args.length) {
+                const profileValue = args[profileIndex + 1];
+                // Only use as profile if it's not another flag
+                if (!profileValue.startsWith('--')) {
+                    globalProfile = profileValue;
+                    logger.info(`Found global profile override: ${globalProfile}`);
+                }
+            }
+            
             // Check for direct provider flags
             const providers = providerRegistry.getAvailableProviders();
             for (const provider of providers) {
@@ -128,7 +140,7 @@ class ProviderCLI extends BaseCLI {
                     
                     // Process each occurrence of the provider flag
                     for (const flagIndex of flagIndices) {
-                        let profile = 'default';
+                        let profile = globalProfile || 'default';
                         
                         // Check for profile value after provider flag
                         if (flagIndex !== -1 && flagIndex + 1 < args.length) {
@@ -136,7 +148,7 @@ class ProviderCLI extends BaseCLI {
                             // Only use as profile if it's not another flag
                             if (!nextArg.startsWith('--')) {
                                 profile = nextArg;
-                                logger.info(`Found profile for ${providerName}: ${profile}`);
+                                logger.info(`Found specific profile for ${providerName}: ${profile}`);
                             }
                         }
                         
