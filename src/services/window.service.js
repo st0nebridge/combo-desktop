@@ -168,7 +168,9 @@ class WindowService {
             
             try {
                 const trayService = require('./tray.service');
-                trayService.updateTrayIcon(windowName, false);
+                if (trayService.trays && trayService.trays.has(windowName)) {
+                    trayService.updateTrayIcon(windowName, false);
+                }
             } catch (error) {
                 log.error(`Error updating tray icon for ${windowName}:`, error);
             }
@@ -190,7 +192,9 @@ class WindowService {
                 log.info(`Window ${windowName} hidden`);
                 try {
                     const trayService = require('./tray.service');
-                    trayService.updateTrayIcon(windowName, false);
+                    if (trayService.trays && trayService.trays.has(windowName)) {
+                        trayService.updateTrayIcon(windowName, false);
+                    }
                 } catch (error) {
                     log.error(`Error updating tray icon for ${windowName}:`, error);
                 }
@@ -203,7 +207,9 @@ class WindowService {
                 log.info(`Window ${windowName} shown`);
                 try {
                     const trayService = require('./tray.service');
-                    trayService.updateTrayIcon(windowName, true);
+                    if (trayService.trays && trayService.trays.has(windowName)) {
+                        trayService.updateTrayIcon(windowName, true);
+                    }
                 } catch (error) {
                     log.error(`Error updating tray icon for ${windowName}:`, error);
                 }
