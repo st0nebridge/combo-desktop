@@ -158,6 +158,16 @@ class CLIRegistry {
     }
 
     /**
+     * Find a module by name
+     * @method findModuleByName
+     * @param {string} name - Module name to find
+     * @returns {Object|null} Module instance or null if not found
+     */
+    findModuleByName(name) {
+        return this.modules.get(name) || null;
+    }
+
+    /**
      * Show help information for all modules
      * @method showHelp
      */

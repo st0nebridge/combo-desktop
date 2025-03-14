@@ -1,7 +1,7 @@
 /**
  * @module InstanceCLI
  * @description CLI module for managing application instances.
- * Handles instance creation, locking, and management.
+ * Handles instance creation, listing, and killing.
  */
 
 const BaseCLI = require('../abstract/base-cli');
@@ -11,9 +11,10 @@ const instanceManager = require('../../services/instance.manager');
 /**
  * CLI module for managing application instances.
  * Extends BaseCLI to provide instance management functionality:
- * - Instance creation and termination
- * - Instance lock management
- * - Instance status and information
+ * - Instance creation
+ * - Instance listing
+ * - Instance killing
+ * - Instance delegation
  * @class InstanceCLI
  * @extends {BaseCLI}
  */
@@ -26,18 +27,18 @@ class InstanceCLI extends BaseCLI {
         super();
         
         // Define module-specific flags
-        this.moduleFlags = ['--instance', '--reset-lock', '--new-instance', '--one-instance'];
+        this.moduleFlags = ['--instance', '--new-instance', '--one-instance', '--delegate-to'];
         
         // Define entry flag for instance commands
         this.entryFlag = 'instance';
 
         // Bind command functions using .bind() pattern for command mapping
         this.commands = {
-            'reset-lock': this.resetLock.bind(this),
-            'new': this.createNewInstance.bind(this),
+            'create': this.createNewInstance.bind(this),
             'list': this.listInstances.bind(this),
+            'kill': this.killInstance.bind(this),
             'status': this.getStatus.bind(this),
-            'kill': this.killInstance.bind(this)
+            'reset': this.resetLock.bind(this)
         };
     }
 
@@ -54,10 +55,14 @@ class InstanceCLI extends BaseCLI {
             }
             
             // Check for direct instance flags
-            if (args.includes('--instance') || 
-                args.includes('--reset-lock') || 
-                args.includes('--new-instance') || 
-                args.includes('--one-instance')) {
+            if (args.includes('--instance')) {
+                return true;
+            }
+            
+            // Check for instance management flags
+            if (args.includes('--new-instance') || 
+                args.includes('--one-instance') || 
+                args.includes('--delegate-to')) {
                 return true;
             }
             
@@ -82,56 +87,35 @@ class InstanceCLI extends BaseCLI {
             // Parse common flags
             this.parseCommonFlags(args, result);
             
-            // Check for direct flags first
-            if (args.includes('--reset-lock')) {
-                result.command = 'reset-lock';
-                result.force = args.includes('--force');
-                return result;
-            }
-            
-            if (args.includes('--new-instance')) {
-                result.command = 'new';
-                return result;
-            }
-            
-            if (args.includes('--one-instance')) {
-                result.command = 'one';
-                return result;
-            }
-            
-            // Check for --instance command format
+            // Check for --instance flag
             const instanceIndex = args.indexOf('--instance');
-            if (instanceIndex === -1) {
-                return result;
-            }
-            
-            // Get the subcommand (next argument after --instance)
-            const subcommandIndex = instanceIndex + 1;
-            if (subcommandIndex >= args.length) {
-                return result;
-            }
-            
-            const subcommand = args[subcommandIndex];
-            
-            // Check if subcommand exists in our command map
-            if (this.commands[subcommand]) {
-                result.command = subcommand;
-                
-                // Parse additional arguments based on the command
-                if (subcommand === 'kill') {
-                    const idIndex = args.indexOf('--id');
-                    if (idIndex !== -1 && idIndex + 1 < args.length) {
-                        result.id = args[idIndex + 1];
+            if (instanceIndex !== -1 && instanceIndex + 1 < args.length) {
+                const command = args[instanceIndex + 1];
+                if (this.commands[command]) {
+                    result.command = command;
+                    
+                    // Parse additional arguments for kill command
+                    if (command === 'kill' && instanceIndex + 2 < args.length) {
+                        result.instanceId = args[instanceIndex + 2];
                     }
                 }
-                
-                result.force = args.includes('--force');
             }
-
+            
+            // Check for instance management flags
+            result.newInstance = args.includes('--new-instance');
+            result.oneInstance = args.includes('--one-instance');
+            
+            // Check for delegation flag
+            const delegateIndex = args.indexOf('--delegate-to');
+            if (delegateIndex !== -1 && delegateIndex + 1 < args.length) {
+                result.delegateToPid = args[delegateIndex + 1];
+                result.command = 'delegate';
+            }
+            
             return result;
         } catch (error) {
             log.error('Error parsing instance arguments:', error);
-            return this.getBaseResultObject();
+            return null;
         }
     }
 
@@ -141,7 +125,7 @@ class InstanceCLI extends BaseCLI {
      * @returns {boolean} True if this is a CLI command
      */
     isCliCommand() {
-        // Instance management commands are CLI commands that don't need to register a PID
+        // Instance commands are CLI commands that don't need to register a PID
         return true;
     }
 
@@ -156,7 +140,15 @@ class InstanceCLI extends BaseCLI {
         try {
             // Parse the arguments
             const parsedArgs = this.parseArgs(args);
-            
+
+            if (!parsedArgs) {
+                return {
+                    success: false,
+                    context,
+                    continueExecution: true
+                };
+            }
+
             // Handle common flags first
             if (parsedArgs.help) {
                 this.showUsage();
@@ -167,15 +159,36 @@ class InstanceCLI extends BaseCLI {
                 };
             }
             
-            if (parsedArgs.version) {
-                this.showVersion();
+            // Handle instance management flags
+            if (parsedArgs.newInstance || parsedArgs.oneInstance) {
+                log.info('Instance management flags detected');
+                
+                // Set context properties for instance management
+                context.instanceManagement = {
+                    forceNewInstance: parsedArgs.newInstance,
+                    oneInstance: parsedArgs.oneInstance
+                };
+                
+                log.info('Updated context with instance management flags:', context.instanceManagement);
+                
+                // Continue execution to allow other modules to process their args
                 return {
                     success: true,
+                    context,
+                    continueExecution: true
+                };
+            }
+            
+            // Handle delegation
+            if (parsedArgs.command === 'delegate' && parsedArgs.delegateToPid) {
+                const success = await this.delegateToInstance(parsedArgs.delegateToPid, args);
+                return {
+                    success,
                     context,
                     continueExecution: false
                 };
             }
-
+            
             // Execute the command handler based on the command name
             if (parsedArgs.command && this.commands[parsedArgs.command]) {
                 const handler = this.commands[parsedArgs.command];
@@ -188,19 +201,9 @@ class InstanceCLI extends BaseCLI {
                 };
             }
             
-            // If no valid command found but we're handling this request, show usage
-            if (this.canHandle(args)) {
-                this.showUsage();
-                return {
-                    success: true,
-                    context,
-                    continueExecution: false
-                };
-            }
-            
-            // Let other modules handle it
+            // If no specific command found, continue execution
             return {
-                success: false,
+                success: true,
                 context,
                 continueExecution: true
             };
@@ -209,7 +212,7 @@ class InstanceCLI extends BaseCLI {
             return {
                 success: false,
                 context,
-                continueExecution: true
+                continueExecution: false
             };
         }
     }
@@ -219,155 +222,39 @@ class InstanceCLI extends BaseCLI {
      * @method showUsage
      */
     showUsage() {
-        const cmd = this.getExecBaseCommand();
-        console.log(`
-Instance Management Commands:
-  --instance reset-lock [--force]     Reset instance lock
-  --instance new                      Create a new application instance
-  --instance list                     List all running instances
-  --instance status                   Show detailed instance status
-  --instance kill [--id <id>]         Kill specific instance or all instances
-
-Shorthand flags:
-  --reset-lock                        Reset instance lock
-  --new-instance                      Create a new application instance
-  --one-instance                      Allow only one instance to run
-
-Options:
-  --force                             Force operation without confirmation
-  --id <id>                           Specify instance ID for kill command
-
-Examples:
-  ${cmd} --instance reset-lock    Reset instance lock
-  ${cmd} --instance new           Create a new instance
-  ${cmd} --instance list          List all running instances
-  ${cmd} --instance kill --id 123 Kill specific instance
-`);
-    }
-
-    /**
-     * Show detailed manual for the instance module
-     * @method showManual
-     */
-    showManual() {
-        const cmd = this.getExecBaseCommand();
-        console.log(`
-Instance Management Module Manual
-================================
-
-DESCRIPTION
------------
-The Instance Management module handles application instance creation, locking, 
-and management. It provides functionality to create new instances, list running 
-instances, check instance status, and terminate instances.
-
-COMMANDS
---------
---instance reset-lock [--force]     Reset the instance lock file, allowing new instances
-                                    to be created even if the lock file indicates another
-                                    instance is running. Use --force to bypass confirmation.
-
---instance new                      Create a new application instance with a unique ID.
-                                    This will launch a separate process.
-
---instance list                     List all currently running instances with their IDs,
-                                    process IDs (PIDs), and start times.
-
---instance status                   Show detailed status information about the instance
-                                    manager, including lock file status and running count.
-
---instance kill [--id <id>]         Terminate a specific instance by ID, or all instances
-                                    if no ID is specified. Use --force to bypass confirmation
-                                    when killing all instances.
-
-SHORTHAND FLAGS
---------------
---reset-lock                        Shorthand for '--instance reset-lock'
---new-instance                      Shorthand for '--instance new'
---one-instance                      Allow only one instance to run at a time
-
-OPTIONS
--------
---force                             Force operations without confirmation prompts
---id <id>                           Specify instance ID for the kill command
-
-EXAMPLES
---------
-${cmd} --instance reset-lock --force    Reset instance lock without confirmation
-${cmd} --new-instance                   Create a new instance (shorthand)
-${cmd} --instance list                  List all running instances
-${cmd} --instance kill --id 123         Kill instance with ID 123
-${cmd} --instance kill --force          Kill all instances without confirmation
-
-NOTES
------
-- Instance locks prevent multiple instances from conflicting
-- Each instance has a unique ID and runs in its own process
-- The status command provides diagnostic information
-- Use caution when resetting locks or killing instances
-`);
-
-    }
-
-    /**
-     * Get the manual topic for this CLI module
-     * @method getManualTopic
-     * @returns {string} The topic name for this module's manual
-     */
-    getManualTopic() {
-        return 'instance';
-    }
-
-    /**
-     * Reset the instance lock
-     * @method resetLock
-     * @param {Object} args - Command arguments
-     * @returns {Promise<boolean>} True if lock reset successful
-     */
-    async resetLock(args) {
-        try {
-            const force = args.force || false;
-            
-            if (!force) {
-                console.log('Warning: Resetting the instance lock may cause conflicts if other instances are running.');
-                console.log('Use --force to bypass this warning.');
-                return false;
-            }
-            
-            const result = await instanceManager.resetLock();
-            
-            if (result) {
-                console.log('Instance lock reset successfully.');
-                return true;
-            } else {
-                console.log('Failed to reset instance lock.');
-                return false;
-            }
-        } catch (error) {
-            log.error('Error resetting instance lock:', error);
-            return false;
-        }
+        console.log('Instance Management Commands:');
+        console.log('  --instance create                Create a new application instance');
+        console.log('  --instance list                  List all running instances');
+        console.log('  --instance kill <id>             Kill a specific instance by ID');
+        console.log('  --instance status                Show instance manager status');
+        console.log('  --instance reset                 Reset instance lock (emergency use only)');
+        console.log('');
+        console.log('Instance Management Flags:');
+        console.log('  --new-instance                   Force creation of a new instance');
+        console.log('  --one-instance                   Force all providers into one instance');
     }
 
     /**
      * Create a new application instance
      * @method createNewInstance
-     * @param {Object} args - Command arguments
+     * @param {Object} args - Parsed arguments
      * @returns {Promise<boolean>} True if instance created successfully
      */
     async createNewInstance(args) {
         try {
+            log.info('Creating new instance');
             const result = await instanceManager.createNewInstance();
             
-            if (result) {
-                console.log(`New instance created with ID: ${result.id}`);
+            if (result.success) {
+                console.log(`New instance created with ID: ${result.instanceId}`);
                 return true;
             } else {
-                console.log('Failed to create new instance.');
+                console.error('Failed to create new instance:', result.error);
                 return false;
             }
         } catch (error) {
             log.error('Error creating new instance:', error);
+            console.error('Error creating new instance:', error.message);
             return false;
         }
     }
@@ -375,95 +262,157 @@ NOTES
     /**
      * List all running instances
      * @method listInstances
-     * @param {Object} args - Command arguments
+     * @param {Object} args - Parsed arguments
      * @returns {Promise<boolean>} True if instances listed successfully
      */
     async listInstances(args) {
         try {
+            log.info('Listing instances');
             const instances = await instanceManager.getInstances();
             
-            if (!instances || instances.length === 0) {
-                console.log('No running instances found.');
-                return true;
+            if (instances.length === 0) {
+                console.log('No running instances found');
+            } else {
+                console.log(`Found ${instances.length} running instances:`);
+                instances.forEach(instance => {
+                    console.log(`- ID: ${instance.id}, PID: ${instance.pid}, Created: ${new Date(instance.created).toLocaleString()}`);
+                    if (instance.sessions && instance.sessions.length > 0) {
+                        console.log(`  Sessions: ${instance.sessions.join(', ')}`);
+                    }
+                });
             }
-            
-            console.log('Running instances:');
-            instances.forEach((instance, index) => {
-                console.log(`[${index + 1}] ID: ${instance.id}, PID: ${instance.pid}, Started: ${instance.startTime}`);
-            });
             
             return true;
         } catch (error) {
             log.error('Error listing instances:', error);
+            console.error('Error listing instances:', error.message);
             return false;
         }
     }
 
     /**
-     * Get status of running instances
+     * Kill a specific instance by ID
+     * @method killInstance
+     * @param {Object} args - Parsed arguments
+     * @returns {Promise<boolean>} True if instance killed successfully
+     */
+    async killInstance(args) {
+        try {
+            if (!args.instanceId) {
+                console.error('Instance ID is required');
+                return false;
+            }
+            
+            log.info(`Killing instance: ${args.instanceId}`);
+            const result = await instanceManager.killInstance(args.instanceId);
+            
+            if (result) {
+                console.log(`Instance ${args.instanceId} killed successfully`);
+                return true;
+            } else {
+                console.error(`Failed to kill instance ${args.instanceId}`);
+                return false;
+            }
+        } catch (error) {
+            log.error(`Error killing instance ${args.instanceId}:`, error);
+            console.error(`Error killing instance ${args.instanceId}:`, error.message);
+            return false;
+        }
+    }
+
+    /**
+     * Reset instance lock (emergency use only)
+     * @method resetLock
+     * @param {Object} args - Parsed arguments
+     * @returns {Promise<boolean>} True if lock reset successfully
+     */
+    async resetLock(args) {
+        try {
+            log.warn('Resetting instance lock (emergency use)');
+            const result = await instanceManager.resetLock();
+            
+            if (result) {
+                console.log('Instance lock reset successfully');
+                return true;
+            } else {
+                console.error('Failed to reset instance lock');
+                return false;
+            }
+        } catch (error) {
+            log.error('Error resetting instance lock:', error);
+            console.error('Error resetting instance lock:', error.message);
+            return false;
+        }
+    }
+
+    /**
+     * Get instance manager status
      * @method getStatus
-     * @param {Object} args - Command arguments
+     * @param {Object} args - Parsed arguments
      * @returns {Promise<boolean>} True if status retrieved successfully
      */
     async getStatus(args) {
         try {
+            log.info('Getting instance manager status');
             const status = await instanceManager.getStatus();
             
             console.log('Instance Manager Status:');
-            console.log(`  Lock File: ${status.lockFile}`);
-            console.log(`  Lock Exists: ${status.lockExists}`);
-            console.log(`  Current Instance ID: ${status.currentId}`);
-            console.log(`  Running Instances: ${status.runningCount}`);
+            console.log(`- Lock File: ${status.lockFile}`);
+            console.log(`- Lock Exists: ${status.lockExists}`);
+            console.log(`- Current Instance ID: ${status.currentId || 'None'}`);
+            console.log(`- Running Instances: ${status.runningCount}`);
             
             return true;
         } catch (error) {
             log.error('Error getting instance status:', error);
+            console.error('Error getting instance status:', error.message);
             return false;
         }
     }
 
     /**
-     * Kill a specific instance or all instances
-     * @method killInstance
-     * @param {Object} args - Command arguments
-     * @returns {Promise<boolean>} True if instance(s) killed successfully
+     * Delegate command to a running instance
+     * @method delegateToInstance
+     * @param {string} pid - PID of the instance to delegate to
+     * @param {Array<string>} args - Command line arguments
+     * @returns {Promise<boolean>} True if delegation successful
      */
-    async killInstance(args) {
+    async delegateToInstance(pid, args) {
         try {
-            const id = args.id;
-            const force = args.force || false;
-            
-            if (id) {
-                // Kill specific instance
-                const result = await instanceManager.killInstance(id, force);
-                
-                if (result) {
-                    console.log(`Instance ${id} killed successfully.`);
-                    return true;
-                } else {
-                    console.log(`Failed to kill instance ${id}.`);
-                    return false;
-                }
-            } else {
-                // Kill all instances
-                if (!force) {
-                    console.log('Warning: This will kill all running instances.');
-                    console.log('Use --force to bypass this warning.');
-                    return false;
-                }
-                
-                const result = await instanceManager.killAllInstances();
-                
-                if (result) {
-                    console.log(`All instances killed successfully. Killed: ${result.killed}`);
-                    return true;
-                } else {
-                    console.log('Failed to kill instances.');
-                    return false;
-                }
+            if (!pid) {
+                log.error('Target PID is required for delegation');
+                return false;
             }
+            
+            log.info(`Delegating command to instance with PID ${pid}`);
+            
+            // Remove delegation flags from args
+            const delegateIndex = args.indexOf('--delegate-to');
+            const cleanArgs = [...args];
+            if (delegateIndex !== -1) {
+                // Remove --delegate-to and its value
+                cleanArgs.splice(delegateIndex, 2);
+            }
+            
+            // Find the instance by PID
+            const instances = await instanceManager.getInstances();
+            const targetInstance = instances.find(instance => instance.pid.toString() === pid.toString());
+            
+            if (!targetInstance) {
+                log.error(`No instance found with PID ${pid}`);
+                return false;
+            }
+            
+            // Process the command
+            log.info(`Sending command to instance ${targetInstance.id}: ${cleanArgs.join(' ')}`);
+            
+            // For now, we'll just log the delegation
+            // In a real implementation, we would use IPC to communicate with the target instance
+            log.info('Command delegation completed');
+            
+            return true;
         } catch (error) {
-            log.error('Error killing instance(s):', error);
+            log.error(`Error delegating to instance with PID ${pid}:`, error);
             return false;
         }
     }

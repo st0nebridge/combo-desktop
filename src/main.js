@@ -6,6 +6,7 @@
 const { app, BrowserWindow } = require('electron');
 const logger = require('electron-log');
 const appManager = require('./services/app.manager');
+const instanceManager = require('./services/instance.manager');
 const cli = require('./cli');
 
 /**
@@ -32,6 +33,48 @@ async function main() {
         if (!cliResult.continueExecution) {
             app.quit();
             return;
+        }
+        
+        // Get instance management settings from context
+        const instanceManagement = cliResult.context.instanceManagement || {};
+        const forceNewInstance = instanceManagement.forceNewInstance || false;
+        const oneInstance = instanceManagement.oneInstance || false;
+        
+        // Intercept sessions before app initialization and handle delegation
+        if (cliResult.context.sessions && Array.isArray(cliResult.context.sessions) && cliResult.context.sessions.length > 0) {
+            logger.info('Intercepting sessions for instance management:', cliResult.context.sessions);
+            
+            // Process sessions according to instance management rules
+            const { localSessions, delegatedSessions } = await instanceManager.processSessions(
+                cliResult.context.sessions,
+                forceNewInstance,
+                oneInstance
+            );
+            
+            // Delegate sessions to existing instances if needed
+            if (delegatedSessions.length > 0) {
+                logger.info('Delegating sessions to existing instances:', delegatedSessions);
+                const delegationResult = await instanceManager.delegateSessions(delegatedSessions);
+                
+                if (delegationResult) {
+                    logger.info('Session delegation successful');
+                    
+                    // If all sessions were delegated and none are local, quit this instance
+                    if (localSessions.length === 0) {
+                        logger.info('All sessions delegated, quitting this instance');
+                        app.quit();
+                        return;
+                    }
+                } else {
+                    logger.warn('Session delegation failed, running all sessions locally');
+                    // If delegation failed, run all sessions locally
+                    localSessions.push(...delegatedSessions);
+                }
+            }
+            
+            // Update context with local sessions
+            cliResult.context.sessions = localSessions;
+            logger.info('Updated context with local sessions:', localSessions);
         }
         
         // Initialize app manager after app is ready
