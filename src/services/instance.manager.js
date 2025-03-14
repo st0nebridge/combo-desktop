@@ -10,6 +10,7 @@ const fs = require('fs');
 const os = require('os');
 const lockfile = require('proper-lockfile');
 const { spawn } = require('child_process');
+const net = require('net');
 
 /**
  * Service for managing application instances.
@@ -37,6 +38,9 @@ class InstanceManager {
         
         /** @property {string} pidFile - Path to PID tracking file */
         this.pidFile = path.join(app.getPath('userData'), 'pids.json');
+
+        /** @property {string} ipcPipeName - Name of the IPC pipe */
+        this.ipcPipeName = `\\\\?\\pipe\\combo-desktop-${process.pid}`;
         
         /** @property {number} lockRetryCount - Number of times to retry acquiring lock */
         this.lockRetryCount = 5;
@@ -59,15 +63,86 @@ class InstanceManager {
         /** @property {Map<string, number>} profilePidMap - Map of profiles to PIDs */
         this.profilePidMap = new Map();
 
-        // Set up IPC handlers for instance communication
-        if (ipcMain) {
-            ipcMain.handle('add-provider', async (event, { provider, profile }) => {
-                return await this.registerSession(provider, profile);
+        // Set up named pipe server for inter-process communication
+        this.ipcServer = net.createServer((connection) => {
+            connection.on('data', async (data) => {
+                try {
+                    const message = JSON.parse(data.toString());
+                    if (message.type === 'delegate-command') {
+                        // Only handle if we're the target process
+                        if (process.pid.toString() === message.targetPid.toString()) {
+                            log.info(`Handling delegated command in instance ${process.pid}:`, message.args);
+                            
+                            // Extract any provider flags (like --facebook)
+                            const providerFlags = message.args.filter(arg => arg.startsWith('--') && 
+                                !['--delegate-to', '--profile', '--instance', '--new-instance', '--one-instance'].includes(arg));
+                            
+                            let success = true;
+                            let error = null;
+                            
+                            if (providerFlags.length > 0) {
+                                // This is a provider launch request
+                                log.info('Processing provider launch request with flags:', providerFlags);
+                                
+                                // Get the provider registry
+                                const providerRegistry = require('../providers/provider.registry');
+                                
+                                // For each provider flag, try to launch the provider
+                                for (const flag of providerFlags) {
+                                    try {
+                                        const provider = providerRegistry.getProvider(flag);
+                                        if (provider) {
+                                            log.info(`Launching provider for flag: ${flag}`);
+                                            // Use the current profile if available, otherwise use 'default'
+                                            const profile = this.currentProfile || 'default';
+                                            await provider.initializeProvider(profile);
+                                        } else {
+                                            success = false;
+                                            error = `No provider found for flag: ${flag}`;
+                                            log.error(error);
+                                            break;
+                                        }
+                                    } catch (err) {
+                                        success = false;
+                                        error = `Error launching provider for flag ${flag}: ${err.message}`;
+                                        log.error(error);
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            // Send response back through the pipe
+                            connection.write(JSON.stringify({
+                                type: 'delegate-response',
+                                requestId: message.requestId,
+                                success,
+                                error,
+                                pid: process.pid
+                            }));
+                        }
+                    }
+                } catch (error) {
+                    log.error('Error handling pipe message:', error);
+                    connection.write(JSON.stringify({
+                        type: 'delegate-response',
+                        requestId: message.requestId,
+                        success: false,
+                        error: error.message,
+                        pid: process.pid
+                    }));
+                }
             });
-            ipcMain.handle('remove-provider', async (event, { provider, profile }) => {
-                return await this.unregisterSession(provider, profile);
-            });
-        }
+        });
+
+        // Start listening on the named pipe
+        this.ipcServer.listen(this.ipcPipeName, () => {
+            log.info(`IPC server listening on pipe: ${this.ipcPipeName}`);
+        });
+
+        // Handle server errors
+        this.ipcServer.on('error', (error) => {
+            log.error('IPC server error:', error);
+        });
 
         // Register cleanup handlers
         this.registerCleanupHandlers();
@@ -482,6 +557,10 @@ class InstanceManager {
             log.error('Error during instance cleanup:', error);
             // Force cleanup on error
             this.providerSessions.clear();
+        } finally {
+            if (this.ipcServer) {
+                this.ipcServer.close();
+            }
         }
     }
 
@@ -939,7 +1018,7 @@ class InstanceManager {
     /**
      * Delegate sessions to existing instances or create new instances
      * @method delegateSessions
-     * @param {Array<Object>} sessions - Array of session objects with provider and profile
+     * @param {Array<Object>} sessions - Array of session objects
      * @param {boolean} profileIsolation - Whether to enforce profile isolation
      * @returns {Promise<boolean>} Success status
      */
@@ -1039,32 +1118,63 @@ class InstanceManager {
                 log.error(`Instance ${instanceId} not found`);
                 return false;
             }
+
+            // Create a unique request ID for this delegation
+            const requestId = `delegate-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
             
-            // Prepare command arguments as a JSON string
-            const commandArgs = JSON.stringify(args);
+            // Connect to the target instance's named pipe
+            const pipeName = `\\\\?\\pipe\\combo-desktop-${targetInstance.pid}`;
             
-            // Use IPC or another mechanism to send the command to the running instance
-            // For now, we'll use a simple approach by spawning a new process with the args
-            const execPath = process.execPath;
-            const appArgs = [
-                ...process.argv.slice(1, 2), // First arg after execPath
-                '--delegate-to',
-                targetInstance.pid.toString(),
-                ...args
-            ];
-            
-            log.info(`Spawning process for delegation: ${execPath} ${appArgs.join(' ')}`);
-            
-            // Spawn the process
-            const child = spawn(execPath, appArgs, {
-                detached: true,
-                stdio: 'ignore'
+            return new Promise((resolve, reject) => {
+                const client = net.connect(pipeName, () => {
+                    log.info(`Connected to pipe: ${pipeName}`);
+                    
+                    // Send the command
+                    client.write(JSON.stringify({
+                        type: 'delegate-command',
+                        requestId,
+                        targetPid: targetInstance.pid,
+                        args
+                    }));
+                });
+                
+                // Set up response handling
+                let responseData = '';
+                client.on('data', (data) => {
+                    responseData += data.toString();
+                    try {
+                        const response = JSON.parse(responseData);
+                        if (response.type === 'delegate-response' && response.requestId === requestId) {
+                            client.end();
+                            if (response.success) {
+                                resolve(true);
+                            } else {
+                                log.error(`Delegation failed: ${response.error}`);
+                                resolve(false);
+                            }
+                        }
+                    } catch (error) {
+                        // Incomplete JSON data, wait for more
+                    }
+                });
+                
+                // Handle connection errors
+                client.on('error', (error) => {
+                    log.error(`Error connecting to pipe ${pipeName}:`, error);
+                    reject(error);
+                });
+                
+                // Set a timeout
+                const timeout = setTimeout(() => {
+                    client.end();
+                    reject(new Error('Delegation timed out'));
+                }, 30000);
+                
+                // Clean up on connection end
+                client.on('end', () => {
+                    clearTimeout(timeout);
+                });
             });
-            
-            // Unref the child to allow this process to exit
-            child.unref();
-            
-            return true;
         } catch (error) {
             log.error(`Error delegating command to instance ${instanceId}:`, error);
             return false;

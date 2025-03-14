@@ -90,15 +90,20 @@ class InstanceCLI extends BaseCLI {
             
             // Check for --instance flag
             const instanceIndex = args.indexOf('--instance');
-            if (instanceIndex !== -1 && instanceIndex + 1 < args.length) {
-                const command = args[instanceIndex + 1];
-                if (this.commands[command]) {
-                    result.command = command;
-                    
-                    // Parse additional arguments for kill command
-                    if (command === 'kill' && instanceIndex + 2 < args.length) {
-                        result.instanceId = args[instanceIndex + 2];
+            if (instanceIndex !== -1) {
+                if (instanceIndex + 1 < args.length) {
+                    const command = args[instanceIndex + 1];
+                    if (this.commands[command]) {
+                        result.command = command;
+                        
+                        // Parse additional arguments for kill command
+                        if (command === 'kill' && instanceIndex + 2 < args.length) {
+                            result.instanceId = args[instanceIndex + 2];
+                        }
                     }
+                } else {
+                    // --instance was provided without a subcommand
+                    result.showHelp = true;
                 }
             }
             
@@ -157,7 +162,7 @@ class InstanceCLI extends BaseCLI {
             }
 
             // Handle common flags first
-            if (parsedArgs.help) {
+            if (parsedArgs.help || parsedArgs.showHelp) {
                 this.showUsage();
                 return {
                     success: true,
