@@ -80,6 +80,7 @@ class ProviderCLI extends BaseCLI {
             // Initialize result object
             const result = this.getBaseResultObject();
             result.providers = [];
+            result.sessions = [];
             
             // Parse common flags
             this.parseCommonFlags(args, result);
@@ -100,12 +101,25 @@ class ProviderCLI extends BaseCLI {
                     const providerName = provider.commandArg.replace(/^--/, '');
                     result.providers.push(providerName);
                     
-                    // Check for profile flag
-                    const profileIndex = args.indexOf('--profile');
-                    if (profileIndex !== -1 && profileIndex + 1 < args.length) {
-                        result.profile = args[profileIndex + 1];
-                    } else {
-                        result.profile = 'default';
+                    // Get index of this provider flag
+                    const flagIndex = args.indexOf(provider.commandArg);
+                    let profile = 'default';
+                    
+                    // Check for profile value after provider flag
+                    if (flagIndex + 1 < args.length && !args[flagIndex + 1].startsWith('--')) {
+                        profile = args[flagIndex + 1];
+                    }
+                    
+                    // Add to sessions array, ensuring no duplicates
+                    const existingIndex = result.sessions.findIndex(s => 
+                        s.provider === providerName && s.profile === profile
+                    );
+                    
+                    if (existingIndex === -1) {
+                        result.sessions.push({
+                            provider: providerName,
+                            profile: profile
+                        });
                     }
                     
                     // Check for tray flag
@@ -155,6 +169,7 @@ class ProviderCLI extends BaseCLI {
             const parsedArgs = this.parseArgs(args);
 
             context.providers = parsedArgs.providers;
+            context.sessions = parsedArgs.sessions;
             
             // Handle common flags first
             if (parsedArgs.help) {
@@ -195,10 +210,7 @@ class ProviderCLI extends BaseCLI {
                 if (providerArgs.length > 0) {
                     return {
                         success: true,
-                        context: {
-                            ...context,
-                            providers: providerArgs
-                        },
+                        context,
                         continueExecution: true
                     };
                 }

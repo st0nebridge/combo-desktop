@@ -26,7 +26,7 @@ class ProfileCLI extends BaseCLI {
         super();
         
         // Define module-specific flags
-        this.moduleFlags = ['--profile', '--profiles'];
+        this.moduleFlags = ['--profile'];
         
         // Define entry flag for profile commands
         this.entryFlag = 'profile';
@@ -53,7 +53,7 @@ class ProfileCLI extends BaseCLI {
             }
             
             // Check for direct profile flags
-            if (args.includes('--profile') || args.includes('--profiles')) {
+            if (args.includes('--profile')) {
                 return true;
             }
             
@@ -78,42 +78,34 @@ class ProfileCLI extends BaseCLI {
             // Parse common flags
             this.parseCommonFlags(args, result);
             
-            // Check for direct flags
-            if (args.includes('--profile') || args.includes('--profiles')) {
-                // Get the index of the flag
-                const flagIndex = args.indexOf('--profile') !== -1 ? 
-                    args.indexOf('--profile') : args.indexOf('--profiles');
-                
-                // Get the command (next argument after the flag)
-                if (flagIndex !== -1 && flagIndex + 1 < args.length && !args[flagIndex + 1].startsWith('--')) {
-                    const command = args[flagIndex + 1];
+            // Check for --profile flag
+            const profileIndex = args.indexOf('--profile');
+            if (profileIndex !== -1 && profileIndex + 1 < args.length) {
+                const command = args[profileIndex + 1];
+                if (this.commands[command]) {
+                    result.command = command;
                     
-                    if (this.commands[command]) {
-                        result.command = command;
-                        
-                        // Parse additional arguments
-                        for (let i = flagIndex + 2; i < args.length; i++) {
-                            if (args[i] === '--name' && i + 1 < args.length) {
-                                result.name = args[i + 1];
-                                i++; // Skip the next argument as it's the value
-                            } else if (args[i] === '--provider' && i + 1 < args.length) {
-                                result.provider = args[i + 1];
-                                i++; // Skip the next argument as it's the value
-                            } else if (args[i] === '--force') {
-                                result.force = true;
-                            }
+                    // Parse additional arguments
+                    for (let i = profileIndex + 2; i < args.length; i++) {
+                        if (args[i] === '--name' && i + 1 < args.length) {
+                            result.name = args[i + 1];
+                            i++; // Skip the next argument as it's the value
+                        } else if (args[i] === '--provider' && i + 1 < args.length) {
+                            result.provider = args[i + 1];
+                            i++; // Skip the next argument as it's the value
+                        } else if (args[i] === '--force') {
+                            result.force = true;
                         }
-                        
-                        return result;
                     }
                 }
-                
-                // Default to list if no command specified
-                result.command = 'list';
-                return result;
             }
             
-            return null;
+            // Default to list if no command specified
+            if (!result.command) {
+                result.command = 'list';
+            }
+            
+            return result;
         } catch (error) {
             log.error('Error parsing profile arguments:', error);
             return null;

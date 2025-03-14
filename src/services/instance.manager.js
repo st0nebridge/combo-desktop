@@ -519,7 +519,7 @@ class InstanceManager {
             const pids = await this.readPidFile();
             
             // Filter instances to only include those with valid PIDs
-            const instances = Object.entries(lockData.instances)
+            return Object.entries(lockData.instances)
                 .filter(([id, instance]) => {
                     if (!instance.pid) {
                         return false;
@@ -532,8 +532,6 @@ class InstanceManager {
                     profile: instance.profile,
                     startTime: instance.startTime
                 }));
-
-            return instances;
         } catch (error) {
             log.error('Error getting instances:', error);
             return [];
