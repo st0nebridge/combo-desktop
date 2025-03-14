@@ -55,6 +55,9 @@ class InstanceManager {
         
         /** @property {string|null} currentProfile - Current active profile */
         this.currentProfile = null;
+        
+        /** @property {Map<string, number>} profilePidMap - Map of profiles to PIDs */
+        this.profilePidMap = new Map();
 
         // Set up IPC handlers for instance communication
         if (ipcMain) {
@@ -248,6 +251,9 @@ class InstanceManager {
             if (hasStaleInstances) {
                 await fs.promises.writeFile(this.instanceLockFile, JSON.stringify(lockData, null, 2));
             }
+
+            // Update the profile-to-PID mapping
+            this.updateProfilePidMap(lockData);
 
             return lockData;
         } catch (error) {
@@ -626,9 +632,10 @@ class InstanceManager {
      * Delegate a command to an existing instance
      * @method delegateCommand
      * @param {Array<string>} args - Command line arguments to delegate
+     * @param {string} [targetProfile] - Optional profile to target for delegation
      * @returns {Promise<boolean>} True if command was delegated successfully
      */
-    async delegateCommand(args) {
+    async delegateCommand(args, targetProfile = null) {
         try {
             log.info('Delegating command to existing instance:', args);
             
@@ -639,21 +646,55 @@ class InstanceManager {
                 return false;
             }
             
-            // Get the first running instance
-            const targetPid = pids[0];
-            log.info(`Delegating command to instance with PID: ${targetPid}`);
+            let targetPid = null;
+            let targetInstanceId = null;
             
-            // Prepare command arguments as a JSON string
-            const commandArgs = JSON.stringify(args);
+            // If a target profile is specified, try to find its PID
+            if (targetProfile) {
+                log.info(`Looking for instance running profile: ${targetProfile}`);
+                const instance = await this.getInstanceByProfile(targetProfile);
+                
+                if (instance && instance.pid && pids.includes(instance.pid)) {
+                    targetPid = instance.pid;
+                    targetInstanceId = instance.id;
+                    log.info(`Found instance ${targetInstanceId} with PID ${targetPid} for profile ${targetProfile}`);
+                } else {
+                    log.warn(`No running instance found for profile ${targetProfile}`);
+                }
+            }
             
-            // Use IPC or another mechanism to send the command to the running instance
-            // For now, we'll just log that we would delegate the command
-            log.info(`Command would be delegated to PID ${targetPid} with args: ${commandArgs}`);
+            // If no target profile or no instance found for the profile, use the first running instance
+            if (!targetPid && pids.length > 0) {
+                targetPid = pids[0];
+                
+                // Try to get the instance ID for this PID
+                const lockData = await this.readLockFile();
+                for (const [id, instance] of Object.entries(lockData.instances)) {
+                    if (instance.pid === targetPid) {
+                        targetInstanceId = id;
+                        break;
+                    }
+                }
+                
+                log.info(`Defaulting to instance with PID: ${targetPid}`);
+            }
             
-            // In a real implementation, you would use IPC, sockets, or another mechanism
-            // to communicate with the running instance
+            if (targetPid) {
+                // Prepare command arguments as a JSON string
+                const commandArgs = JSON.stringify(args);
+                
+                if (targetInstanceId) {
+                    return await this.delegateCommandToInstance(targetInstanceId, args);
+                } else {
+                    log.info(`Command would be delegated to PID ${targetPid} with args: ${commandArgs}`);
+                    // In a real implementation, you would use IPC, sockets, or another mechanism
+                    // to communicate with the running instance
+                    return true;
+                }
+            }
             
-            return true;
+            log.warn('Could not find a suitable instance to delegate to');
+            return false;
         } catch (error) {
             log.error('Error delegating command:', error);
             return false;
@@ -1131,6 +1172,9 @@ class InstanceManager {
                 log.info('This is the first instance');
             }
             
+            // Update the profile-to-PID mapping
+            this.updateProfilePidMap(lockData);
+            
             log.info(`Instance initialized with ID: ${instanceId}`);
             return instanceId;
         } catch (error) {
@@ -1230,6 +1274,69 @@ class InstanceManager {
         } catch (error) {
             log.error('Error creating new instance:', error);
             return false;
+        }
+    }
+
+    /**
+     * Update the profile-to-PID mapping based on lock file data
+     * @method updateProfilePidMap
+     * @param {Object} lockData - Lock file data
+     * @private
+     */
+    updateProfilePidMap(lockData) {
+        // Clear the existing map
+        this.profilePidMap.clear();
+        
+        // Populate the map with profile to PID mappings
+        for (const instance of Object.values(lockData.instances)) {
+            if (instance.profile && instance.pid) {
+                this.profilePidMap.set(instance.profile, instance.pid);
+                log.debug(`Mapped profile ${instance.profile} to PID ${instance.pid}`);
+            }
+        }
+    }
+
+    /**
+     * Get the PID for a specific profile
+     * @method getPidForProfile
+     * @param {string} profile - Profile name
+     * @returns {Promise<number|null>} PID for the profile, or null if not found
+     */
+    async getPidForProfile(profile) {
+        // Refresh the profile-to-PID mapping
+        await this.readLockFile();
+        
+        // Return the PID for the profile
+        const pid = this.profilePidMap.get(profile);
+        log.debug(`PID for profile ${profile}: ${pid || 'not found'}`);
+        return pid || null;
+    }
+
+    /**
+     * Get instance by profile
+     * @method getInstanceByProfile
+     * @param {string} profile - Profile name
+     * @returns {Promise<Object|null>} Instance object or null if not found
+     */
+    async getInstanceByProfile(profile) {
+        try {
+            const lockData = await this.readLockFile();
+            
+            for (const [id, instance] of Object.entries(lockData.instances)) {
+                if (instance.profile === profile) {
+                    return {
+                        id,
+                        pid: instance.pid,
+                        profile: instance.profile,
+                        startTime: instance.startTime
+                    };
+                }
+            }
+            
+            return null;
+        } catch (error) {
+            log.error(`Error getting instance for profile ${profile}:`, error);
+            return null;
         }
     }
 }

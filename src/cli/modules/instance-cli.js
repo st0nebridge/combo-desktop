@@ -27,7 +27,7 @@ class InstanceCLI extends BaseCLI {
         super();
         
         // Define module-specific flags
-        this.moduleFlags = ['--instance', '--new-instance', '--one-instance', '--delegate-to'];
+        this.moduleFlags = ['--instance', '--new-instance', '--one-instance', '--delegate-to', '--profile'];
         
         // Define entry flag for instance commands
         this.entryFlag = 'instance';
@@ -62,7 +62,8 @@ class InstanceCLI extends BaseCLI {
             // Check for instance management flags
             if (args.includes('--new-instance') || 
                 args.includes('--one-instance') || 
-                args.includes('--delegate-to')) {
+                args.includes('--delegate-to') || 
+                args.includes('--profile')) {
                 return true;
             }
             
@@ -110,6 +111,12 @@ class InstanceCLI extends BaseCLI {
             if (delegateIndex !== -1 && delegateIndex + 1 < args.length) {
                 result.delegateToPid = args[delegateIndex + 1];
                 result.command = 'delegate';
+            }
+            
+            // Check for profile flag
+            const profileIndex = args.indexOf('--profile');
+            if (profileIndex !== -1 && profileIndex + 1 < args.length) {
+                result.profile = args[profileIndex + 1];
             }
             
             return result;
@@ -169,6 +176,12 @@ class InstanceCLI extends BaseCLI {
                 };
             }
             
+            // Handle profile flag
+            if (parsedArgs.profile) {
+                log.info(`Profile specified: ${parsedArgs.profile}`);
+                context.profile = parsedArgs.profile;
+            }
+            
             // Handle instance management flags
             if (parsedArgs.newInstance || parsedArgs.oneInstance) {
                 log.info('Instance management flags detected');
@@ -216,6 +229,18 @@ class InstanceCLI extends BaseCLI {
                 };
             }
             
+            // If no specific command found but we have a profile, check if we need to delegate
+            if (parsedArgs.profile && !parsedArgs.newInstance) {
+                const delegated = await this.attemptProfileDelegation(parsedArgs.profile, args);
+                if (delegated) {
+                    return {
+                        success: true,
+                        context,
+                        continueExecution: false
+                    };
+                }
+            }
+            
             // If no specific command found, continue execution
             return {
                 success: true,
@@ -247,6 +272,8 @@ class InstanceCLI extends BaseCLI {
         console.log('Instance Management Flags:');
         console.log('  --new-instance                   Force creation of a new instance');
         console.log('  --one-instance                   Force all providers into one instance');
+        console.log('  --profile <name>                 Specify profile for the current command');
+        console.log('  --delegate-to <pid>              Delegate command to instance with specified PID');
     }
 
     /**
@@ -290,7 +317,7 @@ class InstanceCLI extends BaseCLI {
             } else {
                 console.log(`Found ${instances.length} running instances:`);
                 instances.forEach(instance => {
-                    console.log(`- ID: ${instance.id}, PID: ${instance.pid}, Created: ${new Date(instance.created).toLocaleString()}`);
+                    console.log(`- ID: ${instance.id}, PID: ${instance.pid}, Profile: ${instance.profile || 'default'}, Created: ${new Date(instance.startTime).toLocaleString()}`);
                     if (instance.sessions && instance.sessions.length > 0) {
                         console.log(`  Sessions: ${instance.sessions.join(', ')}`);
                     }
@@ -421,13 +448,66 @@ class InstanceCLI extends BaseCLI {
             // Process the command
             log.info(`Sending command to instance ${targetInstance.id}: ${cleanArgs.join(' ')}`);
             
-            // For now, we'll just log the delegation
-            // In a real implementation, we would use IPC to communicate with the target instance
-            log.info('Command delegation completed');
+            // Delegate the command to the instance manager
+            const result = await instanceManager.delegateCommand(cleanArgs);
             
-            return true;
+            if (result) {
+                log.info('Command delegation completed successfully');
+                return true;
+            } else {
+                log.error('Command delegation failed');
+                return false;
+            }
         } catch (error) {
             log.error(`Error delegating to instance with PID ${pid}:`, error);
+            return false;
+        }
+    }
+
+    /**
+     * Attempt to delegate command to an instance running the specified profile
+     * @method attemptProfileDelegation
+     * @param {string} profile - Profile name
+     * @param {Array<string>} args - Command line arguments
+     * @returns {Promise<boolean>} True if delegation successful
+     */
+    async attemptProfileDelegation(profile, args) {
+        try {
+            log.info(`Checking if we need to delegate to an instance running profile: ${profile}`);
+            
+            // Get instance for the profile
+            const instance = await instanceManager.getInstanceByProfile(profile);
+            
+            if (instance && instance.pid) {
+                log.info(`Found instance running profile ${profile} with PID ${instance.pid}`);
+                
+                // Remove profile flag from args to avoid infinite delegation
+                const profileIndex = args.indexOf('--profile');
+                const cleanArgs = [...args];
+                if (profileIndex !== -1) {
+                    // Remove --profile and its value
+                    cleanArgs.splice(profileIndex, 2);
+                }
+                
+                // Delegate the command to the instance
+                log.info(`Delegating command to instance running profile ${profile}: ${cleanArgs.join(' ')}`);
+                
+                // Use the delegateCommand method with the profile
+                const result = await instanceManager.delegateCommand(cleanArgs, profile);
+                
+                if (result) {
+                    log.info(`Successfully delegated command to instance running profile ${profile}`);
+                    return true;
+                } else {
+                    log.warn(`Failed to delegate command to instance running profile ${profile}`);
+                    return false;
+                }
+            }
+            
+            log.info(`No running instance found for profile ${profile}, continuing with normal execution`);
+            return false;
+        } catch (error) {
+            log.error(`Error attempting profile delegation for ${profile}:`, error);
             return false;
         }
     }
