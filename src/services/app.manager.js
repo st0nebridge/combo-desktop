@@ -16,6 +16,17 @@ const path = require('path');
 const fs = require('fs');
 const { globalShortcut } = require('electron');
 
+// Import error recovery utilities
+const { 
+    ErrorCategory, 
+    RecoverableError, 
+    createError, 
+    safeExecute, 
+    logDiagnostics, 
+    verifyDataFileIntegrity 
+} = require('../utils/error-recovery');
+const { createTransaction, withTransaction } = require('../utils/transaction');
+
 /**
  * Core application manager that handles lifecycle and coordination.
  * Responsible for:
@@ -166,42 +177,57 @@ class AppManager {
      * @returns {Promise<void>}
      */
     async initializeApp(context = {}) {
+        const transaction = createTransaction('app-initialization');
+        
         try {
-            log.info('Initializing app with context:', context);
+            return await withTransaction(transaction, async () => {
+                return await safeExecute(async () => {
+                    log.info('Initializing app with context:', context);
 
-            // Get instance management settings from context
-            const instanceManagement = context.instanceManagement || {};
-            const profileIsolation = instanceManagement.profileIsolation !== false;
-            
-            log.info(`Profile isolation setting: ${profileIsolation}`);
+                    // Get instance management settings from context
+                    const instanceManagement = context.instanceManagement || {};
+                    const profileIsolation = instanceManagement.profileIsolation !== false;
+                    
+                    log.info(`Profile isolation setting: ${profileIsolation}`);
 
-            // Initialize profile manager first
-            await profileManager.init();
+                    // Initialize profile manager first
+                    await profileManager.init();
 
-            // Initialize sessions if defined
-            if (context.sessions && Array.isArray(context.sessions) && context.sessions.length > 0) {
-                await this.initializeSessions(context.sessions, { profileIsolation });
-            }
-            // Initialize providers if defined and no sessions
-            else if (context.providers && Array.isArray(context.providers) && context.providers.length > 0) {
-                await this.initializeProviders(context.providers, { 
-                    profile: context.profile || 'default',
-                    profileIsolation
+                    // Initialize sessions if defined
+                    if (context.sessions && Array.isArray(context.sessions) && context.sessions.length > 0) {
+                        await this.initializeSessions(context.sessions, { profileIsolation });
+                    }
+                    // Initialize providers if defined and no sessions
+                    else if (context.providers && Array.isArray(context.providers) && context.providers.length > 0) {
+                        await this.initializeProviders(context.providers, { 
+                            profile: context.profile || 'default',
+                            profileIsolation
+                        });
+                    }
+                    // No sessions or providers defined
+                    else {
+                        log.info('No sessions or providers defined, initializing default providers');
+                        await this.initializeProviders([], { 
+                            profile: context.profile || 'default',
+                            profileIsolation
+                        });
+                    }
+
+                    this.initialized = true;
+                    log.info('Application initialization complete');
+                }, {
+                    errorMessage: 'Failed to initialize application',
+                    category: ErrorCategory.INSTANCE_ERROR,
+                    context: { initContext: context }
                 });
-            }
-            // No sessions or providers defined
-            else {
-                log.info('No sessions or providers defined, initializing default providers');
-                await this.initializeProviders([], { 
-                    profile: context.profile || 'default',
-                    profileIsolation
-                });
-            }
-
-            log.info('App initialization complete');
+            });
         } catch (error) {
-            log.error('Error initializing app:', error);
-            throw error;
+            logDiagnostics('app-initialization-failed', { error, context });
+            throw createError('Application initialization failed', {
+                category: ErrorCategory.INSTANCE_ERROR,
+                cause: error,
+                context: { initContext: context }
+            });
         }
     }
 
@@ -213,7 +239,7 @@ class AppManager {
      * @returns {Promise<Array>} Array of initialized provider instances
      */
     async initializeSessions(sessions, context = {}) {
-        try {
+        return await safeExecute(async () => {
             if (!sessions || !Array.isArray(sessions)) {
                 log.warn('No sessions to initialize');
                 return [];
@@ -233,51 +259,66 @@ class AppManager {
             const sessionsByProfile = {};
             
             for (const session of sessions) {
+                const sessionTransaction = createTransaction(`session-init-${session.provider}-${session.profile || 'default'}`);
+                
                 try {
-                    const { provider: providerName, profile = 'default' } = session;
-                    
-                    // Find the provider instance
-                    const provider = providers.find(p => p.commandArg.replace(/^--/, '') === providerName);
-                    if (!provider) {
-                        log.error(`Provider not found: ${providerName}`);
-                        continue;
-                    }
+                    await withTransaction(sessionTransaction, async () => {
+                        const { provider: providerName, profile = 'default' } = session;
+                        
+                        // Find the provider instance
+                        const provider = providers.find(p => p.commandArg.replace(/^--/, '') === providerName);
+                        if (!provider) {
+                            throw createError(`Provider not found: ${providerName}`, {
+                                category: ErrorCategory.INSTANCE_ERROR,
+                                context: { providerName, availableProviders: providers.map(p => p.commandArg) }
+                            });
+                        }
 
-                    // Get partition name following the required format: ${app.getName()}:${providerName}:${profileName}
-                    const partitionName = profileManager.getPartitionName(providerName, profile);
-                    log.info(`Using partition: ${partitionName}`);
+                        // Get partition name following the required format: ${app.getName()}:${providerName}:${profileName}
+                        const partitionName = profileManager.getPartitionName(providerName, profile);
+                        log.info(`Using partition: ${partitionName}`);
 
-                    // Ensure profile exists, create if it doesn't
-                    if (!profileManager.getProfile(providerName, profile)) {
-                        log.info(`Creating new profile for ${providerName}: ${profile}`);
-                        await profileManager.createProfile(providerName, profile);
-                    }
+                        // Ensure profile exists, create if it doesn't
+                        if (!profileManager.getProfile(providerName, profile)) {
+                            log.info(`Creating new profile for ${providerName}: ${profile}`);
+                            await profileManager.createProfile(providerName, profile);
+                        }
 
-                    // Initialize the provider with the specified profile
-                    log.info(`Spawning ${providerName} with profile: ${profile}`);
-                    const instance = await provider.spawn(profile);
-                    
-                    // Verify instance was created successfully
-                    if (!instance) {
-                        throw new Error(`Failed to spawn provider ${providerName} with profile ${profile}`);
-                    }
+                        // Initialize the provider with the specified profile
+                        log.info(`Spawning ${providerName} with profile: ${profile}`);
+                        const instance = await provider.spawn(profile);
+                        
+                        // Verify instance was created successfully
+                        if (!instance) {
+                            throw createError(`Failed to spawn provider ${providerName} with profile ${profile}`, {
+                                category: ErrorCategory.INSTANCE_ERROR,
+                                context: { providerName, profile }
+                            });
+                        }
 
-                    // Register the session with the instance manager
-                    await instanceManager.registerSession(providerName, profile);
+                        // Register the session with the instance manager
+                        await instanceManager.registerSession(providerName, profile);
 
-                    output.push(instance);
-                    log.info(`Initialized ${providerName} with profile: ${profile}`);
+                        output.push(instance);
+                        log.info(`Initialized ${providerName} with profile: ${profile}`);
+                    });
                 } catch (error) {
+                    logDiagnostics('session-initialization-failed', { 
+                        error, 
+                        session, 
+                        context 
+                    });
                     log.error(`Error initializing session:`, error);
                     // Continue with other sessions even if one fails
                 }
             }
 
             return output;
-        } catch (error) {
-            log.error('Error initializing sessions:', error);
-            throw error;
-        }
+        }, {
+            errorMessage: 'Failed to initialize sessions',
+            category: ErrorCategory.INSTANCE_ERROR,
+            context: { sessions, context }
+        });
     }
 
     /**
@@ -427,33 +468,44 @@ class AppManager {
 
         log.info('Initiating application quit');
 
+        const transaction = createTransaction('app-shutdown');
+        
         try {
-            // Set quit flags first to prevent window hiding
-            this.isQuitting = true;
-            windowService.isQuitting = true;
+            await withTransaction(transaction, async () => {
+                await safeExecute(async () => {
+                    // Set quit flags first to prevent window hiding
+                    this.isQuitting = true;
+                    windowService.isQuitting = true;
 
-            // Clean up tray first to prevent user interaction
-            const trayService = require('./tray.service');
-            await trayService.cleanup();
+                    // Clean up tray first to prevent user interaction
+                    const trayService = require('./tray.service');
+                    await trayService.cleanup();
 
-            // Clean up instance manager
-            const instanceManager = require('./instance.manager');
-            await instanceManager.cleanup();
+                    // Clean up instance manager
+                    const instanceManager = require('./instance.manager');
+                    await instanceManager.cleanup();
 
-            // Force close any remaining windows
-            const windows = windowService.getAllWindows();
-            for (const window of windows) {
-                if (!window.isDestroyed()) {
-                    log.info(`Force closing window: ${window.windowName || 'unnamed'}`);
-                    window.forceClose = true;
-                    window.close();
-                }
-            }
+                    // Force close any remaining windows
+                    const windows = windowService.getAllWindows();
+                    for (const window of windows) {
+                        if (!window.isDestroyed()) {
+                            log.info(`Force closing window: ${window.windowName || 'unnamed'}`);
+                            window.forceClose = true;
+                            window.close();
+                        }
+                    }
 
-            // Exit application
-            log.info('Exiting application');
-            app.exit(0);
+                    // Exit application
+                    log.info('Exiting application');
+                    app.exit(0);
+                }, {
+                    errorMessage: 'Failed during application shutdown',
+                    category: ErrorCategory.INSTANCE_ERROR,
+                    context: { shutdownPhase: 'cleanup' }
+                });
+            });
         } catch (error) {
+            logDiagnostics('app-shutdown-failed', { error });
             log.error('Error during quit:', error);
             app.exit(1);
         }

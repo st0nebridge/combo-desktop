@@ -16,6 +16,16 @@ try {
 
 const log = require('electron-log');
 
+// Import error recovery utilities
+const { 
+    ErrorCategory, 
+    RecoverableError, 
+    createError, 
+    safeExecute, 
+    logDiagnostics 
+} = require('../utils/error-recovery');
+const { createTransaction, withTransaction } = require('../utils/transaction');
+
 /**
  * Service for managing application windows.
  * Handles window lifecycle, state management, and events:

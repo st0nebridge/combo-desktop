@@ -7,6 +7,17 @@ const Store = require('electron-store');
 const { app } = require('electron');
 const log = require('electron-log');
 
+// Import error recovery utilities
+const { 
+    ErrorCategory, 
+    RecoverableError, 
+    createError, 
+    safeExecute, 
+    logDiagnostics, 
+    verifyDataFileIntegrity 
+} = require('../utils/error-recovery');
+const { createTransaction, withTransaction } = require('../utils/transaction');
+
 /**
  * Service for managing user profiles.
  * Handles profile lifecycle and storage operations:
@@ -50,13 +61,23 @@ class ProfileManager {
      * @throws {Error} If initialization fails
      */
     async init() {
+        const transaction = createTransaction('profile-manager-init');
+        
         try {
-            // Migrate any old profiles if needed
-            await this.migrateOldProfiles();
-            log.info('Profile Manager initialization complete');
-            return true;
+            return await withTransaction(transaction, async () => {
+                return await safeExecute(async () => {
+                    // Migrate any old profiles if needed
+                    await this.migrateOldProfiles();
+                    log.info('Profile Manager initialization complete');
+                    return true;
+                }, {
+                    errorMessage: 'Failed to initialize Profile Manager',
+                    category: ErrorCategory.PROFILE_ERROR,
+                    context: { storePath: this.store.path }
+                });
+            });
         } catch (error) {
-            log.error('Failed to initialize Profile Manager:', error);
+            logDiagnostics('profile-manager-init-failed', { error });
             return false;
         }
     }
@@ -67,7 +88,7 @@ class ProfileManager {
      * @throws {Error} If migration fails
      */
     async migrateOldProfiles() {
-        try {
+        return await safeExecute(async () => {
             const profiles = this.store.get('profiles');
             let hasChanges = false;
 
@@ -89,10 +110,11 @@ class ProfileManager {
                 this.store.set('profiles', profiles);
                 log.info('Migrated old profiles to new format');
             }
-        } catch (error) {
-            log.error('Error migrating old profiles:', error);
-            throw error;
-        }
+        }, {
+            errorMessage: 'Error migrating old profiles',
+            category: ErrorCategory.PROFILE_ERROR,
+            context: { storePath: this.store.path }
+        });
     }
 
     /**
@@ -124,23 +146,32 @@ class ProfileManager {
      * @throws {Error} If profile already exists
      */
     createProfile(providerName, profileName = 'default', options = {}) {
-        const profiles = this.store.get('profiles');
-        const partitionName = this.getPartitionName(providerName, profileName);
-        
-        if (profiles[partitionName]) {
-            throw new Error(`Profile ${profileName} already exists for provider ${providerName}`);
-        }
+        return safeExecute(() => {
+            const profiles = this.store.get('profiles');
+            const partitionName = this.getPartitionName(providerName, profileName);
+            
+            if (profiles[partitionName]) {
+                throw createError(`Profile ${profileName} already exists for provider ${providerName}`, {
+                    category: ErrorCategory.PROFILE_ERROR,
+                    context: { providerName, profileName, partitionName }
+                });
+            }
 
-        profiles[partitionName] = {
-            providerName,
-            profileName,
-            options,
-            createdAt: new Date().toISOString()
-        };
+            profiles[partitionName] = {
+                providerName,
+                profileName,
+                options,
+                createdAt: new Date().toISOString()
+            };
 
-        this.store.set('profiles', profiles);
-        log.info(`Created profile: ${partitionName}`);
-        return partitionName;
+            this.store.set('profiles', profiles);
+            log.info(`Created profile: ${partitionName}`);
+            return partitionName;
+        }, {
+            errorMessage: `Failed to create profile ${profileName} for provider ${providerName}`,
+            category: ErrorCategory.PROFILE_ERROR,
+            context: { providerName, profileName, options }
+        });
     }
 
     /**

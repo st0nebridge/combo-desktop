@@ -6,6 +6,16 @@
 const { Tray, Menu } = require('electron');
 const logger = require('./logging.service');
 
+// Import error recovery utilities
+const { 
+    ErrorCategory, 
+    RecoverableError, 
+    createError, 
+    safeExecute, 
+    logDiagnostics 
+} = require('../utils/error-recovery');
+const { createTransaction, withTransaction } = require('../utils/transaction');
+
 /**
  * Service for managing system tray icons.
  * Handles tray lifecycle, notifications, and menu management:
@@ -45,14 +55,24 @@ class TrayService {
             return;
         }
 
+        const transaction = createTransaction('tray-service-init');
+        
         try {
-            logger.info('Initializing tray service');
-            // Clear any existing trays
-            await this.cleanup();
-            this.initialized = true;
-            logger.info('Tray service initialized');
+            await withTransaction(transaction, async () => {
+                await safeExecute(async () => {
+                    logger.info('Initializing tray service');
+                    // Clear any existing trays
+                    await this.cleanup();
+                    this.initialized = true;
+                    logger.info('Tray service initialized');
+                }, {
+                    errorMessage: 'Error initializing tray service',
+                    category: ErrorCategory.INSTANCE_ERROR,
+                    context: { serviceType: 'tray' }
+                });
+            });
         } catch (error) {
-            logger.error('Error initializing tray service:', error);
+            logDiagnostics('tray-service-init-failed', { error });
             throw error;
         }
     }
@@ -66,20 +86,25 @@ class TrayService {
      * @throws {Error} If provider returns invalid tray icon
      */
     async createTray(provider, windowName) {
-        if (!windowName) {
-            logger.error('Window name is required for tray creation');
-            return null;
-        }
+        return await safeExecute(async () => {
+            if (!windowName) {
+                throw createError('Window name is required for tray creation', {
+                    category: ErrorCategory.INSTANCE_ERROR,
+                    context: { provider: provider?.getName?.() }
+                });
+            }
 
-        // Cleanup existing tray if any - but don't await it
-        this.destroyTray(windowName).catch(err => {
-            logger.error(`Error destroying existing tray for ${windowName}:`, err);
-        });
+            // Cleanup existing tray if any - but don't await it
+            this.destroyTray(windowName).catch(err => {
+                logger.error(`Error destroying existing tray for ${windowName}:`, err);
+            });
 
-        try {
             const trayIcon = provider.getTrayIcon();
             if (!trayIcon || !trayIcon.image) {
-                throw new Error('Invalid tray icon returned from provider');
+                throw createError('Invalid tray icon returned from provider', {
+                    category: ErrorCategory.INSTANCE_ERROR,
+                    context: { provider: provider?.getName?.(), windowName }
+                });
             }
 
             logger.info('Creating tray with icon from provider');
@@ -100,14 +125,17 @@ class TrayService {
 
             // Store tray and provider reference
             this.trays.set(windowName, { tray, provider });
+            
+            // Initialize notification state
             this.notificationStates.set(windowName, false);
 
-            logger.info(`Created tray icon for ${windowName}`);
+            logger.info(`Tray created successfully for ${windowName}`);
             return tray;
-        } catch (error) {
-            logger.error(`Error creating tray for ${windowName}:`, error);
-            return null;
-        }
+        }, {
+            errorMessage: `Failed to create tray for ${windowName}`,
+            category: ErrorCategory.INSTANCE_ERROR,
+            context: { provider: provider?.getName?.(), windowName }
+        });
     }
 
     /**
