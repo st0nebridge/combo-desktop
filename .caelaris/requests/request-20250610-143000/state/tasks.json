@@ -1,16 +1,5 @@
 {
   "current": {
-    "id": "task_003_cli_cleanup",
-    "label": "Remove Deprecated CLI Code",
-    "description": "Verify functionality coverage and remove old CLI implementations",
-    "priority": "P2", 
-    "conditions": ["instance_manager_restored"],
-    "uses": ["instance_manager_restored"],
-    "produces": ["deprecated_code_removed"],
-    "status": "ready",
-    "promoted_at": "2025-06-10T14:50:00Z"
-  },
-  "next": {
     "id": "task_004_error_recovery",
     "label": "Enhance Error Recovery Integration",
     "description": "Integrate error recovery utilities throughout services",
@@ -18,6 +7,17 @@
     "conditions": ["deprecated_code_removed"],
     "uses": ["deprecated_code_removed", "instance_manager_restored"],
     "produces": ["error_recovery_integrated"],
+    "status": "ready",
+    "promoted_at": "2025-06-10T14:52:00Z"
+  },
+  "next": {
+    "id": "task_005_test_coverage",
+    "label": "Expand Test Coverage",
+    "description": "Create comprehensive test suites for all core services",
+    "priority": "P4",
+    "conditions": ["error_recovery_integrated"],
+    "uses": ["error_recovery_integrated"],
+    "produces": ["test_coverage_expanded"],
     "status": "ready"
   },
   "queued": [
@@ -99,6 +99,20 @@
       "started_at": "2025-06-10T14:35:10Z",
       "completed_at": "2025-06-10T14:50:00Z",
       "duration": "15 minutes",
+      "result": "success"
+    },
+    {
+      "id": "task_003_cli_cleanup",
+      "label": "Remove Deprecated CLI Code",
+      "description": "Verify functionality coverage and remove old CLI implementations",
+      "priority": "P2", 
+      "conditions": ["instance_manager_restored"],
+      "uses": ["instance_manager_restored"],
+      "produces": ["deprecated_code_removed"],
+      "status": "completed",
+      "started_at": "2025-06-10T14:50:10Z",
+      "completed_at": "2025-06-10T14:52:00Z",
+      "duration": "2 minutes",
       "result": "success"
     }
   ]

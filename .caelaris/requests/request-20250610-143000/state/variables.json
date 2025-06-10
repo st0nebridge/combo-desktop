@@ -18,7 +18,7 @@
     "description": "Whether instance manager functionality has been restored"
   },
   "deprecated_code_removed": {
-    "value": false,
+    "value": true,
     "writable": true,
     "writeMode": "replace",
     "description": "Whether deprecated CLI code has been removed"

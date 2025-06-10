@@ -74,3 +74,22 @@
 2025-06-10T14:50:00Z - Output → logs/task_outputs/task_002_instance_manager.md
 2025-06-10T14:50:00Z - Variables updated: instance_manager_restored=true
 2025-06-10T14:50:00Z - Task moved to completed, promoting task_003_cli_cleanup to current
+
+### Task: Remove Deprecated CLI Code (ID: task_003_cli_cleanup)
+2025-06-10T14:50:10Z - Start
+2025-06-10T14:50:10Z - Conditions: [instance_manager_restored] ✓
+2025-06-10T14:50:10Z - Uses: [instance_manager_restored], Produces: [deprecated_code_removed]
+2025-06-10T14:50:10Z - Analyzing deprecated CLI directory: src/cli/old/
+2025-06-10T14:50:20Z - Found 4 deprecated CLI files: help-cli.js, instance-cli.js, profile-cli.js, provider-cli.js
+2025-06-10T14:50:30Z - Verified modern equivalents exist in src/cli/modules/ with same 4 files
+2025-06-10T14:50:40Z - Confirmed no references to src/cli/old/ in codebase (0 matches found)
+2025-06-10T14:50:50Z - Verified CLI system loads from modules/ directory via auto-registration
+2025-06-10T14:51:00Z - Safe to remove: All functionality covered by modern implementations
+2025-06-10T14:51:10Z - Removed deprecated directory: src/cli/old/ and all 4 files
+2025-06-10T14:51:20Z - Verified removal: Directory no longer exists
+2025-06-10T14:51:30Z - Confirmed modern CLI modules still present and functional
+2025-06-10T14:51:40Z - CLI cleanup completed successfully - no deprecated code remains
+2025-06-10T14:52:00Z - Complete
+2025-06-10T14:52:00Z - Output → logs/task_outputs/task_003_cli_cleanup.md
+2025-06-10T14:52:00Z - Variables updated: deprecated_code_removed=true
+2025-06-10T14:52:00Z - Task moved to completed, promoting task_004_error_recovery to current
