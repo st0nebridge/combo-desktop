@@ -1,23 +1,23 @@
 {
   "current": {
-    "id": "task_001_setup",
-    "label": "Initial Setup and Environment Preparation",
-    "description": "Create git branches, backup current state, validate environment",
-    "priority": "P0",
-    "conditions": [],
-    "uses": ["current_branch"],
-    "produces": ["backup_created"],
-    "status": "executing",
-    "started_at": "2025-06-10T14:30:30Z"
+    "id": "task_003_cli_cleanup",
+    "label": "Remove Deprecated CLI Code",
+    "description": "Verify functionality coverage and remove old CLI implementations",
+    "priority": "P2", 
+    "conditions": ["instance_manager_restored"],
+    "uses": ["instance_manager_restored"],
+    "produces": ["deprecated_code_removed"],
+    "status": "ready",
+    "promoted_at": "2025-06-10T14:50:00Z"
   },
   "next": {
-    "id": "task_002_instance_manager",
-    "label": "Restore Instance Manager Functionality", 
-    "description": "Compare current vs backup, selectively restore critical features",
-    "priority": "P1",
-    "conditions": ["backup_created"],
-    "uses": ["backup_created"],
-    "produces": ["instance_manager_restored"],
+    "id": "task_004_error_recovery",
+    "label": "Enhance Error Recovery Integration",
+    "description": "Integrate error recovery utilities throughout services",
+    "priority": "P3",
+    "conditions": ["deprecated_code_removed"],
+    "uses": ["deprecated_code_removed", "instance_manager_restored"],
+    "produces": ["error_recovery_integrated"],
     "status": "ready"
   },
   "queued": [
@@ -72,5 +72,34 @@
       "status": "queued"
     }
   ],
-  "completed": []
+  "completed": [
+    {
+      "id": "task_001_setup",
+      "label": "Initial Setup and Environment Preparation",
+      "description": "Create git branches, backup current state, validate environment",
+      "priority": "P0",
+      "conditions": [],
+      "uses": ["current_branch"],
+      "produces": ["backup_created"],
+      "status": "completed",
+      "started_at": "2025-06-10T14:30:30Z",
+      "completed_at": "2025-06-10T14:35:00Z",
+      "duration": "4.5 minutes",
+      "result": "success"
+    },
+    {
+      "id": "task_002_instance_manager",
+      "label": "Restore Instance Manager Functionality", 
+      "description": "Compare current vs backup, selectively restore critical features",
+      "priority": "P1",
+      "conditions": ["backup_created"],
+      "uses": ["backup_created"],
+      "produces": ["instance_manager_restored"],
+      "status": "completed",
+      "started_at": "2025-06-10T14:35:10Z",
+      "completed_at": "2025-06-10T14:50:00Z",
+      "duration": "15 minutes",
+      "result": "success"
+    }
+  ]
 }

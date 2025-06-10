@@ -248,8 +248,8 @@ class InstanceManager {
             
             // Verify and recover data file integrity
             await safeExecute(async () => {
-                await verifyDataFileIntegrity(this.getPidFilePath());
-                await verifyDataFileIntegrity(this.getLockFilePath());
+                await verifyDataFileIntegrity(this.getPidFilePath(), () => ({}));
+                await verifyDataFileIntegrity(this.getLockFilePath(), () => ({}));
             }, {
                 context: 'Data file integrity check',
                 fallback: () => log.warn('Data file integrity check failed, continuing with caution')
@@ -376,6 +376,95 @@ class InstanceManager {
     }
 
     /**
+     * Start health monitoring heartbeat
+     * @method startHeartbeat
+     * @private
+     */
+    startHeartbeat() {
+        if (this.heartbeatInterval) {
+            clearInterval(this.heartbeatInterval);
+        }
+        
+        this.heartbeatInterval = setInterval(async () => {
+            await this.checkIpcServerHealth();
+        }, this.heartbeatFrequency);
+        
+        log.debug(`Started heartbeat monitoring every ${this.heartbeatFrequency}ms`);
+    }
+    
+    /**
+     * Check IPC server health
+     * @method checkIpcServerHealth
+     * @private
+     * @returns {Promise<boolean>} Health status
+     */
+    async checkIpcServerHealth() {
+        return safeExecute(async () => {
+            if (!this.ipcServer || !this.ipcServer.listening) {
+                log.warn('IPC server is not listening');
+                return false;
+            }
+            
+            // Test connection to self
+            try {
+                const result = await this.pingInstanceViaPipe(this.ipcPipeName);
+                if (result.success) {
+                    log.debug('IPC server health check passed');
+                    return true;
+                } else {
+                    log.warn('IPC server health check failed:', result.error);
+                    return false;
+                }
+            } catch (error) {
+                log.warn('IPC server health check error:', error);
+                return false;
+            }
+        }, {
+            context: 'IPC health check',
+            fallback: () => false
+        });
+    }
+    
+    /**
+     * Ping an instance via named pipe
+     * @method pingInstanceViaPipe
+     * @param {string} pipeName - Name of the pipe to ping
+     * @returns {Promise<Object>} Ping result
+     */
+    async pingInstanceViaPipe(pipeName) {
+        return new Promise((resolve) => {
+            const timeout = setTimeout(() => {
+                resolve({ success: false, error: 'timeout' });
+            }, 5000);
+            
+            const client = net.createConnection(pipeName);
+            
+            client.on('connect', () => {
+                const message = JSON.stringify({ command: 'ping', timestamp: Date.now() });
+                client.write(message);
+            });
+            
+            client.on('data', (data) => {
+                try {
+                    const response = JSON.parse(data.toString());
+                    clearTimeout(timeout);
+                    client.end();
+                    resolve({ success: true, response });
+                } catch (error) {
+                    clearTimeout(timeout);
+                    client.end();
+                    resolve({ success: false, error: error.message });
+                }
+            });
+            
+            client.on('error', (error) => {
+                clearTimeout(timeout);
+                resolve({ success: false, error: error.message });
+            });
+        });
+    }
+
+    /**
      * Clean up instance resources
      * @method cleanup
      * @private
@@ -443,8 +532,12 @@ class InstanceManager {
             // Clear all active transactions
             for (const [name, transaction] of this.activeTransactions) {
                 try {
-                    transaction.cancel();
-                    log.debug(`Cancelled active transaction: ${name}`);
+                    if (transaction && typeof transaction.cancel === 'function') {
+                        transaction.cancel();
+                        log.debug(`Cancelled active transaction: ${name}`);
+                    } else {
+                        log.debug(`Transaction ${name} doesn't support cancellation, removing from active list`);
+                    }
                 } catch (error) {
                     log.warn(`Error cancelling transaction ${name}:`, error);
                 }
