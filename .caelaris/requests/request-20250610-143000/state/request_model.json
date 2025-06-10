@@ -1,0 +1,186 @@
+{
+  "request": {
+    "meta": {
+      "protocol": "caelaris",
+      "type": "execution",
+      "id": "request-20250610-143000",
+      "timestamp": "2025-06-10T14:30:00Z",
+      "description": "Comprehensive action plan execution to bring Combo Desktop to production-ready status"
+    },
+    "context": {
+      "project": "Combo Desktop",
+      "type": "Electron Application",
+      "scope": "Critical stability fixes, code cleanup, error handling improvements, test coverage expansion",
+      "estimated_effort": "32-46 hours",
+      "phases": 3
+    },
+    "instructions": [
+      "Execute all 5 priority levels from the comprehensive action plan",
+      "Follow incremental testing approach for each change",
+      "Maintain application stability throughout the process",
+      "Document all changes and maintain rollback capability",
+      "Achieve production-ready status with enhanced stability and maintainability"
+    ],
+    "priorities": [
+      "P1-Critical: Restore instance manager functionality (8-12h)",
+      "P2-High: Remove deprecated CLI code (2h)", 
+      "P3-Medium: Enhance error recovery integration (6-8h)",
+      "P4-Medium: Expand test coverage (14-20h)",
+      "P5-Low: Complete minor development tasks (2.5-3.5h)"
+    ],
+    "directives": {
+      "REQUIRED": [
+        "Create git branches for each major change",
+        "Test each change independently before proceeding",
+        "Maintain existing functionality throughout process",
+        "Document all changes in execution log",
+        "Take state snapshots after each completed task",
+        "Validate application stability after each phase"
+      ],
+      "PREFERRED": [
+        "Use incremental approach for large changes",
+        "Leverage existing sophisticated utilities where possible",
+        "Follow established code patterns and architecture",
+        "Maintain comprehensive logging throughout execution"
+      ],
+      "PROHIBITED": [
+        "Breaking existing user functionality",
+        "Removing working code without replacement",
+        "Making changes without proper testing",
+        "Proceeding if tests fail or stability is compromised"
+      ],
+      "CONDITIONAL": [
+        "If instance manager restoration fails, fall back to current implementation",
+        "If test creation reveals critical bugs, address immediately before proceeding",
+        "If any phase shows stability issues, halt and investigate"
+      ]
+    }
+  },
+  "output": {
+    "target": "Production-ready Combo Desktop application",
+    "deliverables": [
+      "Fully functional instance manager with all features restored",
+      "Clean codebase with no deprecated code",
+      "Robust error handling throughout application", 
+      "Comprehensive test coverage (80%+)",
+      "Complete feature implementation (no TODOs)",
+      "Detailed documentation of all changes"
+    ]
+  },
+  "variables": {
+    "current_branch": {
+      "value": "main",
+      "writable": true,
+      "writeMode": "replace"
+    },
+    "backup_created": {
+      "value": false,
+      "writable": true,
+      "writeMode": "replace"
+    },
+    "instance_manager_restored": {
+      "value": false,
+      "writable": true,
+      "writeMode": "replace"
+    },
+    "deprecated_code_removed": {
+      "value": false,
+      "writable": true,
+      "writeMode": "replace"
+    },
+    "error_recovery_integrated": {
+      "value": false,
+      "writable": true,
+      "writeMode": "replace"
+    },
+    "test_coverage_expanded": {
+      "value": false,
+      "writable": true,
+      "writeMode": "replace"
+    },
+    "todos_completed": {
+      "value": false,
+      "writable": true,
+      "writeMode": "replace"
+    },
+    "stability_validated": {
+      "value": false,
+      "writable": true,
+      "writeMode": "replace"
+    }
+  },
+  "tasks": {
+    "current": {},
+    "next": {
+      "id": "task_001_setup",
+      "label": "Initial Setup and Environment Preparation",
+      "description": "Create git branches, backup current state, validate environment",
+      "priority": "P0",
+      "conditions": [],
+      "uses": ["current_branch"],
+      "produces": ["backup_created"]
+    },
+    "queued": [
+      {
+        "id": "task_002_instance_manager",
+        "label": "Restore Instance Manager Functionality", 
+        "description": "Compare current vs backup, selectively restore critical features",
+        "priority": "P1",
+        "conditions": ["backup_created"],
+        "uses": ["backup_created"],
+        "produces": ["instance_manager_restored"]
+      },
+      {
+        "id": "task_003_cli_cleanup",
+        "label": "Remove Deprecated CLI Code",
+        "description": "Verify functionality coverage and remove old CLI implementations",
+        "priority": "P2", 
+        "conditions": ["instance_manager_restored"],
+        "uses": ["instance_manager_restored"],
+        "produces": ["deprecated_code_removed"]
+      },
+      {
+        "id": "task_004_error_recovery",
+        "label": "Enhance Error Recovery Integration",
+        "description": "Integrate error recovery utilities throughout services",
+        "priority": "P3",
+        "conditions": ["deprecated_code_removed"],
+        "uses": ["deprecated_code_removed", "instance_manager_restored"],
+        "produces": ["error_recovery_integrated"]
+      },
+      {
+        "id": "task_005_test_coverage",
+        "label": "Expand Test Coverage",
+        "description": "Create comprehensive test suites for all core services",
+        "priority": "P4",
+        "conditions": ["error_recovery_integrated"],
+        "uses": ["error_recovery_integrated"],
+        "produces": ["test_coverage_expanded"]
+      },
+      {
+        "id": "task_006_todos",
+        "label": "Complete Minor Development Tasks",
+        "description": "Implement theme service integration and resolve TODOs",
+        "priority": "P5",
+        "conditions": ["test_coverage_expanded"],
+        "uses": ["test_coverage_expanded"],
+        "produces": ["todos_completed"]
+      },
+      {
+        "id": "task_007_validation",
+        "label": "Final Validation and Production Readiness",
+        "description": "Comprehensive testing and validation of all changes",
+        "priority": "P0",
+        "conditions": ["todos_completed"],
+        "uses": ["todos_completed", "instance_manager_restored", "deprecated_code_removed", "error_recovery_integrated", "test_coverage_expanded"],
+        "produces": ["stability_validated"]
+      }
+    ],
+    "completed": [],
+    "context": {
+      "total_tasks": 7,
+      "estimated_duration": "32-46 hours",
+      "critical_path": ["task_001_setup", "task_002_instance_manager", "task_007_validation"]
+    }
+  }
+}

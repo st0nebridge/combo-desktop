@@ -1,0 +1,58 @@
+{
+  "requestId": "req-002",
+  "timestamp": "2025-04-30T20:47:17+01:00",
+  "title": "Implementation of Instance Management Fixes",
+  "description": "This request handles the implementation of fixes identified in the previous code analysis (req-001). It will implement all necessary changes to make the instance management functionality work correctly, following the prioritized implementation plan laid out in the analysis report.",
+  "status": "in-progress",
+  "priority": "high",
+  "createdBy": "user",
+  "assignedTo": "assistant",
+  "type": "implementation",
+  "inputs": [
+    {
+      "name": "analysisReport",
+      "description": "Final analysis report from previous request",
+      "path": "m:\\Dev\\Tools\\combo-desktop\\request-20250430-200920\\final_output.md",
+      "type": "file",
+      "required": true
+    },
+    {
+      "name": "codeBasePath",
+      "description": "Path to the codebase",
+      "value": "m:\\Dev\\Tools\\combo-desktop\\src",
+      "type": "string",
+      "required": true
+    }
+  ],
+  "outputs": [
+    {
+      "name": "implementationReport",
+      "description": "Final report documenting all implemented changes",
+      "path": "m:\\Dev\\Tools\\combo-desktop\\request-20250430-204717\\final_implementation_report.md",
+      "type": "file",
+      "required": true
+    },
+    {
+      "name": "testReport",
+      "description": "Report on tests performed to validate the changes",
+      "path": "m:\\Dev\\Tools\\combo-desktop\\request-20250430-204717\\test_report.md",
+      "type": "file",
+      "required": true
+    }
+  ],
+  "success_criteria": [
+    "All critical fixes implemented and functional",
+    "All high-priority recommendations implemented",
+    "Medium-priority recommendations implemented where feasible",
+    "Comprehensive tests added to verify functionality",
+    "Documentation updated to reflect changes"
+  ],
+  "dependencies": [
+    {
+      "requestId": "req-001",
+      "description": "Code analysis to identify issues",
+      "status": "completed"
+    }
+  ],
+  "tags": ["implementation", "instance-management", "critical-fix"]
+}

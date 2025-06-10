@@ -128,7 +128,8 @@
 
 ## Inter-Process Communication
 1. ALL inter-process communication MUST use Windows named pipes:
-   - Each instance MUST create a unique pipe: `\\?\pipe\combo-desktop-{pid}`
+   - Each instance MUST create a unique pipe using format: `\\?\pipe\{package.name}-{pid}`
+   - Package name MUST be read from package.json at runtime
    - Pipe names MUST be derived from process PID
    - Pipe server MUST be initialized during instance construction
    - Pipe server MUST be cleaned up during instance shutdown

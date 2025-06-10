@@ -1,0 +1,50 @@
+{
+  "current_branch": {
+    "value": "main",
+    "writable": true,
+    "writeMode": "replace",
+    "description": "Current git branch being worked on"
+  },
+  "backup_created": {
+    "value": false,
+    "writable": true,
+    "writeMode": "replace", 
+    "description": "Whether initial backup has been created"
+  },
+  "instance_manager_restored": {
+    "value": false,
+    "writable": true,
+    "writeMode": "replace",
+    "description": "Whether instance manager functionality has been restored"
+  },
+  "deprecated_code_removed": {
+    "value": false,
+    "writable": true,
+    "writeMode": "replace",
+    "description": "Whether deprecated CLI code has been removed"
+  },
+  "error_recovery_integrated": {
+    "value": false,
+    "writable": true,
+    "writeMode": "replace",
+    "description": "Whether error recovery utilities are integrated"
+  },
+  "test_coverage_expanded": {
+    "value": false,
+    "writable": true,
+    "writeMode": "replace",
+    "description": "Whether test coverage has been expanded to 80%+"
+  },
+  "todos_completed": {
+    "value": false,
+    "writable": true,
+    "writeMode": "replace",
+    "description": "Whether all TODO items have been resolved"
+  },
+  "stability_validated": {
+    "value": false,
+    "writable": true,
+    "writeMode": "replace",
+    "description": "Whether final stability validation is complete"
+  }
+}

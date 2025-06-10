@@ -7,7 +7,10 @@ class InstanceCLI {
     constructor() {
         this.args = process.argv.slice(2);
         this.instanceLockFile = path.join(app.getPath('userData'), 'instance.lock');
-        this.pidFile = path.join(app.getPath('userData'), 'pids.json');
+        
+        // Get PID file path from package name
+        const packageJson = require('../../../package.json');
+        this.pidFile = path.join(app.getPath('userData'), `${packageJson.name}.pids.json`);
         log.info('Instance CLI initialized');
     }
 

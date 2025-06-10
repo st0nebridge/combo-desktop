@@ -1,0 +1,12 @@
+{
+  "request_id": "20250501-053530",
+  "request_timestamp": "2025-05-01T05:35:30+01:00",
+  "request_title": "Fix WhatsApp Desktop Application Issues",
+  "request_description": "Review console errors when trying to exit, remove the need for the instance manager stub, and resolve all outstanding issues with the project.",
+  "request_priority": "high",
+  "request_status": "in_progress",
+  "request_owner": "USER",
+  "execution_start": "2025-05-01T05:35:30+01:00",
+  "execution_end": null,
+  "completion_status": null
+}

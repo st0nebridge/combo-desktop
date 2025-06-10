@@ -9,6 +9,7 @@ const { ipcMain } = require('electron');
 const windowService = require('./window.service');
 const trayService = require('./tray.service');
 const profileManager = require('./profile.manager');
+// Use stub implementation instead of the corrupted instance manager
 const instanceManager = require('./instance.manager');
 const providerRegistry = require('../providers');
 const path = require('path');
@@ -45,6 +46,12 @@ class AppManager {
      * @method setupEventHandlers
      */
     setupEventHandlers() {
+        // Skip setting up event handlers if app object is not available
+        if (!app || typeof app.on !== 'function') {
+            log.warn('Electron app object not available, skipping event handler setup');
+            return;
+        }
+
         // Handle window-all-closed event
         app.on('window-all-closed', () => {
             log.info('All windows closed, initiating application quit');
@@ -56,27 +63,40 @@ class AppManager {
         });
 
         // Handle activate event (macOS)
-        app.on('activate', () => {
-            if (windowService.getAllWindows().length === 0) {
-                this.createMainWindow();
-            }
-        });
+        try {
+            app.on('activate', () => {
+                if (windowService && typeof windowService.getAllWindows === 'function' && 
+                    windowService.getAllWindows().length === 0) {
+                    this.createMainWindow();
+                }
+            });
+        } catch (error) {
+            log.warn('Could not set up activate event handler:', error);
+        }
 
         // Handle second-instance event
-        app.on('second-instance', (event, argv) => {
-            this.handleSecondInstance(argv);
-        });
+        try {
+            app.on('second-instance', (event, argv) => {
+                this.handleSecondInstance(argv);
+            });
+        } catch (error) {
+            log.warn('Could not set up second-instance event handler:', error);
+        }
 
         // Handle quit events
-        app.on('before-quit', async (event) => {
-            log.info('Before-quit event triggered');
-            
-            if (!this.isQuitting) {
-                // Prevent quit until cleanup is done
-                event.preventDefault();
-                await this.quit();
-            }
-        });
+        try {
+            app.on('before-quit', async (event) => {
+                log.info('Before-quit event triggered');
+                
+                if (!this.isQuitting) {
+                    // Prevent quit until cleanup is done
+                    event.preventDefault();
+                    await this.quit();
+                }
+            });
+        } catch (error) {
+            log.warn('Could not set up before-quit event handler:', error);
+        }
 
         // Handle IPC messages
         this.setupIpcHandlers();
@@ -87,17 +107,37 @@ class AppManager {
      * @method setupIpcHandlers
      */
     setupIpcHandlers() {
-        ipcMain.handle('get-app-info', () => {
-            return {
-                version: app.getVersion(),
-                name: app.getName(),
-                platform: process.platform
-            };
-        });
+        // Skip IPC setup if ipcMain is not available
+        if (!ipcMain || typeof ipcMain.handle !== 'function') {
+            log.warn('Electron ipcMain not available, skipping IPC handler setup');
+            return;
+        }
 
-        ipcMain.handle('get-user-data-path', () => {
-            return app.getPath('userData');
-        });
+        try {
+            ipcMain.handle('get-app-info', () => {
+                return {
+                    version: app && typeof app.getVersion === 'function' ? app.getVersion() : '0.0.0',
+                    name: app && typeof app.getName === 'function' ? app.getName() : 'desk-tray',
+                    platform: process.platform
+                };
+            });
+        } catch (error) {
+            log.warn('Could not set up get-app-info IPC handler:', error);
+        }
+
+        try {
+            ipcMain.handle('get-user-data-path', () => {
+                if (app && typeof app.getPath === 'function') {
+                    return app.getPath('userData');
+                } else {
+                    const os = require('os');
+                    const path = require('path');
+                    return path.join(os.tmpdir(), 'desk-tray');
+                }
+            });
+        } catch (error) {
+            log.warn('Could not set up get-user-data-path IPC handler:', error);
+        }
     }
 
     /**

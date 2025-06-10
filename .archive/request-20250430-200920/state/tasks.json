@@ -1,0 +1,72 @@
+{
+  "current": null,
+  "next": null,
+  "queued": [],
+  "completed": [
+    {
+      "id": "task-001",
+      "label": "Scan Source Directory Structure",
+      "uses": ["codeBasePath"],
+      "produces": ["fileList"],
+      "writeMode": "replace",
+      "startedAt": "2025-04-30T20:14:00+01:00",
+      "completedAt": "2025-04-30T20:14:30+01:00",
+      "status": "completed",
+      "result": "success"
+    },
+    {
+      "id": "task-002",
+      "label": "Analyze Code Files",
+      "uses": ["fileList", "codeBasePath"],
+      "produces": ["issues"],
+      "writeMode": "replace",
+      "startedAt": "2025-04-30T20:15:00+01:00",
+      "completedAt": "2025-04-30T20:17:00+01:00",
+      "status": "completed",
+      "result": "success"
+    },
+    {
+      "id": "task-003",
+      "label": "Investigate Instance Management",
+      "uses": ["fileList", "codeBasePath", "issues"],
+      "produces": ["instanceManagementIssues"],
+      "writeMode": "replace",
+      "startedAt": "2025-04-30T20:17:30+01:00",
+      "completedAt": "2025-04-30T20:21:00+01:00",
+      "status": "completed",
+      "result": "success"
+    },
+    {
+      "id": "task-004",
+      "label": "Identify Issues and Recommendations",
+      "uses": ["issues", "instanceManagementIssues"],
+      "produces": ["recommendations"],
+      "writeMode": "replace",
+      "startedAt": "2025-04-30T20:21:30+01:00",
+      "completedAt": "2025-04-30T20:23:00+01:00",
+      "status": "completed",
+      "result": "success"
+    },
+    {
+      "id": "task-005",
+      "label": "Generate Final Report",
+      "uses": ["issues", "instanceManagementIssues", "recommendations"],
+      "produces": ["finalReport"],
+      "writeMode": "replace",
+      "startedAt": "2025-04-30T20:23:00+01:00",
+      "completedAt": "2025-04-30T20:25:00+01:00",
+      "status": "completed",
+      "result": "success"
+    }
+  ],
+  "context": {
+    "task-001": {
+      "input": "Path to scan: m:\\Dev\\Tools\\combo-desktop\\src",
+      "output": "Directory structure scanned and saved to fileList variable"
+    },
+    "task-002": {
+      "input": "Files to analyze based on fileList variable",
+      "output": null
+    }
+  }
+}

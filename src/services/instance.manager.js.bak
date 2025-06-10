@@ -1,0 +1,4395 @@
+/**
+ * @file Instance management service that handles application instance lifecycle,
+ * locking, and PID tracking to ensure proper multi-instance behavior.
+ */
+
+const { app, ipcMain } = require('electron');
+const log = require('../services/logging.service');
+const path = require('path');
+const fs = require('fs');
+const os = require('os');
+const lockfile = require('proper-lockfile');
+const net = require('net');
+const { spawn } = require('child_process');
+
+// Import transaction utilities
+const { createTransaction, createResourceLock, withTransaction } = require('../utils/transaction');
+
+// Import error recovery utilities
+const { 
+    ErrorCategory, 
+    RecoverableError, 
+    createError, 
+    safeExecute, 
+    logDiagnostics, 
+    recoverLockFile,
+    verifyDataFileIntegrity
+} = require('../utils/error-recovery');
+
+/**
+ * Service for managing application instances.
+ * Handles instance lifecycle, locking, and process management:
+ * - Instance creation and cleanup
+ * - File locking and PID tracking
+ * - Profile-based instance management
+ * - IPC communication for instances
+ * @class InstanceManager
+ */
+class InstanceManager {
+    /**
+     * Creates a new InstanceManager instance
+     * @constructor
+     */
+    constructor() {
+        // Ensure singleton
+        if (InstanceManager.instance) {
+            return InstanceManager.instance;
+        }
+        InstanceManager.instance = this;
+
+        // Ensure app name is set before getting userData path
+        if (!app || !app.name) {
+            try {
+                const packageJson = require('../../package.json');
+                if (app) app.name = packageJson.name || 'desk-tray';
+            } catch (error) {
+                log.error('Could not load package.json:', error);
+                if (app) app.name = 'desk-tray';
+            }
+        }
+
+        /** @property {string} instanceLockFile - Path to instance lock file */
+        try {
+            this.instanceLockFile = path.join(app.getPath('userData'), 'instance.lock');
+        } catch (error) {
+            const tempPath = path.join(os.tmpdir(), 'desk-tray');
+            log.warn(`Could not get userData path, using temporary path: ${tempPath}`, error);
+            this.instanceLockFile = path.join(tempPath, 'instance.lock');
+        }
+        
+        /** @property {string} pidFile - Path to PID tracking file */
+        try {
+            const pidPath = app && typeof app.getPath === 'function' ? 
+                path.join(app.getPath('userData'), 'pids.json') : 
+                path.join(os.tmpdir(), 'desk-tray', 'pids.json');
+            this.pidFile = pidPath;
+        } catch (error) {
+            const tempPath = path.join(os.tmpdir(), 'desk-tray', 'pids.json');
+            log.warn(`Could not determine PID file path, using temporary path: ${tempPath}`, error);
+            this.pidFile = tempPath;
+        }
+        
+        /** @property {string} ipcPipeName - Name of the IPC pipe */
+        let appName = 'desk-tray';
+        try {
+            const packageJson = require('../../package.json');
+            appName = packageJson.name || appName;
+        } catch (error) {
+            log.warn('Could not load package.json for IPC pipe name, using default', error);
+        }
+        this.ipcPipeName = `\\\\.\\pipe\\${appName}-${process.pid}`;
+        
+        /** @property {number} lockRetryCount - Number of times to retry acquiring lock */
+        this.lockRetryCount = 5;
+        
+        /** @property {number} lockRetryDelay - Delay in ms between lock retries */
+        this.lockRetryDelay = 200;
+        
+        /** @property {Map<string, Object>} providerSessions - Map of provider sessions */
+        this.providerSessions = new Map();
+        
+        /** @property {string} instanceId - Current instance ID */
+        this.instanceId = null;
+        
+        /** @property {boolean} isFirstInstance - Whether this is the first instance */
+        this.isFirstInstance = false;
+        
+        /** @property {Function} lockRelease - Function to release the instance lock */
+        this.lockRelease = null;
+
+        /** @property {Object} currentProfile - Current profile */
+        this.currentProfile = null;
+        
+        /** @property {Object} lockFileLock - Resource lock for instance lock file */
+        this.lockFileLock = createResourceLock('instance-lock-file');
+        
+        /** @property {Object} pidFileLock - Resource lock for PID file */
+        this.pidFileLock = createResourceLock('instance-pid-file');
+        
+        /** @property {Map} activeTransactions - Map of active transactions */
+        this.activeTransactions = new Map();
+        
+        // Initialize the instance immediately
+        this.initialize().catch(err => {
+            log.error('Failed to initialize instance manager:', err);
+        });
+    }
+    
+    /**
+     * Initialize the instance manager resources
+     * @method initialize
+     * @returns {Promise<void>}
+     */
+    async initialize() {
+        try {
+            // Ensure singleton
+            if (InstanceManager.instance !== this) {
+                return;
+            }
+            
+            // Resource locks for critical operations
+            this.lockFileLock = createResourceLock('instance-lock-file');
+            this.pidFileLock = createResourceLock('instance-pid-file');
+            
+            // Initialize the IPC server for inter-process communication
+            await this.setupIpcServer();
+            
+            // Track pending IPC requests for better reliability
+            this.pendingIpcRequests = new Map();
+            this.activeConnections = new Map();
+            
+            // Set up automatic IPC health checks
+            this.ipcHealthCheckInterval = setInterval(() => this.checkIpcServerHealth(), 60000);
+            
+            // Register cleanup handlers
+            this.registerCleanupHandlers();
+            
+            log.info('Instance manager initialized successfully');
+        } catch (error) {
+            log.error('Error initializing instance manager:', error);
+            throw error;
+        }
+    }
+    
+    /**
+     * Create a transaction for instance operations
+     * @method createInstanceTransaction
+     * @param {string} name - Transaction name
+     * @param {Object} options - Transaction options
+     * @returns {Object} Transaction object
+     */
+    createInstanceTransaction(name, options = {}) {
+        const tx = createTransaction(`InstanceManager:${name}`, {
+            debug: true,
+            autoRollback: true,
+            ...options
+        });
+        
+        // Store in active transactions
+        this.activeTransactions.set(tx.id, tx);
+        
+        // Remove from active transactions when completed
+        const originalCommit = tx.commit;
+        tx.commit = () => {
+            originalCommit();
+            this.activeTransactions.delete(tx.id);
+            log.info(`Transaction ${tx.id} (${name}) committed successfully`);
+        };
+        
+        const originalRollback = tx.rollback;
+        tx.rollback = async () => {
+            await originalRollback();
+            this.activeTransactions.delete(tx.id);
+            log.info(`Transaction ${tx.id} (${name}) rolled back`);
+        };
+        
+        // Add instance manager-specific utilities to transaction
+        tx.writeLockFileWithTx = async (lockData) => {
+            return await tx.step('writeLockFile', async () => {
+                // Save snapshot for potential rollback
+                const currentLockData = await this.readLockFile().catch(() => ({ instances: {} }));
+                tx.saveSnapshot('lockFile', currentLockData);
+                
+                // Write using atomic file operations
+                return await this.writeLockFileAtomic(lockData, tx);
+            }, async () => {
+                // Rollback: restore original lock file if needed
+                const originalData = tx.getSnapshot('lockFile');
+                if (originalData) {
+                    await this.writeLockFile(originalData).catch(e => {
+                        log.error('Error restoring lock file during rollback:', e);
+                    });
+                }
+            });
+        };
+        
+        tx.withLock = async (fn) => {
+            let acquired = false;
+            
+            return await tx.step('acquireLock', async () => {
+                // Acquire the lock
+                await this.acquireLock();
+                acquired = true;
+                
+                // Execute the function
+                return await fn();
+            }, async () => {
+                // Rollback: release lock if we acquired it
+                if (acquired) {
+                    await this.releaseLock().catch(e => {
+                        log.error('Error releasing lock during rollback:', e);
+                    });
+                }
+            });
+        };
+        
+        return tx;
+    }
+
+    /**
+     * Get the IPC pipe name for this instance
+     * @method getIpcPipeName
+     * @private
+     * @returns {string} The IPC pipe name
+     */
+    getIpcPipeName() {
+        const packageJson = require('../../package.json');
+        return `\\?\\pipe\\${packageJson.name}-${process.pid}`;
+    }
+
+    /**
+     * Get the lock file path
+     * @method getLockFilePath
+     * @private
+     * @returns {string} The lock file path
+     */
+    getLockFilePath() {
+        return path.join(app.getPath('userData'), 'instance.lock');
+    }
+
+    /**
+     * Get the PID file path
+     * @method getPidFilePath
+     * @private
+     * @returns {string} The PID file path
+     */
+    getPidFilePath() {
+        return path.join(app.getPath('userData'), 'instance.pid');
+    }
+
+    /**
+     * Initialize the instance manager resources
+     * @method initialize
+     * @returns {Promise<void>}
+     */
+    async initialize() {
+        try {
+            // Ensure singleton
+            if (InstanceManager.instance !== this) {
+                return;
+            }
+            
+            // Resource locks for critical operations
+            this.lockFileLock = createResourceLock('instance-lock-file');
+            this.pidFileLock = createResourceLock('instance-pid-file');
+            
+            // Initialize the IPC server for inter-process communication
+            await this.setupIpcServer();
+            
+            // Track pending IPC requests for better reliability
+            this.pendingIpcRequests = new Map();
+            this.activeConnections = new Map();
+            
+            // Set up automatic IPC health checks
+            this.ipcHealthCheckInterval = setInterval(() => this.checkIpcServerHealth(), 60000);
+            
+            // Register cleanup handlers
+            this.registerCleanupHandlers();
+            
+            log.info('Instance manager initialized successfully');
+        } catch (error) {
+            log.error('Error initializing instance manager:', error);
+            throw error;
+        }
+    }
+    
+    /**
+     * Create a transaction for instance operations
+     * @method createInstanceTransaction
+     * @param {string} name - Transaction name
+     * @param {Object} options - Transaction options
+     * @returns {Object} Transaction object
+     */
+    createInstanceTransaction(name, options = {}) {
+        const tx = createTransaction(`InstanceManager:${name}`, {
+            debug: true,
+            autoRollback: true,
+            ...options
+        });
+        
+        // Store in active transactions
+        this.activeTransactions.set(tx.id, tx);
+        
+        // Remove from active transactions when completed
+        const originalCommit = tx.commit;
+        tx.commit = () => {
+            originalCommit();
+            this.activeTransactions.delete(tx.id);
+            log.info(`Transaction ${tx.id} (${name}) committed successfully`);
+        };
+        
+        const originalRollback = tx.rollback;
+        tx.rollback = async () => {
+            await originalRollback();
+            this.activeTransactions.delete(tx.id);
+            log.info(`Transaction ${tx.id} (${name}) rolled back`);
+        };
+        
+        // Add instance manager-specific utilities to transaction
+        tx.writeLockFileWithTx = async (lockData) => {
+            return await tx.step('writeLockFile', async () => {
+                // Save snapshot for potential rollback
+                const currentLockData = await this.readLockFile().catch(() => ({ instances: {} }));
+                tx.saveSnapshot('lockFile', currentLockData);
+                
+                // Write using atomic file operations
+                return await this.writeLockFileAtomic(lockData, tx);
+            }, async () => {
+                // Rollback: restore original lock file if needed
+                const originalData = tx.getSnapshot('lockFile');
+                if (originalData) {
+                    await this.writeLockFile(originalData).catch(e => {
+                        log.error('Error restoring lock file during rollback:', e);
+                    });
+                }
+            });
+        };
+        
+        tx.withLock = async (fn) => {
+            let acquired = false;
+            
+            return await tx.step('acquireLock', async () => {
+                // Acquire the lock
+                await this.acquireLock();
+                acquired = true;
+                
+                // Execute the function
+                return await fn();
+            }, async () => {
+                // Rollback: release lock if we acquired it
+                if (acquired) {
+                    await this.releaseLock().catch(e => {
+                        log.error('Error releasing lock during rollback:', e);
+                    });
+                }
+            });
+        };
+        
+        return tx;
+    }
+
+    /**
+     * Release instance lock with improved error handling and lock history tracking
+     * @method releaseLock
+     * @private
+     * @returns {Promise<void>}
+     */
+    async releaseLock() {
+        // Use safeExecute for better error handling and recovery
+        return await safeExecute(async () => {
+            if (!this.lockRelease) {
+                log.debug('No lock to release, skipping');
+                return true;
+            }
+            
+            log.info('Releasing instance lock');
+            const releaseStartTime = Date.now();
+            
+            // Get current lock data and record release in lock history before actual release
+            let lockDataUpdated = false;
+            try {
+                // Read current lock data
+                const lockData = await this.readLockFile();
+                
+                // Initialize lockHistory if it doesn't exist
+                if (!lockData.lockHistory) {
+                    lockData.lockHistory = [];
+                }
+                
+                // Add entry to lock history
+                lockData.lockHistory.push({
+                    action: 'release',
+                    pid: process.pid,
+                    instanceId: this.instanceId,
+                    timestamp: new Date().toISOString(),
+                    hostname: require('os').hostname(),
+                    username: require('os').userInfo().username,
+                    heldForMs: this.lockAcquiredAt ? (Date.now() - this.lockAcquiredAt) : null
+                });
+                
+                // Trim history if it's getting too large
+                if (lockData.lockHistory.length > 100) {
+                    lockData.lockHistory = lockData.lockHistory.slice(-100);
+                }
+                
+                // Clear current owner if it's us
+                if (lockData.currentOwner && lockData.currentOwner.pid === process.pid) {
+                    lockData.currentOwner = null;
+                }
+                
+                // Write the updated lock data
+                await this.writeLockFile(lockData);
+                lockDataUpdated = true;
+            } catch (historyError) {
+                // Create a recoverable error but continue with lock release
+                const recoverableError = createError('Error updating lock history during release', {
+                    category: ErrorCategory.LOCK_ERROR,
+                    cause: historyError,
+                    context: { 
+                        pid: process.pid, 
+                        instanceId: this.instanceId,
+                        lockPath: this.getLockFilePath() 
+                    }
+                });
+                recoverableError.log('warn');
+            }
+            
+            // Actually release the lock with explicit error handling
+            try {
+                // Store the release function in case we need to retry
+                const releaseFunction = this.lockRelease;
+                
+                // Call the release function
+                await releaseFunction();
+                log.info('Instance lock released by process', process.pid);
+            } catch (releaseError) {
+                // Create a recoverable error to handle the lock release failure
+                const recoverableError = createError('Error during lock release function', {
+                    category: ErrorCategory.LOCK_ERROR,
+                    cause: releaseError,
+                    context: { 
+                        pid: process.pid, 
+                        instanceId: this.instanceId,
+                        lockPath: this.getLockFilePath(),
+                        releaseTime: Date.now() - releaseStartTime
+                    }
+                });
+                recoverableError.log('error');
+                
+                // Attempt recovery - force reset the lock reference
+                log.warn('Force resetting lock reference due to release error');
+            }
+            
+            // Always reset lock release function reference
+            this.lockRelease = null;
+            this.lockAcquiredAt = null;
+            
+            return true;
+        }, {
+            category: ErrorCategory.LOCK_ERROR,
+            throwOnError: false, // Don't throw on lock release errors
+            context: { 
+                pid: process.pid, 
+                instanceId: this.instanceId,
+                functionName: 'releaseLock'
+            },
+            recoverFn: async (error) => {
+                // Clean up any partial state
+                this.lockRelease = null;
+                this.lockAcquiredAt = null;
+                
+                // Log diagnostic information for later analysis
+                await logDiagnostics(
+                    error,
+                    'InstanceManager',
+                    'releaseLock'
+                );
+                
+                // If we can't release the lock, see if the lock file itself is damaged
+                try {
+                    const lockPath = this.getLockFilePath();
+                    await recoverLockFile(lockPath);
+                } catch (recoveryError) {
+                    log.error('Failed to recover lock file during release error handling:', recoveryError);
+                }
+            }
+        });
+    }
+
+    /**
+     * Acquire the instance lock
+     * @method acquireLock
+     * @private
+     * @returns {Promise<void>}
+     */
+    async acquireLock() {
+        try {
+            if (!this.lockRelease) {
+                log.info('Acquiring instance lock');
+                
+                // Ensure lock file directory exists
+                const lockDir = path.dirname(this.instanceLockFile);
+                await fs.promises.mkdir(lockDir, { recursive: true });
+
+                // Create empty lock file if it doesn't exist
+                if (!fs.existsSync(this.instanceLockFile)) {
+                    await fs.promises.writeFile(this.instanceLockFile, JSON.stringify({ instances: {} }));
+                }
+
+                // Acquire lock with proper retry settings
+                this.lockRelease = await lockfile.lock(this.instanceLockFile, {
+                    retries: this.lockRetryCount,
+                    retryWait: this.lockRetryDelay,
+                    stale: 30000 // Consider lock stale after 30 seconds
+                });
+
+                // Create backup of lock file after acquiring lock
+                try {
+                    const lockData = await fs.promises.readFile(this.instanceLockFile, 'utf8');
+                    const backupFile = `${this.instanceLockFile}.bak`;
+                    await fs.promises.writeFile(backupFile, lockData);
+                } catch (backupError) {
+                    log.warn('Error creating lock file backup:', backupError);
+                }
+
+                log.info('Instance lock acquired');
+            }
+        } catch (error) {
+            log.error('Error acquiring instance lock:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Ensure required directories exist for instance management
+     * @method ensureDirectories
+     * @throws {Error} If directory creation fails
+     */
+    async ensureDirectories() {
+        try {
+            // Get user data directory
+            const userDataDir = app.getPath('userData');
+
+            // Create user data directory if it doesn't exist
+            await fs.promises.mkdir(userDataDir, { recursive: true });
+
+            // Create instance lock file if it doesn't exist
+            if (!fs.existsSync(this.instanceLockFile)) {
+                await fs.promises.writeFile(this.instanceLockFile, JSON.stringify({ instances: {} }, null, 2));
+            }
+
+            // Create PID file if it doesn't exist
+            if (!fs.existsSync(this.pidFile)) {
+                await fs.promises.writeFile(this.pidFile, JSON.stringify([], null, 2));
+            }
+
+            log.info('Instance management directories initialized');
+        } catch (error) {
+            log.error('Error creating directories:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Clean up instance resources
+     * @method cleanup
+     * @private
+     * @returns {Promise<void>}
+     */
+    async cleanup() {
+        try {
+            // Cancel activity update interval if active
+            if (this.activityInterval) {
+                clearInterval(this.activityInterval);
+                this.activityInterval = null;
+            }
+            
+            // Acquire lock to ensure atomic cleanup
+            await this.acquireLock();
+
+            try {
+                // Clean up provider sessions first
+                for (const [key, session] of this.providerSessions.entries()) {
+                    try {
+                        if (session && session.cleanup) {
+                            await session.cleanup();
+                            log.info(`Cleaned up provider session: ${key}`);
+                        }
+                    } catch (error) {
+                        log.error(`Error cleaning up provider session ${key}:`, error);
+                    }
+                }
+                this.providerSessions.clear();
+
+                // Close IPC server
+                if (this.ipcServer) {
+                    await new Promise((resolve) => {
+                        this.ipcServer.close(() => {
+                            log.info('IPC server closed');
+                            resolve();
+                        });
+                    });
+
+                    // Clean up named pipe
+                    try {
+                        const fs = require('fs');
+                        if (fs.existsSync(this.ipcPipeName)) {
+                            fs.unlinkSync(this.ipcPipeName);
+                            log.info(`Removed named pipe: ${this.ipcPipeName}`);
+                        }
+                    } catch (error) {
+                        log.error('Error cleaning up named pipe:', error);
+                    }
+                }
+
+                // Remove PID from PID file
+                await this.removePidFromFile();
+
+                // Clean up from lock file
+                if (this.instanceId) {
+                    const lockData = await this.readLockFile();
+                    if (lockData.instances && lockData.instances[this.instanceId]) {
+                        // Mark instance as cleanly shutdown rather than deleting immediately
+                        lockData.instances[this.instanceId].cleanShutdown = true;
+                        lockData.instances[this.instanceId].shutdownTime = new Date().toISOString();
+                        await this.writeLockFile(lockData);
+                        log.info(`Marked instance ${this.instanceId} as cleanly shutdown`);
+                    }
+                }
+
+                // Kill any child processes
+                const { execSync } = require('child_process');
+                try {
+                    execSync(`taskkill /F /T /PID ${process.pid}`, { stdio: 'ignore' });
+                } catch (error) {
+                    // Ignore errors as the main process might be killed already
+                }
+
+                log.info('Cleanup completed successfully');
+            } finally {
+                // Always release lock
+                await this.releaseLock();
+            }
+        } catch (error) {
+            log.error('Error during cleanup:', error);
+            // Force cleanup on error
+            this.providerSessions.clear();
+            try {
+                await this.releaseLock();
+            } catch (releaseError) {
+                log.error('Error releasing lock during cleanup:', releaseError);
+            }
+            throw error;
+        }
+    }
+
+    /**
+     * Clean up profile-specific resources
+     * @method cleanupProfileResources
+     * @private
+     * @returns {Promise<void>}
+     */
+    async cleanupProfileResources() {
+        try {
+            if (!this.currentProfile) return;
+            
+            const fs = require('fs').promises;
+            const path = require('path');
+            
+            // Sanitize profile name for use in filenames
+            const sanitizedProfile = this.currentProfile.replace(/[^a-zA-Z0-9_-]/g, '_');
+            
+            // Clean up profile-specific registration file
+            try {
+                const registrationPath = path.join(app.getPath('userData'), 
+                    `profile-${sanitizedProfile}.registering`);
+                await fs.unlink(registrationPath).catch(() => {});
+                log.info(`Cleaned up profile registration file for ${this.currentProfile}`);
+            } catch (e) {
+                log.warn(`Error cleaning profile registration file: ${e.message}`);
+            }
+        } catch (error) {
+            log.error('Error cleaning up profile resources:', error);
+        }
+    }
+
+    /**
+     * Register enhanced cleanup handlers for process exit
+     * @method registerCleanupHandlers
+     * @private
+     */
+    registerCleanupHandlers() {
+        // Store a reference to the original removePidFromFileSync method if it exists
+        // or create a new implementation if it doesn't
+        this.removePidFromFileSync = this.removePidFromFileSync || function() {
+            try {
+                const fs = require('fs');
+                const path = require('path');
+                const os = require('os');
+                
+                // Get PID file path safely without relying on app object
+                let pidPath;
+                try {
+                    pidPath = this.getPidFilePath();
+                } catch (error) {
+                    // Fallback to a known temp location if getPidFilePath fails
+                    const appName = 'desk-tray';
+                    pidPath = path.join(os.tmpdir(), appName, 'pids.json');
+                    console.warn(`Using fallback PID path: ${pidPath}`);
+                }
+                
+                // Process the PID file
+                if (fs.existsSync(pidPath)) {
+                    try {
+                        const pidsData = fs.readFileSync(pidPath, 'utf8');
+                        const pids = JSON.parse(pidsData);
+                        const newPids = pids.filter(pid => pid !== process.pid);
+                        fs.writeFileSync(pidPath, JSON.stringify(newPids, null, 2), 'utf8');
+                        console.log(`Successfully removed PID ${process.pid} from ${pidPath}`);
+                    } catch (readError) {
+                        console.error('Error reading or parsing PID file:', readError);
+                    }
+                } else {
+                    console.warn(`PID file not found at ${pidPath}`);
+                }
+            } catch (error) {
+                console.error('Error in removePidFromFileSync:', error);
+            }
+        }.bind(this);
+        
+        // Comprehensive cleanup function that can be called from different exit handlers
+        const performFullCleanup = async (exitCode = 0) => {
+            try {
+                log.info(`Performing full cleanup before exit (code: ${exitCode})`);
+                
+                // First clear any activity update interval
+                if (this.activityInterval) {
+                    clearInterval(this.activityInterval);
+                    this.activityInterval = null;
+                }
+                
+                // Run the main cleanup method
+                await this.cleanup().catch(e => 
+                    log.error('Error during cleanup in exit handler:', e));
+                
+                log.info('Exit cleanup completed successfully');
+                
+                // Handle actual exit if requested
+                if (exitCode !== undefined) {
+                    // Delay exit slightly to allow logs to be written
+                    setTimeout(() => process.exit(exitCode), 100);
+                }
+            } catch (error) {
+                log.error('Error during full cleanup:', error);
+                if (exitCode !== undefined) {
+                    process.exit(1);
+                }
+            }
+        };
+        
+        // Store cleanup method reference for external use
+        this.performFullCleanup = performFullCleanup;
+
+        // Ensure we clean up when the process exits
+        process.on('exit', () => {
+            try {
+                // Attempt synchronous cleanup (limited options in 'exit' event)
+                this.removePidFromFileSync();
+                // Note: We can't release the lock here as it requires async operations
+                log.info('Process exiting, performed sync cleanup');
+            } catch (error) {
+                console.error('Error in exit cleanup:', error);
+            }
+        });
+
+        // Handle SIGINT (Ctrl+C)
+        process.on('SIGINT', async () => {
+            log.info('Received SIGINT signal, initiating graceful shutdown');
+            await performFullCleanup(0);
+        });
+
+        // Handle SIGTERM
+        process.on('SIGTERM', async () => {
+            log.info('Received SIGTERM signal, initiating graceful shutdown');
+            await performFullCleanup(0);
+        });
+
+        // Handle uncaught exceptions
+        process.on('uncaughtException', async (error) => {
+            log.error('Uncaught exception:', error);
+            await performFullCleanup(1);
+        });
+        
+        // Handle unhandled promise rejections
+        process.on('unhandledRejection', async (reason, promise) => {
+            log.error('Unhandled promise rejection:', reason);
+            // Don't exit, just log and clean up what we can
+            try {
+                await this.cleanupProfileResources().catch(() => {});
+            } catch (e) {
+                log.error('Error cleaning up after unhandled rejection:', e);
+            }
+        });
+    }
+
+    /**
+     * Acquire a write lock on a file
+     * @method acquireWriteLock
+     * @param {string} file - File to lock
+     * @param {Object} [options={}] - Lock options
+     * @returns {Promise<Function>} Release function
+     * @throws {Error} If lock cannot be acquired
+     */
+    async acquireWriteLock(file, options = {}) {
+        try {
+            // Don't try to acquire lock for CLI commands that don't need it
+            if (process.argv.includes('--profiles') && process.argv.includes('list')) {
+                return () => {};
+            }
+
+            return await lockfile.lock(file, {
+                retries: this.lockRetryCount,
+                retryWait: this.lockRetryDelay,
+                stale: 10000, // Consider lock stale after 10s
+                ...options
+            });
+        } catch (error) {
+            if (error.code === 'ELOCKED') {
+                throw new Error(`Could not acquire write lock for ${file}`);
+            }
+            throw error;
+        }
+    }
+
+    /**
+     * Check if there's a running instance
+     * @method hasRunningInstance
+     * @returns {Promise<boolean>} True if there's a running instance
+     */
+    async hasRunningInstance() {
+        try {
+            // Don't check for running instances for CLI commands that don't need it
+            if (process.argv.includes('--profiles') && process.argv.includes('list')) {
+                return false;
+            }
+
+            const pids = await this.readPids();
+            return pids.length > 0;
+        } catch (error) {
+            log.error('Error checking running instances:', error);
+            return false;
+        }
+    }
+
+    /**
+     * Check if an instance can handle a profile
+     * @method canHandleProfile
+     * @param {string} profile - Profile name to check
+     * @returns {Promise<boolean>} True if profile can be handled
+     */
+    async canHandleProfile(profile) {
+        try {
+            // Don't check profile handling for CLI commands that don't need it
+            if (process.argv.includes('--profiles') && process.argv.includes('list')) {
+                return false;
+            }
+
+            const lockData = await this.readLockFile();
+            for (const instance of Object.values(lockData.instances)) {
+                if (instance.profile === profile) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (error) {
+            log.error('Error checking profile handling:', error);
+            return false;
+        }
+    }
+
+    /**
+     * Read the lock file with enhanced error recovery and checksum verification
+     * @method readLockFile
+     * @private
+     * @returns {Promise<Object>} Lock file data
+     */
+    /**
+     * Read the lock file with enhanced error recovery
+     * @method readLockFile
+     * @private
+     * @returns {Promise<Object>} Lock file data
+     */
+    async readLockFile() {
+        const lockPath = this.instanceLockFile;
+        
+        // Use the error recovery utilities for more robust file reading
+        return await safeExecute(async () => {
+            // First try to read the file normally with verifyDataFileIntegrity
+            return await verifyDataFileIntegrity(
+                lockPath,
+                // Validation function
+                async (data) => {
+                    // Verify the data has a valid structure
+                    if (!data || typeof data !== 'object') {
+                        log.warn('Lock file has invalid structure');
+                        return false;
+                    }
+                    
+                    // Verify checksum if available
+                    if (data._checksum) {
+                        const { _checksum, ...lockDataWithoutChecksum } = data;
+                        const crypto = require('crypto');
+                        const calculatedChecksum = crypto
+                            .createHash('sha256')
+                            .update(JSON.stringify(lockDataWithoutChecksum, null, 2))
+                            .digest('hex');
+                        
+                        if (calculatedChecksum !== _checksum) {
+                            log.warn('Lock file checksum verification failed, possible corruption');
+                            return false;
+                        }
+                        
+                        // Remove checksum before returning the data
+                        delete data._checksum;
+                    }
+                    
+                    return true;
+                },
+                // Fallback function if file doesn't exist or validation fails
+                async () => {
+                    // Try to recover the lock file first
+                    const recovered = await recoverLockFile(lockPath);
+                    
+                    if (recovered) {
+                        try {
+                            // Read the recovered file
+                            const fs = require('fs').promises;
+                            const recoveredData = await fs.readFile(lockPath, 'utf8');
+                            return JSON.parse(recoveredData);
+                        } catch (e) {
+                            // If reading recovered file fails, create empty data
+                            log.error('Failed to read recovered lock file:', e);
+                        }
+                    }
+                    
+                    // Create new lock file with empty data as last resort
+                    const emptyLockData = {
+                        instances: {},
+                        lockHistory: [],
+                        created: new Date().toISOString(),
+                        recreatedReason: 'Recovery failure'
+                    };
+                    
+                    // Log diagnostic information
+                    await logDiagnostics(
+                        new RecoverableError('Lock file needed recreation', { 
+                            category: ErrorCategory.FILE_ERROR,
+                            context: { lockPath }
+                        }),
+                        'InstanceManager',
+                        'readLockFile'
+                    );
+                    
+                    log.warn('Creating new empty lock file');
+                    return emptyLockData;
+                }
+            );
+        }, {
+            category: ErrorCategory.FILE_ERROR,
+            throwOnError: false,
+            context: { lockPath },
+            recoverFn: async (error) => {
+                // Try to recover the lock file
+                await recoverLockFile(lockPath);
+                
+                // Return a basic valid structure
+                return { instances: {} };
+            }
+        }) || { instances: {} }; // Fallback to empty object if all else fails
+    }
+    
+    /**
+     * Clean up stale instances in lock data
+     * @method cleanupStaleInstances
+     * @private
+     * @param {Object} lockData - Lock data to clean up
+     * @returns {Promise<void>}
+     */
+    async cleanupStaleInstances(lockData) {
+        if (!lockData || !lockData.instances) return;
+        
+        const staleIds = [];
+        
+        for (const [id, instance] of Object.entries(lockData.instances)) {
+            // Skip if no pid
+            if (!instance || !instance.pid) {
+                staleIds.push(id);
+                continue;
+            }
+            
+            try {
+                // Check if process exists
+                process.kill(instance.pid, 0);
+                
+                // Process exists, but check if it's been active recently
+                if (instance.lastActive) {
+                    const lastActiveTime = new Date(instance.lastActive).getTime();
+                    const now = Date.now();
+                    const inactiveTimeMs = now - lastActiveTime;
+                    
+                    // If instance hasn't been active for more than 5 minutes, consider it stale
+                    if (inactiveTimeMs > 5 * 60 * 1000) {
+                        log.warn(`Instance ${id} (PID: ${instance.pid}) hasn't been active for ${Math.round(inactiveTimeMs / 1000 / 60)} minutes, marking as stale`);
+                        staleIds.push(id);
+                    }
+                }
+            } catch (error) {
+                // Process doesn't exist
+                log.warn(`Removing stale instance ${id} (PID: ${instance.pid}) - process not running`);
+                staleIds.push(id);
+            }
+        }
+        
+        // Remove all stale instances
+        for (const id of staleIds) {
+            delete lockData.instances[id];
+        }
+        
+        if (staleIds.length > 0) {
+            log.info(`Cleaned up ${staleIds.length} stale instances`);
+        }
+    }
+
+    /**
+     * Write to the lock file with atomic operations to prevent corruption
+     * Enhanced with robust error recovery and data integrity verification
+     * @method writeLockFile
+     * @private
+     * @param {Object} lockData - Data to write to lock file
+     * @returns {Promise<boolean>} Success status
+     */
+    async writeLockFile(lockData) {
+        // Use safeExecute for better error handling and recovery
+        return await safeExecute(async () => {
+            const path = require('path');
+            const fs = require('fs').promises;
+            const crypto = require('crypto');
+            
+            // Filenames for the atomic write operation
+            const lockFilePath = this.instanceLockFile;
+            const tempFilePath = `${lockFilePath}.tmp.${process.pid}.${Date.now()}`;
+            const backupFilePath = `${lockFilePath}.bak.${Date.now()}`;
+            
+            // Validate lock data with detailed error information
+            if (!lockData || typeof lockData !== 'object') {
+                throw createError('Invalid lock data format: not an object', {
+                    category: ErrorCategory.DATA_ERROR,
+                    context: { 
+                        dataType: typeof lockData,
+                        operation: 'writeLockFile' 
+                    }
+                });
+            }
+            
+            if (!lockData.instances || typeof lockData.instances !== 'object') {
+                // Auto-repair the data structure instead of failing
+                log.warn('Lock data missing instances property, auto-repairing');
+                lockData.instances = {};
+            }
+            
+            // Compute a checksum for data integrity verification
+            const dataStr = JSON.stringify(lockData);
+            const checksum = crypto.createHash('sha256').update(dataStr).digest('hex');
+            
+            // Add metadata and checksum to data before writing
+            const dataWithMetadata = {
+                ...lockData,
+                _meta: {
+                    timestamp: new Date().toISOString(),
+                    pid: process.pid,
+                    instanceId: this.instanceId,
+                    hostname: require('os').hostname(),
+                    username: require('os').userInfo().username,
+                    checksum,
+                    version: '2.0' // Increment version for tracking format changes
+                }
+            };
+            
+            // Stringify with checksum for atomic write
+            const dataWithChecksum = JSON.stringify(dataWithMetadata, null, 2);
+            
+            // Create a backup of the current file before making changes
+            let backupCreated = false;
+            if (await this.fileExists(lockFilePath)) {
+                try {
+                    await fs.copyFile(lockFilePath, backupFilePath);
+                    backupCreated = true;
+                    log.debug(`Created backup of lock file at ${backupFilePath}`);
+                } catch (backupError) {
+                    const recoverableError = createError('Failed to create backup of lock file', {
+                        category: ErrorCategory.FILE_ERROR,
+                        cause: backupError,
+                        context: { lockFilePath, backupFilePath }
+                    });
+                    recoverableError.log('warn');
+                    // Continue with write even if backup fails
+                }
+            }
+            
+            // Use multi-step atomic write with verification
+            try {
+                // Write to temp file first
+                await fs.writeFile(tempFilePath, dataWithChecksum, 'utf8');
+                
+                // Verify the temp file was written correctly
+                const tempData = await fs.readFile(tempFilePath, 'utf8');
+                const tempObj = JSON.parse(tempData);
+                
+                if (!tempObj._meta || tempObj._meta.checksum !== checksum) {
+                    throw createError('Temp file integrity check failed', {
+                        category: ErrorCategory.DATA_ERROR,
+                        context: { 
+                            expected: checksum,
+                            actual: tempObj._meta?.checksum,
+                            tempFilePath
+                        }
+                    });
+                }
+                
+                // Atomically rename temp file to target file
+                await fs.rename(tempFilePath, lockFilePath);
+                log.debug('Lock file updated with atomic operation');
+                
+                // Final verification to ensure data integrity
+                const verifySuccess = await this.verifyLockFileIntegrity(lockFilePath, checksum);
+                
+                if (!verifySuccess) {
+                    throw createError('Final lock file verification failed', {
+                        category: ErrorCategory.DATA_ERROR,
+                        context: { lockFilePath, checksum }
+                    });
+                }
+                
+                // Clean up old backups periodically (keep most recent 3)
+                this.cleanupOldBackups(lockFilePath, 3).catch(e => {
+                    log.warn('Error cleaning up old backups:', e);
+                });
+                
+                log.debug('Lock file written successfully with data integrity verification');
+                return true;
+            } catch (writeError) {
+                // Enhanced error handling for write failures
+                const recoverableError = createError('Error during atomic write of lock file', {
+                    category: ErrorCategory.FILE_ERROR,
+                    cause: writeError,
+                    context: { 
+                        lockFilePath, 
+                        tempFilePath,
+                        backupCreated,
+                        backupFilePath
+                    }
+                });
+                recoverableError.log('error');
+                
+                // Attempt recovery with direct write as fallback
+                try {
+                    await fs.writeFile(lockFilePath, dataWithChecksum, 'utf8');
+                    log.info('Lock file updated with direct write (fallback method)');
+                    return true;
+                } catch (directWriteError) {
+                    // If direct write also fails, try to restore from backup
+                    if (backupCreated) {
+                        try {
+                            await fs.copyFile(backupFilePath, lockFilePath);
+                            log.info('Restored lock file from backup after write failure');
+                            return false;
+                        } catch (restoreError) {
+                            log.error('Failed to restore from backup after write failure:', restoreError);
+                        }
+                    }
+                    throw createError('All lock file write methods failed', {
+                        category: ErrorCategory.FILE_ERROR,
+                        cause: directWriteError,
+                        context: { lockFilePath, tempFilePath, backupFilePath }
+                    });
+                }
+            } finally {
+                // Always clean up temp file
+                try {
+                    await fs.unlink(tempFilePath).catch(() => {}); // Ignore errors in cleanup
+                } catch (cleanupError) {}
+            }
+        }, {
+            category: ErrorCategory.FILE_ERROR,
+            throwOnError: true,
+            context: { 
+                instanceId: this.instanceId,
+                pid: process.pid,
+                operation: 'writeLockFile' 
+            },
+            recoverFn: async (error) => {
+                // Log diagnostic information for later analysis
+                await logDiagnostics(
+                    error,
+                    'InstanceManager',
+                    'writeLockFile'
+                );
+                
+                // Try to recover lock file if it might be damaged
+                try {
+                    await recoverLockFile(this.instanceLockFile);
+                } catch (recoveryError) {
+                    log.error('Failed to recover lock file after write error:', recoveryError);
+                }
+            }
+        });
+    }
+    
+    /**
+     * Verify lock file integrity by reading and checking checksum
+     * @method verifyLockFileIntegrity
+     * @private 
+     * @param {string} filePath - Path to the lock file
+     * @param {string} expectedChecksum - Expected checksum value
+     * @returns {Promise<boolean>} True if verification succeeded
+     */
+    async verifyLockFileIntegrity(filePath, expectedChecksum) {
+        try {
+            const fs = require('fs').promises;
+            const fileData = await fs.readFile(filePath, 'utf8');
+            const fileObj = JSON.parse(fileData);
+            
+            return fileObj && 
+                   fileObj._meta && 
+                   fileObj._meta.checksum === expectedChecksum;
+        } catch (error) {
+            log.error('Error verifying lock file integrity:', error);
+            return false;
+        }
+    }
+    
+    /**
+     * Clean up old backup files, keeping only the most recent ones
+     * @method cleanupOldBackups
+     * @private
+     * @param {string} basePath - Path to the original file
+     * @param {number} keepCount - Number of recent backups to keep
+     * @returns {Promise<void>}
+     */
+    async cleanupOldBackups(basePath, keepCount = 3) {
+        try {
+            const fs = require('fs').promises;
+            const path = require('path');
+            const baseDir = path.dirname(basePath);
+            const baseName = path.basename(basePath);
+            
+            // List all files in the directory
+            const files = await fs.readdir(baseDir);
+            
+            // Filter to find backup files matching our pattern
+            const backupPattern = `${baseName}.bak`;
+            const backupFiles = files
+                .filter(file => file.startsWith(backupPattern))
+                .map(file => ({
+                    name: file,
+                    path: path.join(baseDir, file),
+                    // Extract timestamp from filename or use file stats
+                    timestamp: file.split('.').pop() || 0
+                }));
+                
+            // Sort by timestamp descending (newest first)
+            backupFiles.sort((a, b) => b.timestamp - a.timestamp);
+            
+            // Keep the most recent 'keepCount' files, delete the rest
+            const filesToDelete = backupFiles.slice(keepCount);
+            
+            for (const file of filesToDelete) {
+                try {
+                    await fs.unlink(file.path);
+                    log.debug(`Deleted old backup file: ${file.name}`);
+                } catch (unlinkError) {
+                    log.warn(`Failed to delete old backup file ${file.name}:`, unlinkError);
+                }
+            }
+        } catch (error) {
+            log.warn('Error cleaning up old backup files:', error);
+        }
+    }
+
+    /**
+     * Write to the lock file atomically as part of a transaction
+     * Enhanced with comprehensive error recovery and integrity verification
+     * @method writeLockFileAtomic
+     * @private
+     * @param {Object} lockData - Data to write to lock file
+     * @param {Object} transaction - Transaction object
+     * @returns {Promise<boolean>} Success status
+     */
+    async writeLockFileAtomic(lockData, transaction) {
+        if (!transaction || !transaction.id) {
+            throw createError('Invalid transaction object for atomic write', {
+                category: ErrorCategory.OPERATION_ERROR,
+                context: { operation: 'writeLockFileAtomic' }
+            });
+        }
+
+        // Use the resource lock to ensure exclusive access
+        return await this.lockFileLock(async () => {
+            const path = require('path');
+            const fs = require('fs').promises;
+            const crypto = require('crypto');
+            
+            // Filenames for the atomic write operation with unique identifiers
+            const lockFilePath = this.instanceLockFile;
+            const tempFilePath = `${lockFilePath}.tmp.${process.pid}.${Date.now()}.${transaction.id}`;
+            const backupFilePath = `${lockFilePath}.bak.${transaction.id}.${Date.now()}`;
+            
+            // Use safeExecute for better error handling
+            return await safeExecute(async () => {
+                // Validate lock data with detailed error information
+                if (!lockData || typeof lockData !== 'object') {
+                    throw createError('Invalid lock data format: not an object', {
+                        category: ErrorCategory.DATA_ERROR,
+                        context: { 
+                            dataType: typeof lockData,
+                            transactionId: transaction.id 
+                        }
+                    });
+                }
+                
+                if (!lockData.instances || typeof lockData.instances !== 'object') {
+                    // Auto-repair the data structure instead of failing
+                    log.warn(`Transaction ${transaction.id}: Lock data missing instances property, auto-repairing`);
+                    lockData.instances = {};
+                }
+                
+                // Compute a checksum for data integrity verification
+                const dataStr = JSON.stringify(lockData);
+                const checksum = crypto.createHash('sha256').update(dataStr).digest('hex');
+                
+                // Add rich metadata and checksum to data before writing
+                const dataWithMetadata = {
+                    ...lockData,
+                    _meta: {
+                        timestamp: new Date().toISOString(),
+                        pid: process.pid,
+                        instanceId: this.instanceId,
+                        hostname: require('os').hostname(),
+                        username: require('os').userInfo().username,
+                        transactionId: transaction.id,
+                        transactionName: transaction.name,
+                        checksum,
+                        version: '2.0' // Increment version for tracking format changes
+                    }
+                };
+                
+                // Stringify with checksum for atomic write
+                const dataWithChecksum = JSON.stringify(dataWithMetadata, null, 2);
+                
+                // Add metadata to transaction for tracking and debugging
+                transaction.addMetadata('writeLockFile', {
+                    path: lockFilePath,
+                    timestamp: Date.now(),
+                    checksum,
+                    tempFile: tempFilePath,
+                    backupFile: backupFilePath
+                });
+                
+                // Create a snapshot for rollback if needed
+                let previousData = null;
+                let backupCreated = false;
+                
+                if (await this.fileExists(lockFilePath)) {
+                    try {
+                        // Create backup for transaction safety
+                        await fs.copyFile(lockFilePath, backupFilePath);
+                        backupCreated = true;
+                        previousData = await fs.readFile(lockFilePath, 'utf8');
+                        transaction.saveSnapshot('previousLockData', previousData);
+                        log.debug(`Transaction ${transaction.id}: Created lock file backup at ${backupFilePath}`);
+                    } catch (backupError) {
+                        const recoverableError = createError('Failed to create lock file backup for transaction', {
+                            category: ErrorCategory.FILE_ERROR,
+                            cause: backupError,
+                            context: { 
+                                transactionId: transaction.id,
+                                lockFilePath,
+                                backupFilePath 
+                            }
+                        });
+                        recoverableError.log('warn');
+                        // Continue even if backup fails
+                    }
+                } else {
+                    log.warn(`Transaction ${transaction.id}: Lock file does not exist before writing`);
+                }
+                
+                // Multi-phase atomic write with verification
+                try {
+                    // Phase 1: Write to temp file first
+                    await fs.writeFile(tempFilePath, dataWithChecksum, 'utf8');
+                    
+                    // Phase 2: Verify temp file integrity
+                    const tempData = await fs.readFile(tempFilePath, 'utf8');
+                    let tempObj;
+                    try {
+                        tempObj = JSON.parse(tempData);
+                    } catch (parseError) {
+                        throw createError('Temp file contains invalid JSON', {
+                            category: ErrorCategory.DATA_ERROR,
+                            cause: parseError,
+                            context: { tempFilePath, transactionId: transaction.id }
+                        });
+                    }
+                    
+                    if (!tempObj._meta || tempObj._meta.checksum !== checksum) {
+                        throw createError('Temp file integrity check failed', {
+                            category: ErrorCategory.DATA_ERROR,
+                            context: { 
+                                expected: checksum,
+                                actual: tempObj._meta?.checksum,
+                                tempFilePath,
+                                transactionId: transaction.id
+                            }
+                        });
+                    }
+                    
+                    // Phase 3: Atomically replace the original file with our temporary file
+                    await fs.rename(tempFilePath, lockFilePath);
+                    log.debug(`Transaction ${transaction.id}: Lock file updated with atomic operation`);
+                } catch (writeError) {
+                    // Enhanced error handling for write failures
+                    const recoverableError = createError('Error during atomic write of lock file for transaction', {
+                        category: ErrorCategory.FILE_ERROR,
+                        cause: writeError,
+                        context: { 
+                            transactionId: transaction.id,
+                            lockFilePath, 
+                            tempFilePath,
+                            backupCreated,
+                            backupFilePath
+                        }
+                    });
+                    recoverableError.log('error');
+                    
+                    // Try to clean up temp file if it exists
+                    try {
+                        await fs.unlink(tempFilePath).catch(() => {});
+                    } catch (unlinkError) {}
+                    
+                    throw writeError; // Re-throw for transaction handling
+                }
+                
+                // Phase 4: Verify write was successful by reading back
+                const verifySuccess = await this.verifyLockFileWrite(lockFilePath, checksum);
+                
+                if (!verifySuccess) {
+                    throw createError('Lock file verification failed after write', {
+                        category: ErrorCategory.FILE_ERROR,
+                        context: { 
+                            transactionId: transaction.id, 
+                            checksum,
+                            lockFilePath 
+                        }
+                    });
+                }
+                
+                log.debug(`Transaction ${transaction.id}: Lock file written successfully with checksum ${checksum}`);
+                return true;
+            }, {
+                category: ErrorCategory.FILE_ERROR,
+                throwOnError: true,
+                context: { 
+                    transactionId: transaction.id, 
+                    transactionName: transaction.name,
+                    lockFilePath, 
+                    tempFilePath,
+                    operation: 'writeLockFileAtomic'
+                },
+                recoverFn: async (error) => {
+                    // Log diagnostic information
+                    await logDiagnostics(
+                        error,
+                        'InstanceManager',
+                        `writeLockFileAtomic:${transaction.id}`
+                    );
+                    
+                    // Add detailed diagnostic information to transaction
+                    transaction.addMetadata('lockWriteError', {
+                        error: error.message,
+                        stack: error.stack,
+                        cause: error.cause?.message,
+                        timestamp: Date.now(),
+                        category: error.category || 'UNKNOWN'
+                    });
+                    
+                    // Try to clean up temp file if it exists
+                    try {
+                        await fs.unlink(tempFilePath).catch(() => {});
+                    } catch (unlinkError) {
+                        // Ignore cleanup errors
+                    }
+                    
+                    // Try to restore from backup if available (using snapshot first, then backup file)
+                    const previousData = transaction.getSnapshot('previousLockData');
+                    if (previousData) {
+                        try {
+                            log.info(`Transaction ${transaction.id}: Attempting to restore lock file from snapshot`);
+                            await fs.writeFile(lockFilePath, previousData, 'utf8');
+                            return; // Successfully restored
+                        } catch (restoreError) {
+                            log.error(`Transaction ${transaction.id}: Failed to restore lock file from snapshot:`, restoreError);
+                        }
+                    }
+                    
+                    // If snapshot restore failed, try the backup file
+                    if (await this.fileExists(backupFilePath)) {
+                        try {
+                            log.info(`Transaction ${transaction.id}: Attempting to restore lock file from backup file`);
+                            await fs.copyFile(backupFilePath, lockFilePath);
+                        } catch (restoreError) {
+                            log.error(`Transaction ${transaction.id}: Failed to restore lock file from backup file:`, restoreError);
+                            
+                            // Last resort: try to recover the lock file itself
+                            try {
+                                await recoverLockFile(lockFilePath);
+                            } catch (recoveryError) {
+                                log.error(`Transaction ${transaction.id}: All recovery attempts failed:`, recoveryError);
+                            }
+                        }
+                    }
+                }
+            });
+        });
+    }
+    
+    /**
+     * Verify a lock file write by reading back and checking the checksum
+     * @method verifyLockFileWrite
+     * @private
+     * @param {string} filePath - Path to the lock file
+     * @param {string} expectedChecksum - Expected checksum
+     * @returns {Promise<boolean>} True if verification succeeded
+     * @returns {Promise<boolean>} Whether verification was successful
+     */
+    async verifyLockFileWrite(filePath, expectedChecksum) {
+        try {
+            const fs = require('fs').promises;
+            const data = await fs.readFile(filePath, 'utf8');
+            const parsedData = JSON.parse(data);
+            
+            if (!parsedData || !parsedData._checksum) {
+                return false;
+            }
+            
+            return parsedData._checksum === expectedChecksum;
+        } catch (error) {
+            log.error('Error verifying lock file write:', error);
+            return false;
+        }
+    }
+
+    /**
+     * Check if a file exists without throwing exceptions
+     * @method fileExists
+     * @private
+     * @param {string} filePath - Path to check
+     * @returns {Promise<boolean>} True if file exists
+     */
+    async fileExists(filePath) {
+        try {
+            await fs.promises.access(filePath);
+            return true;
+        } catch (error) {
+            return false;
+        }
+    }
+
+    /**
+     * Get the PID file path
+     * @method getPidFilePath
+     * @private
+     * @returns {string} Path to PID file
+     */
+    getPidFilePath() {\n        const path = require('path');\n        const os = require('os');\n        let appName = 'desk-tray';\n        let userDataPath;\n        \n        // Get app name safely\n        try {\n            const packageJson = require('../../package.json');\n            appName = packageJson.name || appName;\n        } catch (error) {\n            log.warn('Could not load package.json for PID file path, using default', error);\n        }\n        \n        // Get userData path safely\n        try {\n            if (app && typeof app.getPath === 'function') {\n                userDataPath = app.getPath('userData');\n            } else {\n                userDataPath = path.join(os.tmpdir(), appName);\n                log.warn(`Could not get userData path, using temporary path: ${userDataPath}`);\n            }\n        } catch (error) {\n            userDataPath = path.join(os.tmpdir(), appName);\n            log.warn(`Error getting userData path, using temporary path: ${userDataPath}`, error);\n        }\n        \n        return path.join(userDataPath, `${appName}.pids.json`);
+    }
+
+    /**
+     * Ensure PID file exists
+     * @method ensurePidFile
+     * @private
+     * @returns {Promise<void>}
+     */
+    async ensurePidFile() {
+        try {
+            const fs = require('fs').promises;
+            const pidPath = this.getPidFilePath();
+
+            // Ensure parent directory exists
+            const path = require('path');
+            const dirPath = path.dirname(pidPath);
+            await fs.mkdir(dirPath, { recursive: true });
+
+            // Create file if it doesn't exist
+            try {
+                await fs.access(pidPath);
+            } catch (error) {
+                if (error.code === 'ENOENT') {
+                    await fs.writeFile(pidPath, '[]', 'utf8');
+                    log.info(`Created new PID file: ${pidPath}`);
+                } else {
+                    throw error;
+                }
+            }
+        } catch (error) {
+            log.error('Error ensuring PID file exists:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Read PIDs from file
+     * @method readPids
+     * @private
+     * @returns {Promise<Array<number>>} Array of PIDs
+     */
+    async readPids() {
+        try {
+            // Ensure file exists
+            await this.ensurePidFile();
+
+            const fs = require('fs').promises;
+            const pidPath = this.getPidFilePath();
+
+            // Acquire lock for reading
+            const lockfile = require('proper-lockfile');
+            const release = await lockfile.lock(pidPath, {
+                stale: 10000,
+                retries: {
+                    retries: 5,
+                    factor: 2,
+                    minTimeout: 1000,
+                    maxTimeout: 5000,
+                    randomize: true
+                }
+            });
+
+            try {
+                const data = await fs.readFile(pidPath, 'utf8');
+                const pids = JSON.parse(data);
+
+                // Clean up invalid PIDs
+                const validPids = pids.filter(pid => {
+                    try {
+                        process.kill(pid, 0);
+                        return true;
+                    } catch (error) {
+                        log.info(`Removing invalid PID: ${pid}`);
+                        return false;
+                    }
+                });
+
+                // If we cleaned up any PIDs, save the file
+                if (validPids.length !== pids.length) {
+                    await fs.writeFile(pidPath, JSON.stringify(validPids, null, 2), 'utf8');
+                }
+
+                return validPids;
+            } finally {
+                await release();
+            }
+        } catch (error) {
+            log.error('Error reading PID file:', error);
+            return [];
+        }
+    }
+
+    /**
+     * Write PIDs to file
+     * @method writePids
+     * @private
+     * @param {Array<number>} pids - Array of PIDs to write
+     * @returns {Promise<void>}
+     */
+    async writePids(pids) {
+        try {
+            // Ensure file exists
+            await this.ensurePidFile();
+
+            const fs = require('fs').promises;
+            const pidPath = this.getPidFilePath();
+
+            // Acquire lock before writing
+            const lockfile = require('proper-lockfile');
+            const release = await lockfile.lock(pidPath, {
+                stale: 10000,
+                retries: {
+                    retries: 5,
+                    factor: 2,
+                    minTimeout: 1000,
+                    maxTimeout: 5000,
+                    randomize: true
+                }
+            });
+
+            try {
+                await fs.writeFile(pidPath, JSON.stringify(pids, null, 2), 'utf8');
+                log.info(`Updated PID file with ${pids.length} PIDs`);
+            } finally {
+                await release();
+            }
+        } catch (error) {
+            log.error('Error writing PID file:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Remove PID from file
+     * @method removePidFromFile
+     * @private
+     * @returns {Promise<void>}
+     */
+    async removePidFromFile() {
+        try {
+            const pids = await this.readPids();
+            const newPids = pids.filter(pid => pid !== process.pid);
+            
+            if (newPids.length !== pids.length) {
+                await this.writePids(newPids);
+                log.info(`Removed PID ${process.pid} from PID file`);
+            }
+        } catch (error) {
+            log.error('Error removing PID from file:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Write PID to file
+     * @method writePidFile
+     * @private
+     * @returns {Promise<void>}
+     */
+    async writePidFile() {
+        try {
+            const pids = await this.readPids();
+            if (!pids.includes(process.pid)) {
+                pids.push(process.pid);
+                await this.writePids(pids);
+                log.info(`Added PID ${process.pid} to PID file`);
+            }
+        } catch (error) {
+            log.error('Error writing PID to file:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Reset instance locks
+     * @method resetLock
+     * @returns {Promise<void>}
+     */
+    async resetLock() {
+        try {
+            // Kill all processes in PID file
+            const pids = await this.readPids();
+            for (const pid of pids) {
+                try {
+                    process.kill(pid);
+                } catch (error) {
+                    log.warn(`Could not kill process ${pid}:`, error);
+                }
+            }
+
+            // Reset PID file to empty array
+            await this.writePids([]);
+
+            // Reset instance lock file to empty object
+            await this.writeLockFile({ instances: {} });
+
+            // Re-initialize directories
+            await this.ensureDirectories();
+
+            log.info('Instance locks reset');
+        } catch (error) {
+            log.error('Error resetting instance locks:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Unregister a provider session
+     * @method unregisterSession
+     * @param {Object} provider - Provider instance
+     * @param {string} [profile] - Optional profile name (if not provided, uses provider.profile)
+     */
+    async unregisterSession(provider, profile) {
+        try {
+            // Get provider name and profile
+            const providerName = provider.getName();
+            const profileName = profile || provider.profile;
+            
+            if (!profileName) {
+                log.warn(`Cannot unregister session - no profile for ${providerName}`);
+                return;
+            }
+            
+            const sessionKey = `${providerName}:${profileName}`;
+            log.info(`Processing unregister for session ${sessionKey}`);
+            
+            if (this.providerSessions.has(sessionKey)) {
+                log.info(`Found session for ${sessionKey}, starting cleanup`);
+                const session = this.providerSessions.get(sessionKey);
+
+                // Delete session first to prevent hanging
+                this.providerSessions.delete(sessionKey);
+                log.info(`Removed session from registry: ${sessionKey}`);
+
+                // Destroy tray icon
+                try {
+                    const windowName = provider.getWindowName(profileName);
+                    const trayService = require('./tray.service');
+                    trayService.destroyTray(windowName);
+                    log.info(`Destroyed tray icon for ${windowName}`);
+                } catch (error) {
+                    log.error(`Error destroying tray for ${sessionKey}:`, error);
+                }
+
+                // Close the window if it exists
+                try {
+                    const windowService = require('./window.service');
+                    const windowName = provider.getWindowName(profileName);
+                    const { window } = windowService.resolveWindow(windowName);
+                    if (window && !window.isDestroyed()) {
+                        window.forceClose = true;
+                        window.close();
+                        log.info(`Closed window for ${windowName}`);
+                    }
+                } catch (error) {
+                    log.error(`Error closing window for ${sessionKey}:`, error);
+                }
+
+                // Try to clean up session data, but don't wait for it
+                try {
+                    log.info(`Attempting to clear session data for ${sessionKey}`);
+                    // Don't await this - it might be hanging
+                    session.clearData().catch(error => {
+                        log.error(`Error clearing session data for ${sessionKey}:`, error);
+                    });
+                    log.info(`Session data cleanup initiated for ${sessionKey}`);
+                } catch (error) {
+                    log.error(`Error initiating session data cleanup for ${sessionKey}:`, error);
+                }
+
+                // Try to remove listeners, but don't wait for it
+                try {
+                    session.removeAllListeners();
+                    log.info(`Removed all session listeners for ${sessionKey}`);
+                } catch (error) {
+                    log.error(`Error removing session listeners for ${sessionKey}:`, error);
+                }
+                
+                // Emit event when no sessions remain
+                if (this.providerSessions.size === 0) {
+                    log.info('All sessions closed, emitting last-session-closed event');
+                    const { app } = require('electron');
+                    app.emit('last-session-closed');
+                }
+            } else {
+                log.warn(`No session found for ${sessionKey}`);
+                
+                // Still try to close window and destroy tray
+                try {
+                    const windowName = provider.getWindowName(profileName);
+                    
+                    // Destroy tray
+                    try {
+                        const trayService = require('./tray.service');
+                        trayService.destroyTray(windowName);
+                        log.info(`Destroyed tray icon for ${windowName} (no session)`);
+                    } catch (trayError) {
+                        log.error(`Error destroying tray for ${windowName} (no session):`, trayError);
+                    }
+                    
+                    // Close window
+                    try {
+                        const windowService = require('./window.service');
+                        const { window } = windowService.resolveWindow(windowName);
+                        if (window && !window.isDestroyed()) {
+                            window.forceClose = true;
+                            window.close();
+                            log.info(`Closed window for ${windowName} (no session)`);
+                        }
+                    } catch (windowError) {
+                        log.error(`Error closing window for ${windowName} (no session):`, windowError);
+                    }
+                } catch (error) {
+                    log.error(`Error handling cleanup for ${sessionKey} (no session):`, error);
+                }
+            }
+            
+            log.info(`Unregister session completed for ${sessionKey}`);
+            return true;
+        } catch (error) {
+            log.error(`Error unregistering session:`, error);
+            
+            // Try to get session key even after error
+            let sessionKey = null;
+            try {
+                const providerName = provider.getName();
+                const profileName = profile || provider.profile;
+                if (providerName && profileName) {
+                    sessionKey = `${providerName}:${profileName}`;
+                    this.providerSessions.delete(sessionKey);
+                    log.info(`Force-removed session from registry: ${sessionKey}`);
+                    
+                    // Check if this was the last session
+                    if (this.providerSessions.size === 0) {
+                        log.info('All sessions closed (after error), emitting last-session-closed event');
+                        const { app } = require('electron');
+                        app.emit('last-session-closed');
+                    }
+                    
+                    return true;
+                }
+            } catch (keyError) {
+                log.error('Error getting session key for cleanup:', keyError);
+            }
+            
+            return false;
+        }
+    }
+
+    /**
+     * Delegate a command to an existing instance
+     * @method delegateCommand
+     * @param {Array<string>} args - Command line arguments to delegate
+     * @param {string} [targetProfile] - Optional profile to target for delegation
+     * @returns {Promise<boolean>} True if command was delegated successfully
+     */
+    async delegateCommand(args, targetProfile = null) {
+        try {
+            if (!Array.isArray(args)) {
+                log.error('Invalid arguments for command delegation', { args });
+                return false;
+            }
+
+            log.info('Delegating command:', { args, targetProfile });
+
+            // Get running instances
+            const instances = await this.getInstances();
+            
+            if (!instances || instances.length === 0) {
+                log.error('No instances found for command delegation');
+                return false;
+            }
+            
+            // Find target instance
+            let targetInstance = null;
+            
+            if (targetProfile) {
+                // Find instance with matching profile
+                log.info(`Looking for instance with profile: ${targetProfile}`);
+                
+                targetInstance = instances.find(instance => {
+                    try {
+                        // Check if process is still running
+                        process.kill(instance.pid, 0);
+                        
+                        // Check if profile matches
+                        const profileMatches = instance.profile === targetProfile;
+                        
+                        if (profileMatches) {
+                            log.info(`Found matching instance for profile ${targetProfile}: ${instance.id} (PID: ${instance.pid})`);
+                        }
+                        
+                        return profileMatches;
+                    } catch (error) {
+                        log.debug(`Instance ${instance.id} (PID: ${instance.pid}) is not running`);
+                        return false;
+                    }
+                });
+            } else {
+                // Use first running instance
+                log.info('No target profile specified, looking for any running instance');
+                
+                targetInstance = instances.find(instance => {
+                    try {
+                        // Check if process is still running
+                        process.kill(instance.pid, 0);
+                        log.info(`Found running instance: ${instance.id} (PID: ${instance.pid})`);
+                        return true;
+                    } catch (error) {
+                        log.debug(`Instance ${instance.id} (PID: ${instance.pid}) is not running`);
+                        return false;
+                    }
+                });
+            }
+
+            if (!targetInstance) {
+                log.error('No suitable instance found for delegation', { targetProfile });
+                return false;
+            }
+
+            // Delegate command to target instance
+            log.info(`Delegating command to instance ${targetInstance.id} (PID: ${targetInstance.pid})`);
+            return await this.delegateCommandToInstance(targetInstance.id, args);
+        } catch (error) {
+            log.error('Error delegating command:', error);
+            return false;
+        }
+    }
+
+    /**
+     * Delegate a command to a specific instance with enhanced error handling and recovery
+     * @method delegateCommandToInstance
+     * @param {string} instanceId - ID of the instance to delegate to
+     * @param {Array<string>} args - Command line arguments to delegate
+     * @returns {Promise<boolean>} True if command was delegated successfully
+     */
+    async delegateCommandToInstance(instanceId, args) {
+        // Use our error recovery utility for better error handling
+        return await safeExecute(async () => {
+            // Input validation
+            if (!instanceId || !Array.isArray(args)) {
+                throw createError('Invalid parameters for command delegation', {
+                    category: ErrorCategory.VALIDATION_ERROR,
+                    context: { instanceId, args }
+                });
+            }
+            
+            log.info(`Delegating command to instance ${instanceId}:`, args);
+            
+            // Get instance details
+            const instances = await this.getInstances();
+            const targetInstance = instances.find(instance => instance.id === instanceId);
+            
+            if (!targetInstance) {
+                throw createError(`Instance ${instanceId} not found`, {
+                    category: ErrorCategory.NOT_FOUND_ERROR,
+                    context: { instanceId }
+                });
+            }
+
+            // If target is current instance, execute locally
+            if (targetInstance.pid === process.pid) {
+                log.info('Target is current instance, executing locally');
+                try {
+                    // Ensure CLI module is properly initialized
+                    const cli = require('../cli');
+                    
+                    // Execute command locally
+                    const result = await cli.execute(args);
+                    log.info('Local command execution result:', result);
+                    return result && result.success === true;
+                } catch (error) {
+                    logDiagnostics(error, 'InstanceManager', 'local-command-execution');
+                    throw createError('Error executing command locally', {
+                        category: ErrorCategory.COMMAND_ERROR,
+                        cause: error,
+                        context: { args }
+                    });
+                }
+            }
+
+            // Verify target process exists
+            try {
+                process.kill(targetInstance.pid, 0);
+            } catch (error) {
+                throw createError(`Target instance process ${targetInstance.pid} does not exist`, {
+                    category: ErrorCategory.PROCESS_ERROR,
+                    cause: error,
+                    context: { targetPid: targetInstance.pid }
+                });
+            }
+
+            // Create pipe name for target instance
+            const packageJson = require('../../package.json');
+            const pipeName = targetInstance.pipeName || `\\?\pipe\${packageJson.name}-${targetInstance.pid}`;
+
+            // Create a unique request ID for tracking
+            const requestId = `req-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+            
+            // Store this request in our pending requests map for tracking and cleanup
+            this.pendingIpcRequests = this.pendingIpcRequests || new Map();
+            
+            // Use a Promise with proper tracking and cleanup
+            return await new Promise((resolve, reject) => {
+                const net = require('net');
+                let isResolved = false;
+                let responseData = '';
+                let client = null;
+                let connectionTimeout = null;
+                
+                // Store the request in our tracking map
+                this.pendingIpcRequests.set(requestId, {
+                    timestamp: Date.now(),
+                    resolve,
+                    reject,
+                    instanceId,
+                    args
+                });
+
+                // Helper function for cleanup
+                const cleanupRequest = () => {
+                    if (connectionTimeout) {
+                        clearTimeout(connectionTimeout);
+                        connectionTimeout = null;
+                    }
+                    this.pendingIpcRequests.delete(requestId);
+                    if (client) {
+                        try { client.end(); } catch {}
+                        try { client.destroy(); } catch {}
+                    }
+                };
+
+                try {
+                    // Connect with socket connection timeout
+                    client = net.connect(pipeName);
+                    
+                    // Set a connection timeout (5 seconds)
+                    connectionTimeout = setTimeout(() => {
+                        if (!isResolved) {
+                            isResolved = true;
+                            log.error(`Connection timeout connecting to instance ${instanceId}`);
+                            cleanupRequest();
+                            resolve(false);
+                        }
+                    }, 5000);
+                    
+                    // Handle successful connection
+                    client.on('connect', () => {
+                        // Clear connection timeout since we're connected
+                        if (connectionTimeout) {
+                            clearTimeout(connectionTimeout);
+                            connectionTimeout = null;
+                        }
+                        
+                        log.info(`Connected to instance ${instanceId} pipe`);
+                        
+                        // Send command to target instance
+                        const message = {
+                            type: 'delegate-command',
+                            requestId,
+                            targetPid: targetInstance.pid,
+                            args,
+                            timestamp: Date.now(),
+                            sender: {
+                                pid: process.pid,
+                                instanceId: this.instanceId
+                            }
+                        };
+                        
+                        client.write(JSON.stringify(message));
+                        log.info(`Sent command to instance ${instanceId} with requestId: ${requestId}`);
+                        
+                        // Set a new timeout for response (30 seconds max)
+                        connectionTimeout = setTimeout(() => {
+                            if (!isResolved) {
+                                isResolved = true;
+                                log.error(`Response timeout for request ${requestId} to instance ${instanceId}`);
+                                cleanupRequest();
+                                resolve(false);
+                            }
+                        }, 30000);
+                    });
+
+                    // Handle data with improved error handling
+                    client.on('data', (data) => {
+                        try {
+                            // Append new data to accumulated response
+                            responseData += data.toString();
+                            
+                            // Try to parse the complete JSON response
+                            try {
+                                const response = JSON.parse(responseData);
+                                
+                                // Validate the response format
+                                if (!response || typeof response !== 'object' || !response.type) {
+                                    throw new Error('Invalid response format');
+                                }
+                                
+                                log.info(`Received response from instance ${instanceId}:`, response);
+                                
+                                if (!isResolved) {
+                                    isResolved = true;
+                                    cleanupRequest();
+                                    resolve(response.success === true);
+                                }
+                            } catch (parseError) {
+                                // Might be incomplete JSON data - continue accumulating
+                                if (!(parseError instanceof SyntaxError)) {
+                                    // If it's not a syntax error, something else is wrong
+                                    log.error(`Error parsing response:`, parseError);
+                                }
+                            }
+                        } catch (dataError) {
+                            log.error(`Error processing response data:`, dataError);
+                            if (!isResolved) {
+                                isResolved = true;
+                                cleanupRequest();
+                                resolve(false);
+                            }
+                        }
+                    });
+
+                    // Improved error handling
+                    client.on('error', (error) => {
+                        logDiagnostics(error, 'InstanceManager', `ipc-client-error:${requestId}`);
+                        log.error(`Error in IPC connection to instance ${instanceId}:`, error);
+                        if (!isResolved) {
+                            isResolved = true;
+                            cleanupRequest();
+                            resolve(false);
+                        }
+                    });
+
+                    // Handle connection end
+                    client.on('end', () => {
+                        log.info(`Connection to instance ${instanceId} ended`);
+                        if (!isResolved) {
+                            isResolved = true;
+                            
+                            // Attempt to parse any final response data
+                            try {
+                                const response = JSON.parse(responseData);
+                                cleanupRequest();
+                                resolve(response.success === true);
+                            } catch (error) {
+                                log.error(`Failed to parse response data on connection end:`, error);
+                                cleanupRequest();
+                                resolve(false);
+                            }
+                        }
+                    });
+
+                    // Handle connection close
+                    client.on('close', () => {
+                        log.debug(`Connection to instance ${instanceId} closed`);
+                        if (!isResolved) {
+                            isResolved = true;
+                            cleanupRequest();
+                            resolve(false);
+                        }
+                    });
+                } catch (connectionError) {
+                    logDiagnostics(connectionError, 'InstanceManager', `ipc-connection-setup:${requestId}`);
+                    log.error(`Error setting up connection to instance ${instanceId}:`, connectionError);
+                    if (!isResolved) {
+                        isResolved = true;
+                        cleanupRequest();
+                        resolve(false);
+                    }
+                }
+            });
+        }, {
+            category: ErrorCategory.IPC_ERROR,
+            context: { instanceId, argsCount: args?.length },
+            // Return false on error to indicate delegation failure
+            recoverFn: (error) => {
+                log.error('Error in delegateCommandToInstance recovered:', error);
+                return false;
+            }
+        });
+    }
+
+    /**
+     * Check if a session exists in any running instance
+     * @method sessionExists
+     * @param {string} provider - Provider name
+     * @param {string} profile - Profile name
+     * @returns {Promise<boolean>} True if session exists
+     */
+    async sessionExists(provider, profile) {
+        try {
+            const sessionKey = `${provider}:${profile || 'default'}`;
+            const lockData = await this.readLockFile();
+            
+            for (const instance of Object.values(lockData.instances)) {
+                if (instance.sessions && instance.sessions.includes(sessionKey)) {
+                    return true;
+                }
+            }
+            
+            return false;
+        } catch (error) {
+            log.error('Error checking if session exists:', error);
+            return false;
+        }
+    }
+
+    /**
+     * Get the status of instance manager
+     * @method getStatus
+     * @returns {Promise<Object>} Status object
+     */
+    async getStatus() {
+        try {
+            const lockData = await this.readLockFile();
+            const instances = await this.getInstances();
+
+            // Map instances with their session information
+            const instancesWithSessions = instances.map(instance => {
+                if (lockData.instances[instance.id]) {
+                    return {
+                        ...instance,
+                        sessions: lockData.instances[instance.id].sessions || []
+                    };
+                }
+                return {
+                    ...instance,
+                    sessions: []
+                };
+            });
+
+            return {
+                lockFile: this.instanceLockFile,
+                lockExists: await fs.promises.access(this.instanceLockFile)
+                    .then(() => true)
+                    .catch(() => false),
+                currentId: this.instanceId,
+                runningCount: instances.length,
+                instances: instancesWithSessions
+            };
+        } catch (error) {
+            log.error('Error getting status:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Initialize an instance with the given profile and settings
+     * @method initializeInstance
+     * @param {string} profile - Profile name for this instance
+     * @param {Object} [options={}] - Instance options
+     * @param {boolean} [options.profileIsolation=true] - Whether to isolate instances by profile
+     * @returns {Promise<void>}
+     */
+    async initializeInstance(profile, options = {}) {
+        try {
+            const { profileIsolation = true } = options;
+
+            await this.init({
+                profile,
+                profileIsolation
+            });
+        } catch (error) {
+            log.error('Error initializing instance:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Delegate sessions to an existing instance
+     * @method delegateToInstance
+     * @param {Object} targetInstance - Target instance to delegate to
+     * @param {Array<Object>} sessions - Sessions to delegate
+     * @returns {Promise<boolean>} True if delegation was successful
+     */
+    async delegateToInstance(targetInstance, sessions) {
+        try {
+            if (!targetInstance || !sessions || !Array.isArray(sessions)) {
+                log.error('Invalid arguments for delegateToInstance');
+                return false;
+            }
+
+            // Delegate each session
+            for (const session of sessions) {
+                try {
+                    const args = ['--delegate-to', targetInstance.id];
+                    if (session.provider) {
+                        args.push(`--${session.provider}`);
+                    }
+                    if (session.profile) {
+                        args.push('--profile', session.profile);
+                    }
+
+                    const success = await this.delegateCommandToInstance(targetInstance.id, args);
+                    if (!success) {
+                        log.error(`Failed to delegate session ${session.provider}:${session.profile} to instance ${targetInstance.id}`);
+                        return false;
+                    }
+                } catch (error) {
+                    log.error(`Error delegating session ${session.provider}:${session.profile}:`, error);
+                    return false;
+                }
+            }
+
+            log.info(`Successfully delegated ${sessions.length} sessions to instance ${targetInstance.id}`);
+            return true;
+        } catch (error) {
+            log.error('Error in delegateToInstance:', error);
+            return false;
+        }
+    }
+
+    /**
+     * Create a new instance for sessions
+     * @method createNewInstance
+     * @param {Array<Object>} sessions - Array of session objects
+     * @param {string} profile - Profile name for the new instance
+     * @returns {Promise<boolean>} Success status
+     */
+    async createNewInstance(sessions, profile) {
+        try {
+            log.info(`Creating new instance for profile ${profile} with ${sessions.length} sessions`);
+            
+            // Build command line arguments for new instance
+            const args = ['--new-instance'];
+            
+            // Add profile isolation flag
+            args.push('--profile-isolation');
+            
+            // Add profile if not default
+            if (profile && profile !== 'default') {
+                args.push('--profile', profile);
+            }
+            
+            // Add provider arguments
+            for (const session of sessions) {
+                args.push(`--${session.provider}`);
+                if (session.profile && session.profile !== 'default') {
+                    args.push(session.profile);
+                }
+            }
+
+            // Launch new instance process
+            const execPath = process.execPath;
+            const appArgs = [
+                ...process.argv.slice(1, 2), // First arg after execPath
+                ...args
+            ];
+            
+            log.info(`Spawning new instance process: ${execPath} ${appArgs.join(' ')}`);
+            
+            // Spawn the process
+            const child = spawn(execPath, appArgs, {
+                detached: true,
+                stdio: 'ignore'
+            });
+            
+            // Unref the child to allow this process to exit
+            child.unref();
+            
+            return true;
+        } catch (error) {
+            log.error('Error creating new instance:', error);
+            return false;
+        }
+    }
+
+    /**
+     * Update the profile-to-PID mapping based on lock file data
+     * @method updateProfilePidMap
+     * @param {Object} lockData - Lock file data
+     * @private
+     */
+    updateProfilePidMap(lockData) {
+        // Clear the existing map
+        this.profilePidMap.clear();
+        
+        // Populate the map with profile to PID mappings
+        for (const instance of Object.values(lockData.instances)) {
+            if (instance.profile && instance.pid) {
+                this.profilePidMap.set(instance.profile, instance.pid);
+                log.debug(`Mapped profile ${instance.profile} to PID ${instance.pid}`);
+            }
+        }
+    }
+
+    /**
+     * Get the PID for a specific profile
+     * @method getPidForProfile
+     * @param {string} profile - Profile name
+     * @returns {Promise<number|null>} PID for the profile, or null if not found
+     */
+    async getPidForProfile(profile) {
+        // Refresh the profile-to-PID mapping
+        await this.readLockFile();
+        
+        // Return the PID for the profile
+        const pid = this.profilePidMap.get(profile);
+        log.debug(`PID for profile ${profile}: ${pid || 'not found'}`);
+        return pid || null;
+    }
+
+    /**
+     * Check if a profile is currently active in any running instance
+     * @method isProfileActive
+     * @param {string} profile - Profile name to check
+     * @returns {Promise<boolean>} True if profile is active in any running instance
+     */
+    async isProfileActive(profile) {
+        try {
+            if (!profile) return false;
+            
+            // Use PID file as first line of defense (should be faster than lock file)
+            const pids = await this.readPids();
+            const instances = await this.getInstances();
+            
+            // Check all instances with the profile to see if any are running
+            const matchingInstances = instances.filter(instance => instance.profile === profile);
+            for (const instance of matchingInstances) {
+                try {
+                    // Verify the process is actually running
+                    process.kill(instance.pid, 0);
+                    
+                    // Verify the PID is still in our PIDs file (additional safety check)
+                    if (pids.includes(instance.pid)) {
+                        return true; // Found a running instance with this profile
+                    }
+                } catch (error) {
+                    // Process isn't running, continue to next one
+                    continue;
+                }
+            }
+            
+            return false; // No active instances found for this profile
+        } catch (error) {
+            log.error(`Error checking if profile ${profile} is active:`, error);
+            // Default to assuming profile is active if we can't determine for sure
+            // This is safer than potentially allowing multiple instances of same profile
+            return true;
+        }
+    }
+    
+    /**
+     * Update instance activity timestamp using transaction system
+     * @method updateInstanceActivity
+     * @private
+     * @returns {Promise<void>}
+     */
+    async updateInstanceActivity() {
+        try {
+            if (!this.instanceId) return;
+            
+            // Use a transaction for better atomicity and automatic rollback
+            const tx = this.createInstanceTransaction('updateActivity', {
+                debug: false, // Less verbose logging for this frequent operation
+                autoRollback: true
+            });
+            
+            await tx.withLock(async () => {
+                const lockData = await this.readLockFile();
+                if (lockData.instances[this.instanceId]) {
+                    // Save snapshot for potential rollback
+                    tx.saveSnapshot('previousActivity', lockData.instances[this.instanceId].lastActive);
+                    
+                    // Update last active timestamp
+                    lockData.instances[this.instanceId].lastActive = new Date().toISOString();
+                    await tx.writeLockFileWithTx(lockData);
+                    
+                    // Transaction will auto-commit at end of withLock callback
+                }
+            });
+        } catch (error) {
+            log.warn('Error updating instance activity timestamp:', error);
+            // Transaction will auto-rollback due to autoRollback: true
+        }
+    }
+    
+    /**
+     * Get instance by profile
+     * @method getInstanceByProfile
+     * @param {string} profile - Profile name
+     * @returns {Promise<Object|null>} Instance object or null if not found
+     */
+    async getInstanceByProfile(profile) {
+        try {
+            const lockData = await this.readLockFile();
+            
+            for (const [id, instance] of Object.entries(lockData.instances)) {
+                if (instance.profile === profile) {
+                    // Verify the process is actually running
+                    try {
+                        process.kill(instance.pid, 0);
+                        return {
+                            id,
+                            pid: instance.pid,
+                            profile: instance.profile,
+                            startTime: instance.startTime,
+                            lastActive: instance.lastActive
+                        };
+                    } catch (error) {
+                        // Process isn't running, continue to next one
+                        continue;
+                    }
+                }
+            }
+            
+            return null;
+        } catch (error) {
+            log.error(`Error getting instance for profile ${profile}:`, error);
+            return null;
+        }
+    }
+
+    /**
+     * Initialize the instance with enhanced profile isolation
+     * @method init
+     * @param {Object} options - Initialization options
+     * @param {string} options.profile - Profile name
+     * @param {boolean} options.profileIsolation - Whether to isolate instances by profile
+     * @returns {Promise<void>}
+     */
+    async init({ profile, profileIsolation }) {
+        const fs = require('fs').promises;
+        const path = require('path');
+        let profileLockRelease = null;
+        let registrationPath = null;
+        
+        // Create transaction for the entire initialization process
+        const tx = this.createInstanceTransaction('init', {
+            debug: true,
+            autoRollback: true
+        });
+        
+        try {
+            // Validate profile name
+            if (!profile || typeof profile !== 'string') {
+                throw new Error('Invalid profile name');
+            }
+            
+            // Sanitize profile name for use in filenames
+            const sanitizedProfile = profile.replace(/[^a-zA-Z0-9_-]/g, '_');
+            
+            // Set current profile
+            this.currentProfile = profile;
+            log.info(`Initializing instance with profile: ${profile}, profileIsolation: ${profileIsolation}`);
+
+            // Step 1: Initialize PID tracking
+            await tx.step('writePidFile', async () => {
+                log.debug('Step 1: Writing PID file');
+                await this.writePidFile();
+            }, async () => {
+                log.debug('Rolling back PID file creation');
+                await this.removePidFromFile().catch(e => {
+                    log.warn('Error removing PID during rollback:', e);
+                });
+            });
+            
+            // Step 2: Handle profile-specific locking and verification if profile isolation is enabled
+            if (profileIsolation) {
+                await tx.step('profileVerification', async () => {
+                    log.debug('Step 2: Performing profile verification and locking');
+                    
+                    // Acquire a dedicated profile lock first to prevent race conditions
+                    const profileLockPath = path.join(app.getPath('userData'), `profile-${sanitizedProfile}.lock`);
+                    const lockfile = require('proper-lockfile');
+                    
+                    log.info(`Acquiring profile-specific lock for ${profile}`);
+                    profileLockRelease = await lockfile.lock(profileLockPath, {
+                        stale: 10000,
+                        retries: 5,
+                        retryWait: 500,
+                        realpath: false
+                    });
+                    
+                    // Check if profile is already active before acquiring the main lock
+                    const isProfileActive = await this.isProfileActive(profile);
+                    if (isProfileActive) {
+                        throw new Error(`Profile ${profile} is already in use by another instance`);
+                    }
+                    
+                    // Additional race condition check with registration file
+                    registrationPath = path.join(app.getPath('userData'), `profile-${sanitizedProfile}.registering`);
+                    await fs.writeFile(registrationPath, String(process.pid), { flag: 'wx' });
+                    
+                    tx.saveSnapshot('profileLockAcquired', true);
+                    tx.saveSnapshot('registrationPath', registrationPath);
+                }, async () => {
+                    log.debug('Rolling back profile verification');
+                    
+                    // Release profile lock if acquired
+                    if (profileLockRelease) {
+                        await profileLockRelease().catch(e => {
+                            log.warn('Error releasing profile lock during rollback:', e);
+                        });
+                        profileLockRelease = null;
+                    }
+                    
+                    // Remove registration file if created
+                    if (registrationPath) {
+                        await fs.unlink(registrationPath).catch(e => {
+                            log.warn('Error removing registration file during rollback:', e);
+                        });
+                    }
+                });
+            }
+
+            // Step 3: Acquire main instance lock and read lock file data
+            const lockData = await tx.step('acquireLock', async () => {
+                log.debug('Step 3: Acquiring main lock and reading lock file');
+                
+                // Acquire main instance lock
+                await this.acquireLock();
+                tx.saveSnapshot('lockAcquired', true);
+                
+                // Read lock file data
+                const data = await this.readLockFile();
+                
+                // Initialize instances map if needed
+                if (!data.instances) {
+                    data.instances = {};
+                }
+                
+                tx.saveSnapshot('initialLockData', JSON.parse(JSON.stringify(data)));
+                return data;
+            }, async () => {
+                log.debug('Rolling back main lock acquisition');
+                await this.releaseLock().catch(e => {
+                    log.warn('Error releasing main lock during rollback:', e);
+                });
+            });
+
+            // Step 4: Double-verify profile availability with full lock data
+            if (profileIsolation) {
+                await tx.step('doubleVerification', async () => {
+                    log.debug('Step 4: Performing double-verification check');
+                    
+                    // Use a more robust double-verification technique
+                    const existingInstances = Object.values(lockData.instances).filter(instance => {
+                        if (instance.profile !== profile) return false;
+                        
+                        try {
+                            // Check if process is still running
+                            process.kill(instance.pid, 0);
+                            return true;
+                        } catch (error) {
+                            // Process is dead, will be cleaned up later
+                            return false;
+                        }
+                    });
+
+                    if (existingInstances.length > 0) {
+                        // Found existing active instances with this profile
+                        const pids = existingInstances.map(i => i.pid).join(', ');
+                        throw new Error(`Double-verification failed: Profile ${profile} in use by PIDs: ${pids}`);
+                    }
+                });
+            }
+
+            // Step 5: Register instance in lock file
+            await tx.step('registerInstance', async () => {
+                log.debug('Step 5: Registering instance in lock file');
+                
+                // Generate unique instance ID
+                this.instanceId = `instance-${Date.now()}-${Math.random().toString(36).substr(2, 8)}`;
+                this.isFirstInstance = Object.keys(lockData.instances).length === 0;
+                
+                // Add instance to lock file with enhanced metadata
+                lockData.instances[this.instanceId] = {
+                    pid: process.pid,
+                    profile: this.currentProfile,
+                    startTime: new Date().toISOString(),
+                    lastActive: new Date().toISOString(),
+                    pipeName: this.ipcPipeName,
+                    sessions: [],
+                    hostname: require('os').hostname(),
+                    username: require('os').userInfo().username,
+                    isolationEnabled: profileIsolation,
+                    transactionId: tx.id
+                };
+                
+                // Write updated lock file using transaction
+                await tx.writeLockFileWithTx(lockData);
+                
+                tx.saveSnapshot('instanceId', this.instanceId);
+                tx.saveSnapshot('isFirstInstance', this.isFirstInstance);
+            }, async () => {
+                log.debug('Rolling back instance registration');
+                // Instance removal will be handled by the lockFile rollback in writeLockFileWithTx
+                this.instanceId = null;
+                this.isFirstInstance = false;
+            });
+
+            // Step 6: Finalize initialization
+            await tx.step('finalize', async () => {
+                log.debug('Step 6: Finalizing initialization');
+                
+                // Release profile-specific lock now that we've registered in the main lock file
+                if (profileLockRelease) {
+                    await profileLockRelease();
+                    profileLockRelease = null;
+                }
+                
+                // Set up cleanup handlers
+                this.registerCleanupHandlers();
+                
+                // Schedule periodic updates of lastActive timestamp to help with stale detection
+                this.activityInterval = setInterval(async () => {
+                    try {
+                        await this.updateInstanceActivity();
+                    } catch (e) {
+                        log.warn('Error updating instance activity:', e);
+                    }
+                }, 60000); // Update every minute
+                
+                // Clean up the registration file on successful initialization
+                if (registrationPath) {
+                    await fs.unlink(registrationPath).catch(() => {});
+                    registrationPath = null;
+                }
+            });
+            
+            // Commit the transaction now that all steps are complete
+            tx.commit();
+            
+            log.info(`Instance initialized successfully: ${this.instanceId}, profile: ${this.currentProfile}, isFirst: ${this.isFirstInstance}`);
+        } catch (error) {
+            // Log the error
+            log.error('Error initializing instance:', error);
+            
+            // The transaction will auto-rollback because of autoRollback: true
+            // This will trigger all the rollback handlers in reverse order
+            
+            // Rethrow the error
+            throw error;
+        }
+    }
+
+    /**
+     * Delegate sessions to existing instances using transaction system
+     * @method delegateSessions
+     * @param {Array<Object>} sessions - Sessions to delegate
+     * @param {boolean} profileIsolation - Whether to respect profile isolation
+     * @returns {Promise<boolean>} True if delegation was successful
+     */
+    async delegateSessions(sessions, profileIsolation) {
+        try {
+            if (!sessions || !Array.isArray(sessions) || sessions.length === 0) {
+                log.error('Invalid or empty sessions array for delegation');
+                return false;
+            }
+
+            log.info('Delegating sessions to existing instances:', sessions);
+            
+            // Create a transaction for the entire delegation operation
+            const delegateTx = this.createInstanceTransaction('delegateSessions', {
+                debug: true,
+                autoRollback: true
+            });
+
+            // Group sessions by profile for delegation
+            const sessionsByProfile = new Map();
+            for (const session of sessions) {
+                const profile = session.profile || 'default';
+                if (!sessionsByProfile.has(profile)) {
+                    sessionsByProfile.set(profile, []);
+                }
+                sessionsByProfile.get(profile).push(session);
+            }
+            
+            // Save the original session state in case we need to roll back
+            delegateTx.saveSnapshot('sessionsByProfile', Object.fromEntries(sessionsByProfile));
+            
+            let allSuccessful = true;
+            const delegationResults = [];
+            
+            // Process each profile group with transaction support
+            for (const [profile, profileSessions] of sessionsByProfile) {
+                // Create a step for each profile group
+                const success = await delegateTx.step(
+                    `delegateProfile-${profile}`, 
+                    async () => {
+                        // Get all instances within the transaction step
+                        const instances = await this.getInstances();
+                        let targetInstance = null;
+                        
+                        if (profileIsolation) {
+                            // Find instance with matching profile
+                            targetInstance = instances.find(instance => {
+                                try {
+                                    // Check if process is still running
+                                    process.kill(instance.pid, 0);
+                                    return instance.profile === profile;
+                                } catch (error) {
+                                    return false;
+                                }
+                            });
+                        } else {
+                            // Find any active instance
+                            targetInstance = instances.find(instance => {
+                                try {
+                                    // Check if process is still running
+                                    process.kill(instance.pid, 0);
+                                    return true;
+                                } catch (error) {
+                                    return false;
+                                }
+                            });
+                        }
+                        
+                        if (!targetInstance) {
+                            log.warn(`No suitable instance found for profile ${profile}, can't delegate`);
+                            return false;
+                        }
+                        
+                        // Track the target instance for this delegation
+                        delegateTx.saveSnapshot(`targetInstance-${profile}`, targetInstance);
+                        
+                        // Delegate the sessions to the target instance
+                        const result = await this.delegateToInstance(targetInstance, profileSessions);
+                        
+                        // Track the result of this delegation
+                        delegationResults.push({
+                            profile,
+                            targetInstanceId: targetInstance.id,
+                            success: result
+                        });
+                        
+                        return result;
+                    },
+                    async () => {
+                        // Rollback handler - nothing specific needed here as
+                        // the delegateToInstance operation is atomic itself and
+                        // either entirely succeeds or fails
+                        log.debug(`Rolling back delegation for profile ${profile}`);
+                    }
+                );
+                
+                if (!success) {
+                    log.error(`Failed to delegate sessions for profile ${profile}`);
+                    allSuccessful = false;
+                }
+            }
+            
+            // If all delegations were successful, commit the transaction
+            if (allSuccessful) {
+                delegateTx.commit();
+                log.info('All session delegations completed successfully');
+            } else {
+                // We don't need to explicitly rollback due to autoRollback: true
+                log.warn('Some session delegations failed, transaction will be rolled back');
+            }
+            
+            // Save delegation results in the transaction for reference
+            delegateTx.saveSnapshot('delegationResults', delegationResults);
+            
+            return allSuccessful;
+        } catch (error) {
+            log.error('Error delegating sessions:', error);
+            return false;
+        }
+    }
+
+    /**
+     * Process sessions for providers
+     * @method processSessions
+     * @param {Array<Object>} sessions - Array of session objects
+     * @param {Object} options - Options for session processing
+     * @param {boolean} [options.forceNewInstance=false] - Force creation of new instance
+     * @param {boolean} [options.oneInstance=false] - Force all providers into one instance
+     * @returns {Promise<boolean>} Success status
+     */
+    async processSessions(sessions, options = {}) {
+        try {
+            if (!sessions || !Array.isArray(sessions) || sessions.length === 0) {
+                log.error('Invalid or empty sessions array');
+                return false;
+            }
+
+            log.info('Processing sessions:', { sessions, options });
+
+            // Group sessions by profile
+            const sessionsByProfile = new Map();
+            for (const session of sessions) {
+                const profile = session.profile || 'default';
+                if (!sessionsByProfile.has(profile)) {
+                    sessionsByProfile.set(profile, []);
+                }
+                sessionsByProfile.get(profile).push(session);
+            }
+
+            // Process each profile group
+            for (const [profile, profileSessions] of sessionsByProfile) {
+                const result = await this.handleProviderSessionDelegation(profile, profileSessions, options);
+
+                // Create new instance for non-delegated sessions if any
+                if (result.newSessions.length > 0) {
+                    const success = await this.createNewInstance(result.newSessions, profile);
+                    if (!success) {
+                        log.error(`Failed to create new instance for profile ${profile}`);
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        } catch (error) {
+            log.error('Error processing sessions:', error);
+            return false;
+        }
+    }
+
+    /**
+     * Handle provider session delegation with enhanced profile isolation
+     * @method handleProviderSessionDelegation
+     * @param {string} profile - Profile to handle delegation for
+     * @param {Array<Object>} profileSessions - Sessions for the profile
+     * @param {Object} options - Options for delegation
+     * @param {boolean} [options.forceNewInstance=false] - Force creation of new instance
+     * @param {boolean} [options.oneInstance=false] - Force all providers into one instance
+     * @param {boolean} [options.strictProfileIsolation=true] - Enforce strict profile isolation
+     * @returns {Promise<Object>} Delegation result
+     */
+    async handleProviderSessionDelegation(profile, profileSessions, options = {}) {
+        try {
+            // Apply default options
+            const delegationOptions = {
+                forceNewInstance: false,
+                oneInstance: false,
+                strictProfileIsolation: true,
+                ...options
+            };
+
+            log.info(
+                `Handling provider session delegation for profile ${profile}, ` +
+                `options: ${JSON.stringify(delegationOptions)}, ` +
+                `sessions: ${profileSessions.length}`
+            );
+            
+            const result = {
+                delegatedSessions: [],
+                newSessions: [],
+                delegationFailReason: null
+            };
+
+            // Validate inputs
+            if (!profile || !profileSessions || !Array.isArray(profileSessions)) {
+                log.error('Invalid parameters for session delegation');
+                result.delegationFailReason = 'invalid_parameters';
+                result.newSessions.push(...(Array.isArray(profileSessions) ? profileSessions : []));
+                return result;
+            }
+            
+            // Apply appropriate sorting to prioritize delegation target instances
+            // This ensures we try to delegate to the most appropriate instance first
+            const getInstancePriority = (instance) => {
+                let score = 0;
+                
+                // Prefer instances with the same profile
+                if (instance.profile === profile) score += 1000;
+                
+                // Prefer instances with fewer sessions
+                if (instance.sessions && Array.isArray(instance.sessions)) {
+                    score -= instance.sessions.length * 10;
+                }
+                
+                // Prefer older instances (more established)
+                if (instance.startTime) {
+                    const ageInMinutes = (Date.now() - new Date(instance.startTime).getTime()) / (60 * 1000);
+                    score += Math.min(ageInMinutes, 60); // Cap at 60 minutes
+                }
+                
+                return score;
+            };
+
+            // If forcing new instance, don't try to delegate
+            if (delegationOptions.forceNewInstance) {
+                log.info('Forcing new instance, skipping delegation');
+                result.delegationFailReason = 'force_new_instance';
+                result.newSessions.push(...profileSessions);
+                return result;
+            }
+
+            // Get all running instances
+            const allInstances = await this.getInstances();
+            
+            // Filter to only running instances and sort by priority
+            const runningInstances = allInstances
+                .filter(instance => {
+                    try {
+                        // Check if process exists
+                        process.kill(instance.pid, 0);
+                        return true;
+                    } catch (error) {
+                        return false;
+                    }
+                })
+                .sort((a, b) => getInstancePriority(b) - getInstancePriority(a));
+
+            // Profile verification logic
+            if (delegationOptions.strictProfileIsolation && !delegationOptions.oneInstance) {
+                // Verify profile lock status to prevent race conditions
+                const isActive = await this.isProfileActive(profile);
+                const targetInstance = runningInstances.find(instance => instance.profile === profile);
+                
+                if (isActive && !targetInstance) {
+                    // Something is wrong - profile is active but we can't find the instance
+                    // This could be a race condition or inconsistent state
+                    log.warn(`Profile ${profile} appears active but target instance not found`);
+                    // Wait a short time and retry the check
+                    await new Promise(r => setTimeout(r, 500));
+                    const retryActive = await this.isProfileActive(profile);
+                    
+                    if (retryActive) {
+                        log.error(`Profile ${profile} active but no target instance found - won't delegate`);
+                        result.delegationFailReason = 'profile_active_no_instance_found';
+                        result.newSessions.push(...profileSessions);
+                        return result;
+                    }
+                }
+            }
+
+            // Handle one-instance mode (delegating to any existing instance)
+            if (delegationOptions.oneInstance) {
+                if (runningInstances.length > 0) {
+                    const targetInstance = runningInstances[0]; // Highest priority instance
+                    log.info(`One instance mode: delegating to instance ${targetInstance.id} (pid: ${targetInstance.pid})`);
+                    
+                    try {
+                        const success = await this.delegateToInstance(targetInstance, profileSessions);
+                        if (success) {
+                            log.info(`Successfully delegated ${profileSessions.length} sessions to instance ${targetInstance.id}`);
+                            result.delegatedSessions.push(...profileSessions);
+                            return result;
+                        }
+                    } catch (delegateError) {
+                        log.error(`Error delegating to instance ${targetInstance.id}:`, delegateError);
+                    }
+                    
+                    log.warn(`Failed to delegate to instance ${targetInstance.id} in one-instance mode`);
+                    result.delegationFailReason = 'delegation_failed';
+                    result.newSessions.push(...profileSessions);
+                    return result;
+                }
+                
+                log.info('No existing instances found for one-instance mode');
+                result.delegationFailReason = 'no_instances_found';
+                result.newSessions.push(...profileSessions);
+                return result;
+            }
+
+            // Normal profile-based delegation logic
+            const targetInstance = runningInstances.find(instance => instance.profile === profile);
+
+            if (targetInstance) {
+                log.info(`Delegating ${profileSessions.length} sessions to existing instance ${targetInstance.id} (pid: ${targetInstance.pid})`);
+                
+                try {
+                    // Double verify the instance is still running
+                    process.kill(targetInstance.pid, 0);
+                    
+                    // Attempt delegation with retry logic
+                    let success = false;
+                    let retryCount = 0;
+                    const maxRetries = 3;
+                    
+                    while (!success && retryCount < maxRetries) {
+                        try {
+                            success = await this.delegateToInstance(targetInstance, profileSessions);
+                            if (success) break;
+                        } catch (delegateError) {
+                            log.warn(`Delegation attempt ${retryCount + 1} failed:`, delegateError);
+                        }
+                        
+                        retryCount++;
+                        if (retryCount < maxRetries) {
+                            log.info(`Retrying delegation (attempt ${retryCount + 1}/${maxRetries})`);
+                            await new Promise(r => setTimeout(r, 500 * retryCount)); // Increasing backoff
+                        }
+                    }
+                    
+                    if (success) {
+                        log.info(`Successfully delegated ${profileSessions.length} sessions to instance ${targetInstance.id}`);
+                        result.delegatedSessions.push(...profileSessions);
+                    } else {
+                        log.error(`Failed to delegate to instance ${targetInstance.id} after ${maxRetries} attempts`);
+                        result.delegationFailReason = 'max_retries_exceeded';
+                        result.newSessions.push(...profileSessions);
+                    }
+                } catch (processError) {
+                    log.error(`Target instance ${targetInstance.id} is no longer running`);
+                    result.delegationFailReason = 'target_instance_not_running';
+                    result.newSessions.push(...profileSessions);
+                }
+            } else {
+                log.info(`No instance found for profile ${profile}, will create new instance`);
+                result.delegationFailReason = 'no_matching_profile_instance';
+                result.newSessions.push(...profileSessions);
+            }
+
+            return result;
+        } catch (error) {
+            log.error('Error handling provider session delegation:', error);
+            // Return a safe result even in case of errors
+            return {
+                delegatedSessions: [],
+                newSessions: profileSessions || [],
+                delegationFailReason: 'unexpected_error'
+            };
+        }
+    }
+
+    /**
+     * Get instances with enhanced metadata
+     * @method getInstances
+     * @returns {Promise<Array<Object>>} Array of instance objects
+     */
+    async getInstances() {
+        try {
+            const lockData = await this.readLockFile();
+            return Object.entries(lockData.instances || {}).map(([id, instance]) => ({
+                id,
+                pid: instance.pid,
+                profile: instance.profile,
+                startTime: instance.startTime,
+                lastActive: instance.lastActive || instance.startTime,
+                pipeName: instance.pipeName,
+                hostname: instance.hostname || '',
+                username: instance.username || '',
+                sessions: instance.sessions || [],
+                isolationEnabled: instance.isolationEnabled || false,
+                cleanShutdown: instance.cleanShutdown || false,
+                shutdownTime: instance.shutdownTime || null
+            }));
+        } catch (error) {
+            log.error('Error getting instances:', error);
+            return [];
+        }
+    }
+    
+    /**
+     * Clean up stale instances
+     * @method cleanupStaleInstances
+     * @param {Object} options - Cleanup options
+     * @param {boolean} [options.force=false] - Force cleanup even for active processes
+     * @param {number} [options.staleThresholdMinutes=30] - Minutes after which to consider an instance stale if not active
+     * @returns {Promise<Array<Object>>} Array of cleaned up instance objects
+     */
+    async cleanupStaleInstances(options = {}) {
+        const { force = false, staleThresholdMinutes = 30 } = options;
+        const cleanedUpInstances = [];
+        
+        try {
+            log.info(`Cleaning up stale instances (force: ${force}, threshold: ${staleThresholdMinutes}min)`);
+            
+            // Acquire lock to ensure atomic cleanup
+            await this.acquireLock();
+            
+            try {
+                // Read current lock data
+                const lockData = await this.readLockFile();
+                const instanceIds = Object.keys(lockData.instances || {});
+                
+                if (instanceIds.length === 0) {
+                    log.info('No instances found in lock file');
+                    return [];
+                }
+                
+                log.info(`Found ${instanceIds.length} instances in lock file, checking for stale instances`);
+                const staleThresholdMs = staleThresholdMinutes * 60 * 1000;
+                const now = Date.now();
+                
+                // Check each instance
+                for (const [id, instance] of Object.entries(lockData.instances)) {
+                    // Skip current instance
+                    if (id === this.instanceId) continue;
+                    
+                    let isStale = false;
+                    let reason = '';
+                    
+                    // Check if process still exists
+                    try {
+                        process.kill(instance.pid, 0);
+                        
+                        // Process exists, check if it's stale by last activity
+                        if (instance.lastActive) {
+                            const lastActiveTime = new Date(instance.lastActive).getTime();
+                            const inactiveMs = now - lastActiveTime;
+                            
+                            if (inactiveMs > staleThresholdMs) {
+                                isStale = true;
+                                reason = `inactive for ${Math.round(inactiveMs / 60000)}min`;
+                            }
+                        }
+                        
+                        // If not stale by last activity, but force is true, mark as stale
+                        if (!isStale && force) {
+                            isStale = true;
+                            reason = 'forced cleanup';
+                        }
+                    } catch (error) {
+                        // Process doesn't exist, mark as stale
+                        isStale = true;
+                        reason = 'process not running';
+                    }
+                    
+                    // Clean up instances that had a clean shutdown
+                    if (instance.cleanShutdown) {
+                        isStale = true;
+                        reason = 'clean shutdown';
+                    }
+                    
+                    // If stale, clean it up
+                    if (isStale) {
+                        log.info(`Cleaning up stale instance ${id} (reason: ${reason})`);
+                        
+                        try {
+                            // Add to result array
+                            cleanedUpInstances.push({
+                                id,
+                                pid: instance.pid,
+                                profile: instance.profile,
+                                reason
+                            });
+                            
+                            // Remove from lock file
+                            delete lockData.instances[id];
+                        } catch (cleanupError) {
+                            log.error(`Error cleaning up instance ${id}:`, cleanupError);
+                        }
+                    }
+                }
+                
+                // Write updated lock file
+                await this.writeLockFile(lockData);
+                log.info(`Cleaned up ${cleanedUpInstances.length} stale instances`);
+            } finally {
+                // Always release lock
+                await this.releaseLock();
+            }
+            
+            return cleanedUpInstances;
+        } catch (error) {
+            log.error('Error cleaning up stale instances:', error);
+            return cleanedUpInstances;
+        }
+    }
+    /**
+     * Get the lock file path
+     * @method getLockFilePath
+     * @private
+     * @returns {string} Path to lock file
+     */
+    getLockFilePath() {
+        const os = require('os');
+        const path = require('path');
+        const packageJson = require('../../package.json');
+        return path.join(os.tmpdir(), `${packageJson.name}.lock`);
+    }
+
+    /**
+     * Read the lock file
+     * @method readLockFile
+     * @private
+     * @returns {Promise<Object>} Lock file data
+     */
+    async readLockFile() {
+        try {
+            const fs = require('fs').promises;
+            const lockPath = this.getLockFilePath();
+
+            try {
+                const data = await fs.readFile(lockPath, 'utf8');
+                return JSON.parse(data);
+            } catch (error) {
+                if (error.code === 'ENOENT') {
+                    // Lock file doesn't exist, return empty data
+                    return { instances: {} };
+                }
+                throw error;
+            }
+        } catch (error) {
+            log.error('Error reading lock file:', error);
+            return { instances: {} };
+        }
+    }
+
+    /**
+     * Write to the lock file
+     * @method writeLockFile
+     * @private
+     * @param {Object} data - Data to write
+     * @returns {Promise<void>}
+     */
+    async writeLockFile(data) {
+        try {
+            const fs = require('fs').promises;
+            const lockPath = this.getLockFilePath();
+            await fs.writeFile(lockPath, JSON.stringify(data, null, 2), 'utf8');
+        } catch (error) {
+            log.error('Error writing lock file:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Acquire instance lock with improved error handling and automatic recovery
+     * @method acquireLock
+     * @private
+     * @returns {Promise<void>}
+     */
+    async acquireLock() {
+        // Use safeExecute for better error handling and recovery
+        return await safeExecute(async () => {
+            // Release existing lock if we already have one
+            if (this.lockRelease) {
+                log.warn('Lock already held, releasing first');
+                await this.releaseLock();
+            }
+
+            const lockfile = require('proper-lockfile');
+            const lockPath = this.getLockFilePath();
+            const fs = require('fs').promises;
+            const path = require('path');
+
+            // Ensure lock file exists with proper error recovery
+            await this.ensureLockFileExists(lockPath);
+
+            // Verify lock file integrity before trying to acquire the lock
+            await verifyDataFileIntegrity(
+                lockPath,
+                // Validation function
+                async (data) => {
+                    if (!data || typeof data !== 'object') {
+                        return false;
+                    }
+                    if (!data.instances || typeof data.instances !== 'object') {
+                        data.instances = {};
+                        // Write corrected data
+                        await fs.writeFile(lockPath, JSON.stringify(data, null, 2));
+                    }
+                    return true;
+                },
+                // Fallback function if validation fails
+                async () => {
+                    // Create default empty structure
+                    return { 
+                        instances: {}, 
+                        lockHistory: [],
+                        created: new Date().toISOString()
+                    };
+                }
+            );
+
+            // Acquire lock with proper retry and stale detection
+            this.lockRelease = await lockfile.lock(lockPath, {
+                stale: 10000, // 10 seconds stale threshold
+                retries: {
+                    retries: 15,  // Increased retries for better resilience
+                    factor: 1.5,
+                    minTimeout: 500,
+                    maxTimeout: 5000,
+                    randomize: true
+                },
+                // For Windows compatibility, add options that work well cross-platform
+                realpath: false,
+                onCompromised: (err) => {
+                    const recoverableError = createError('Lock was compromised', {
+                        category: ErrorCategory.LOCK_ERROR,
+                        cause: err,
+                        context: { lockPath, pid: process.pid }
+                    });
+                    recoverableError.log('error');
+                    this.lockRelease = null;
+                }
+            });
+
+            // Store the lock acquisition time for diagnostics
+            this.lockAcquiredAt = Date.now();
+
+            // Mark the lock with owner information
+            await this.markLockOwner();
+            log.info('Lock acquired successfully by process', process.pid);
+            return true;
+        }, {
+            category: ErrorCategory.LOCK_ERROR,
+            throwOnError: true,
+            context: { pid: process.pid, instanceId: this.instanceId },
+            recoverFn: async (error) => {
+                // Clean up any partial state
+                this.lockRelease = null;
+                
+                // Try to recover lock file if it might be damaged
+                const lockPath = this.getLockFilePath();
+                await recoverLockFile(lockPath);
+                
+                // Log diagnostic information for later analysis
+                await logDiagnostics(
+                    error,
+                    'InstanceManager',
+                    'acquireLock'
+                );
+            }
+        });
+    }
+    
+    /**
+     * Ensure lock file exists with robust error handling
+     * @method ensureLockFileExists
+     * @private
+     * @param {string} lockPath - Path to the lock file
+     * @returns {Promise<void>}
+     */
+    async ensureLockFileExists(lockPath) {
+        try {
+            const fs = require('fs').promises;
+            await fs.access(lockPath);
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                // Create a temporary file first, then atomically rename it
+                const tempFile = `${lockPath}.tmp.${Date.now()}.${process.pid}`;
+                const fs = require('fs').promises;
+                const initialData = JSON.stringify({ 
+                    instances: {}, 
+                    lockHistory: [],
+                    created: new Date().toISOString() 
+                }, null, 2);
+                
+                try {
+                    // Write to temp file
+                    await fs.writeFile(tempFile, initialData, 'utf8');
+                    
+                    // Atomically rename it
+                    await fs.rename(tempFile, lockPath);
+                    log.info('Created new lock file with atomic operation');
+                } catch (renameError) {
+                    // Handle edge case where another process created the file meanwhile
+                    log.warn('Failed to rename temp lock file, another process may have created it', renameError);
+                    try { 
+                        await fs.unlink(tempFile); 
+                    } catch (cleanupError) {
+                        log.warn('Failed to clean up temporary lock file:', cleanupError);
+                    }
+                    
+                    // Verify the file now exists (created by us or someone else)
+                    try {
+                        await fs.access(lockPath);
+                    } catch (accessError) {
+                        // Still doesn't exist, directly create it as last resort
+                        log.warn('Lock file still does not exist after rename failed, creating directly');
+                        await fs.writeFile(lockPath, initialData, 'utf8');
+                    }
+                }
+            } else {
+                // Some other error occurred, let it bubble up
+                throw createError('Error accessing lock file', {
+                    category: ErrorCategory.FILE_ERROR,
+                    cause: error,
+                    context: { lockPath }
+                });
+            }
+        }
+    }
+
+    /**
+     * Marks the current process as the owner of the lock
+     * @method markLockOwner
+     * @private
+     * @returns {Promise<void>}
+     */
+    async markLockOwner() {
+        try {
+            const lockData = await this.readLockFile();
+            
+            // Add entry to lock history for tracking and debugging
+            if (!lockData.lockHistory) {
+                lockData.lockHistory = [];
+            }
+            
+            // Only keep the last 10 entries to avoid unbounded growth
+            if (lockData.lockHistory.length > 10) {
+                lockData.lockHistory = lockData.lockHistory.slice(-9);
+            }
+            
+            lockData.lockHistory.push({
+                pid: process.pid,
+                instanceId: this.instanceId || 'unknown',
+                timestamp: new Date().toISOString(),
+                action: 'acquire'
+            });
+            
+            // Set current lock owner
+            lockData.currentOwner = {
+                pid: process.pid,
+                instanceId: this.instanceId || 'unknown',
+                acquired: new Date().toISOString()
+            };
+            
+            await this.writeLockFile(lockData);
+        } catch (error) {
+            log.error('Error marking lock owner:', error);
+            // Don't throw here to avoid preventing lock acquisition
+            // The lock itself is still held even if marking fails
+        }
+    }
+
+    /**
+     * Release instance lock
+     * @method releaseLock
+     * @private
+     * @returns {Promise<void>}
+     */
+    async releaseLock() {
+        try {
+            if (this.lockRelease) {
+                log.info('Releasing instance lock');
+                await this.lockRelease();
+                this.lockRelease = null;
+            }
+        } catch (error) {
+            log.error('Error releasing lock:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Get the PID file path
+     * @method getPidFilePath
+     * @private
+     * @returns {string} Path to PID file
+     */
+    getPidFilePath() {\n        const path = require('path');\n        const os = require('os');\n        let appName = 'desk-tray';\n        let userDataPath;\n        \n        // Get app name safely\n        try {\n            const packageJson = require('../../package.json');\n            appName = packageJson.name || appName;\n        } catch (error) {\n            log.warn('Could not load package.json for PID file path, using default', error);\n        }\n        \n        // Get userData path safely\n        try {\n            if (app && typeof app.getPath === 'function') {\n                userDataPath = app.getPath('userData');\n            } else {\n                userDataPath = path.join(os.tmpdir(), appName);\n                log.warn(`Could not get userData path, using temporary path: ${userDataPath}`);\n            }\n        } catch (error) {\n            userDataPath = path.join(os.tmpdir(), appName);\n            log.warn(`Error getting userData path, using temporary path: ${userDataPath}`, error);\n        }\n        \n        return path.join(userDataPath, `${appName}.pids.json`);
+    }
+
+    /**
+     * Read PIDs from file
+     * @method readPids
+     * @private
+     * @returns {Promise<Array<number>>} Array of PIDs
+     */
+    async readPids() {
+        try {
+            const fs = require('fs').promises;
+            const pidPath = this.getPidFilePath();
+
+            // Ensure parent directory exists
+            const path = require('path');
+            const dirPath = path.dirname(pidPath);
+            await fs.mkdir(dirPath, { recursive: true });
+
+            try {
+                const data = await fs.readFile(pidPath, 'utf8');
+                const pids = JSON.parse(data);
+
+                // Clean up invalid PIDs
+                const validPids = pids.filter(pid => {
+                    try {
+                        process.kill(pid, 0);
+                        return true;
+                    } catch (error) {
+                        log.info(`Removing invalid PID: ${pid}`);
+                        return false;
+                    }
+                });
+
+                // If we cleaned up any PIDs, save the file
+                if (validPids.length !== pids.length) {
+                    await this.writePids(validPids);
+                }
+
+                return validPids;
+            } catch (error) {
+                if (error.code === 'ENOENT') {
+                    // PID file doesn't exist, return empty array
+                    return [];
+                }
+                throw error;
+            }
+        } catch (error) {
+            log.error('Error reading PID file:', error);
+            return [];
+        }
+    }
+
+    /**
+     * Write PIDs to file
+     * @method writePids
+     * @private
+     * @param {Array<number>} pids - Array of PIDs to write
+     * @returns {Promise<void>}
+     */
+    async writePids(pids) {
+        try {
+            const fs = require('fs').promises;
+            const pidPath = this.getPidFilePath();
+
+            // Ensure parent directory exists
+            const path = require('path');
+            const dirPath = path.dirname(pidPath);
+            await fs.mkdir(dirPath, { recursive: true });
+
+            try {
+                // Ensure file exists before locking
+                try {
+                    await fs.access(pidPath);
+                } catch (error) {
+                    if (error.code === 'ENOENT') {
+                        await fs.writeFile(pidPath, '[]', 'utf8');
+                    }
+                }
+
+                // Acquire lock before writing
+                const lockfile = require('proper-lockfile');
+                const release = await lockfile.lock(pidPath, {
+                    stale: 10000,
+                    retries: {
+                        retries: 5,
+                        factor: 2,
+                        minTimeout: 1000,
+                        maxTimeout: 5000,
+                        randomize: true
+                    }
+                });
+
+                try {
+                    await fs.writeFile(pidPath, JSON.stringify(pids, null, 2), 'utf8');
+                } finally {
+                    await release();
+                }
+            } catch (error) {
+                log.error('Error writing PID file:', error);
+                throw error;
+            }
+        } catch (error) {
+            log.error('Error writing PID file:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Remove PID from file
+     * @method removePidFromFile
+     * @private
+     * @returns {Promise<void>}
+     */
+    async removePidFromFile() {
+        try {
+            const pids = await this.readPids();
+            const newPids = pids.filter(pid => pid !== process.pid);
+            
+            if (newPids.length !== pids.length) {
+                await this.writePids(newPids);
+                log.info(`Removed PID ${process.pid} from PID file`);
+            }
+        } catch (error) {
+            log.error('Error removing PID from file:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Write PID to file
+     * @method writePidFile
+     * @private
+     * @returns {Promise<void>}
+     */
+    async writePidFile() {
+        try {
+            const pids = await this.readPids();
+            if (!pids.includes(process.pid)) {
+                pids.push(process.pid);
+                await this.writePids(pids);
+                log.info(`Added PID ${process.pid} to PID file`);
+            }
+        } catch (error) {
+            log.error('Error writing PID to file:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Register a provider session
+     * @method registerSession
+     * @param {string} name - Provider name
+     * @param {string} profile - Provider profile
+     * @returns {Promise<void>}
+     */
+    async registerSession(name, profile) {
+        try {
+            if (!name || !profile) {
+                throw new Error(`Invalid session parameters: name=${name}, profile=${profile}`);
+            }
+
+            // Use consistent session key format with colon separator
+            const sessionKey = `${name}:${profile}`;
+            log.info(`Registering session: ${sessionKey}`);
+
+            // Acquire lock to ensure atomic operation
+            await this.acquireLock();
+
+            try {
+                // Read current lock data
+                const lockData = await this.readLockFile();
+                
+                if (!lockData.instances) {
+                    log.warn('No instances found in lock file during session registration');
+                    return;
+                }
+
+                // Find our instance
+                const instance = lockData.instances[this.instanceId];
+                if (!instance) {
+                    log.warn(`Current instance ${this.instanceId} not found in lock file during session registration`);
+                    return;
+                }
+
+                // Ensure sessions array exists
+                if (!instance.sessions) {
+                    log.warn(`No sessions array found for instance ${this.instanceId}`);
+                    instance.sessions = [];
+                    await this.writeLockFile(lockData);
+                    return;
+                }
+
+                // Find and add the session
+                if (!instance.sessions.includes(sessionKey)) {
+                    // Add session to array
+                    instance.sessions.push(sessionKey);
+                    log.info(`Session ${sessionKey} added to instance ${this.instanceId}`);
+                    
+                    // Update lock file
+                    await this.writeLockFile(lockData);
+                } else {
+                    log.info(`Session ${sessionKey} already registered in instance ${this.instanceId}`);
+                }
+            } finally {
+                // Always release lock
+                await this.releaseLock();
+            }
+        } catch (error) {
+            log.error(`Error registering session ${name}:${profile}:`, error);
+            throw error;
+        }
+    }
+
+    /**
+     * Unregister a provider session
+     * @method unregisterSession
+     * @param {string} name - Provider name
+     * @param {string} profile - Provider profile
+     * @returns {Promise<void>}
+     */
+    async unregisterSession(name, profile) {
+        try {
+            if (!name || !profile) {
+                throw new Error(`Invalid session parameters: name=${name}, profile=${profile}`);
+            }
+
+            // Use consistent session key format with colon separator
+            const sessionKey = `${name}:${profile}`;
+            log.info(`Unregistering session: ${sessionKey}`);
+
+            // Acquire lock
+            await this.acquireLock();
+
+            try {
+                // Read current lock data
+                const lockData = await this.readLockFile();
+                
+                if (!lockData.instances) {
+                    log.warn('No instances found in lock file during session unregistration');
+                    return;
+                }
+
+                // Find our instance
+                const instance = lockData.instances[this.instanceId];
+                if (!instance) {
+                    log.warn(`Current instance ${this.instanceId} not found in lock file during session unregistration`);
+                    return;
+                }
+
+                // Ensure sessions array exists
+                if (!instance.sessions) {
+                    log.warn(`No sessions array found for instance ${this.instanceId}`);
+                    instance.sessions = [];
+                    await this.writeLockFile(lockData);
+                    return;
+                }
+
+                // Find and remove the session
+                const sessionIndex = instance.sessions.indexOf(sessionKey);
+                if (sessionIndex !== -1) {
+                    // Remove session from array
+                    instance.sessions.splice(sessionIndex, 1);
+                    log.info(`Session ${sessionKey} removed from instance ${this.instanceId}`);
+                    
+                    // Update lock file
+                    await this.writeLockFile(lockData);
+                } else {
+                    log.warn(`Session ${sessionKey} not found in instance ${this.instanceId}`);
+                }
+            } finally {
+                // Always release lock
+                await this.releaseLock();
+            }
+        } catch (error) {
+            log.error(`Error unregistering session ${name}:${profile}:`, error);
+            throw error;
+        }
+    }
+
+    /**
+     * Set up the IPC server with enhanced error handling and recovery
+     * @method setupIpcServer
+     * @private
+     */
+    setupIpcServer() {
+        try {
+            // Create server with robust error handling
+            this.ipcServer = net.createServer((connection) => {
+                // Track active connections for cleanup
+                const connectionId = `conn-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+                this.activeConnections = this.activeConnections || new Map();
+                this.activeConnections.set(connectionId, connection);
+                
+                // Set connection timeout to prevent hanging connections
+                connection.setTimeout(30000); // 30 seconds
+                
+                // Handle incoming data with enhanced error recovery
+                connection.on('data', async (data) => {
+                    // Use safeExecute for robust error handling
+                    await safeExecute(async () => {
+                        // Parse and validate message
+                        const message = JSON.parse(data.toString());
+                        
+                        // Validate message structure
+                        if (!message || typeof message !== 'object' || !message.type) {
+                            throw createError('Invalid message format', {
+                                category: ErrorCategory.IPC_ERROR,
+                                context: { messageType: typeof message }
+                            });
+                        }
+                        
+                        // Handle command delegation
+                        if (message.type === 'delegate-command' && 
+                            message.targetPid?.toString() === process.pid.toString()) {
+                            
+                            log.info(`Handling delegated command:`, message.args);
+                            
+                            // Process the command
+                            let success = false;
+                            let error = null;
+                            let result = null;
+                            
+                            try {
+                                // Execute the command using the CLI module
+                                const cli = require('../cli');
+                                result = await cli.execute(message.args);
+                                success = result && result.success === true;
+                                
+                                if (!success) {
+                                    error = 'Command execution failed';
+                                    log.error('Command execution failed:', result);
+                                } else {
+                                    log.info('Command executed successfully:', result);
+                                }
+                            } catch (err) {
+                                success = false;
+                                error = err.message;
+                                log.error('Error processing command:', err);
+                                
+                                // Log detailed diagnostics
+                                logDiagnostics(err, 'InstanceManager', `command-execution:${message.requestId}`);
+                            }
+                            
+                            // Send response with enhanced reliability
+                            this.sendIpcResponse(connection, {
+                                type: 'delegate-response',
+                                requestId: message.requestId,
+                                success,
+                                error,
+                                pid: process.pid,
+                                result,
+                                timestamp: Date.now()
+                            });
+                        }
+                        
+                        // Handle ping messages (for health checks)
+                        if (message.type === 'ping') {
+                            this.sendIpcResponse(connection, {
+                                type: 'pong',
+                                requestId: message.requestId,
+                                pid: process.pid,
+                                timestamp: Date.now()
+                            });
+                        }
+                    }, {
+                        category: ErrorCategory.IPC_ERROR,
+                        context: { pid: process.pid },
+                        // On error, send an error response to the client
+                        recoverFn: (error) => {
+                            try {
+                                let requestId = 'unknown';
+                                try {
+                                    // Try to extract request ID from message
+                                    const message = JSON.parse(data.toString());
+                                    requestId = message.requestId || 'unknown';
+                                } catch {}
+                                
+                                this.sendIpcResponse(connection, {
+                                    type: 'delegate-response',
+                                    requestId,
+                                    success: false,
+                                    error: error.message || 'Unknown error',
+                                    pid: process.pid,
+                                    timestamp: Date.now()
+                                });
+                            } catch (responseError) {
+                                log.error('Failed to send error response:', responseError);
+                                // Try to end the connection to prevent hanging
+                                try { connection.end(); } catch {}
+                            }
+                        }
+                    });
+                });
+                
+                // Handle connection errors
+                connection.on('error', (error) => {
+                    log.error('IPC connection error:', error);
+                    this.activeConnections.delete(connectionId);
+                    try { connection.end(); } catch {}
+                });
+                
+                // Handle connection timeout
+                connection.on('timeout', () => {
+                    log.warn(`IPC connection ${connectionId} timed out`);
+                    this.activeConnections.delete(connectionId);
+                    try { connection.end(); } catch {}
+                });
+                
+                // Clean up when connection closes
+                connection.on('close', () => {
+                    this.activeConnections.delete(connectionId);
+                });
+            });
+            
+            // Start listening on the named pipe with error handling
+            this.ipcServer.listen(this.ipcPipeName, () => {
+                log.info(`IPC server listening on pipe: ${this.ipcPipeName}`);
+                this.ipcServerActive = true;
+            });
+            
+            // Handle server-level errors
+            this.ipcServer.on('error', (error) => {
+                log.error('IPC server error:', error);
+                this.ipcServerActive = false;
+                
+                // Try to restart server after a brief delay
+                setTimeout(() => {
+                    if (!this.ipcServerActive) {
+                        log.info('Attempting to restart IPC server after error');
+                        this.setupIpcServer();
+                    }
+                }, 5000); // 5 second delay before retry
+            });
+            
+            // Handle server close
+            this.ipcServer.on('close', () => {
+                log.info('IPC server closed');
+                this.ipcServerActive = false;
+            });
+        } catch (error) {
+            log.error('Error setting up IPC server:', error);
+            // Schedule retry after delay
+            setTimeout(() => this.setupIpcServer(), 10000);
+        }
+    }
+    
+    /**
+     * Send an IPC response with enhanced reliability
+     * @method sendIpcResponse
+     * @private
+     * @param {net.Socket} connection - The connection to send the response on
+     * @param {Object} response - The response object to send
+     */
+    sendIpcResponse(connection, response) {
+        try {
+            // Validate that connection is still writable
+            if (connection && !connection.destroyed && connection.writable) {
+                const responseJson = JSON.stringify(response);
+                connection.write(responseJson);
+            } else {
+                log.warn('Attempted to send response on closed/unwritable connection');
+            }
+        } catch (error) {
+            log.error('Error sending IPC response:', error);
+        }
+    }
+    
+    /**
+     * Check IPC server health and restart if needed
+     * @method checkIpcServerHealth
+     * @private
+     */
+    checkIpcServerHealth() {
+        if (!this.ipcServerActive) {
+            log.warn('IPC server not active during health check, restarting');
+            this.setupIpcServer();
+            return;
+        }
+        
+        // Clean up any stale connections
+        if (this.activeConnections && this.activeConnections.size > 0) {
+            log.debug(`Health check: ${this.activeConnections.size} active IPC connections`);
+            for (const [id, connection] of this.activeConnections.entries()) {
+                if (connection.destroyed) {
+                    this.activeConnections.delete(id);
+                }
+            }
+        }
+        
+        // Clean up any timed-out pending requests
+        if (this.pendingIpcRequests && this.pendingIpcRequests.size > 0) {
+            const now = Date.now();
+            for (const [requestId, request] of this.pendingIpcRequests.entries()) {
+                const age = now - request.timestamp;
+                if (age > 60000) { // 1 minute timeout
+                    log.warn(`Timing out stale IPC request: ${requestId} (age: ${Math.round(age/1000)}s)`);
+                    if (request.reject) {
+                        request.reject(new Error('IPC request timed out'));
+                    }
+                    this.pendingIpcRequests.delete(requestId);
+                }
+            }
+        }
+    }
+    
+    /**
+     * Update instance heartbeat timestamp in lock file
+     * @method updateHeartbeat
+     * @private
+     * @returns {Promise<boolean>} Success status
+     */
+    async updateHeartbeat() {
+        if (!this.instanceId) {
+            return false;
+        }
+        
+        try {
+            // Acquire lock to update heartbeat
+            await this.acquireLock();
+            
+            try {
+                // Read current lock data
+                const lockData = await this.readLockFile();
+                
+                // Update heartbeat timestamp
+                if (lockData && lockData.instances && lockData.instances[this.instanceId]) {
+                    lockData.instances[this.instanceId].lastHeartbeat = Date.now();
+                    await this.writeLockFileAtomic(lockData);
+                    log.debug(`Updated heartbeat for instance ${this.instanceId}`);
+                    return true;
+                } else {
+                    log.warn(`Instance ${this.instanceId} not found in lock file during heartbeat update`);
+                    return false;
+                }
+            } finally {
+                // Always release lock
+                await this.releaseLock();
+            }
+        } catch (error) {
+            log.error('Error updating instance heartbeat:', error);
+            return false;
+        }
+    }
+    
+    /**
+     * Start heartbeat mechanism to detect stale instances
+     * @method startHeartbeat
+     * @private
+     */
+    startHeartbeat() {
+        // Clear any existing interval
+        if (this.heartbeatInterval) {
+            clearInterval(this.heartbeatInterval);
+        }
+        
+        // Set heartbeat interval (every 30 seconds)
+        this.heartbeatInterval = setInterval(async () => {
+            await this.updateHeartbeat();
+        }, 30000);
+        
+        // Set stale instance check interval (every 2 minutes)
+        if (this.staleCheckInterval) {
+            clearInterval(this.staleCheckInterval);
+        }
+        
+        this.staleCheckInterval = setInterval(async () => {
+            await this.detectAndCleanupStaleInstances();
+        }, 120000);
+        
+        log.info('Instance heartbeat mechanism started');
+    }
+    
+    /**
+     * Detect and cleanup stale instances
+     * @method detectAndCleanupStaleInstances
+     * @returns {Promise<Array>} Array of cleaned up instance IDs
+     */
+    async detectAndCleanupStaleInstances() {
+        const cleanedUpInstances = [];
+        
+        try {
+            // Acquire lock to check for stale instances
+            await this.acquireLock();
+            
+            try {
+                // Read current lock data
+                const lockData = await this.readLockFile();
+                if (!lockData || !lockData.instances) {
+                    return cleanedUpInstances;
+                }
+                
+                const now = Date.now();
+                const staleThreshold = 120000; // 2 minutes without heartbeat
+                let hasChanges = false;
+                
+                // Check each instance for staleness
+                for (const [id, instance] of Object.entries(lockData.instances)) {
+                    // Skip current instance
+                    if (id === this.instanceId) {
+                        continue;
+                    }
+                    
+                    // Check if instance is stale based on heartbeat
+                    const lastHeartbeat = instance.lastHeartbeat || instance.startTime || 0;
+                    const timeSinceHeartbeat = now - lastHeartbeat;
+                    
+                    if (timeSinceHeartbeat > staleThreshold) {
+                        // Try to ping the instance via IPC to confirm it's really gone
+                        const isResponsive = await this.checkInstanceResponsiveness(id, instance);
+                        
+                        if (!isResponsive) {
+                            log.warn(`Cleaning up stale instance ${id} (last heartbeat: ${new Date(lastHeartbeat).toISOString()})`);
+                            
+                            // Record cleanup in history
+                            if (!lockData.history) {
+                                lockData.history = [];
+                            }
+                            
+                            lockData.history.push({
+                                action: 'cleanup',
+                                instanceId: id,
+                                pid: instance.pid,
+                                profile: instance.profile,
+                                timestamp: now,
+                                reason: 'stale',
+                                lastHeartbeat: lastHeartbeat,
+                                cleanedBy: this.instanceId
+                            });
+                            
+                            // Remove instance from active instances
+                            delete lockData.instances[id];
+                            cleanedUpInstances.push(id);
+                            hasChanges = true;
+                            
+                            // Clean up PID file as well
+                            await this.removePidFromFile(instance.pid);
+                        }
+                    }
+                }
+                
+                // Save changes if any
+                if (hasChanges) {
+                    await this.writeLockFileAtomic(lockData);
+                    log.info(`Cleaned up ${cleanedUpInstances.length} stale instances`);
+                }
+            } finally {
+                // Always release lock
+                await this.releaseLock();
+            }
+        } catch (error) {
+            log.error('Error detecting and cleaning up stale instances:', error);
+        }
+        
+        return cleanedUpInstances;
+    }
+    
+    /**
+     * Check if an instance is responsive via IPC
+     * @method checkInstanceResponsiveness
+     * @private
+     * @param {string} instanceId - ID of the instance to check
+     * @param {Object} instanceData - Instance data from lock file
+     * @returns {Promise<boolean>} True if instance is responsive
+     */
+    async checkInstanceResponsiveness(instanceId, instanceData) {
+        if (!instanceData || !instanceData.pid) {
+            return false;
+        }
+        
+        // First check if process exists
+        try {
+            // On Windows, use process.kill(pid, 0) to check if process exists
+            process.kill(instanceData.pid, 0);
+        } catch (e) {
+            // Error means process doesn't exist
+            log.debug(`Process ${instanceData.pid} for instance ${instanceId} doesn't exist`);
+            return false;
+        }
+        
+        // If process exists, try to communicate via IPC
+        try {
+            // Construct IPC pipe name based on package name and PID
+            const packageJson = require('../../package.json');
+            const pipeName = `\\?\\pipe\\${packageJson.name}-${instanceData.pid}`;
+            
+            // Try to ping instance with a short timeout
+            const pingResult = await this.pingInstanceViaPipe(pipeName);
+            return pingResult;
+        } catch (error) {
+            log.debug(`Failed to communicate with instance ${instanceId} via IPC:`, error);
+            return false;
+        }
+    }
+    
+    /**
+     * Ping an instance via named pipe with timeout
+     * @method pingInstanceViaPipe
+     * @private
+     * @param {string} pipeName - Named pipe to connect to
+     * @returns {Promise<boolean>} True if ping successful
+     */
+    pingInstanceViaPipe(pipeName) {
+        return new Promise((resolve) => {
+            // Set a short timeout for the ping
+            const timeout = setTimeout(() => {
+                log.debug(`Ping to ${pipeName} timed out`);
+                resolve(false);
+            }, 5000); // 5 second timeout
+            
+            try {
+                const client = net.connect(pipeName, () => {
+                    // Connected successfully
+                    clearTimeout(timeout);
+                    
+                    // Send ping command
+                    const pingCommand = JSON.stringify({
+                        command: 'ping',
+                        timestamp: Date.now()
+                    });
+                    
+                    client.write(pingCommand);
+                    
+                    // Handle data
+                    client.once('data', (data) => {
+                        clearTimeout(timeout);
+                        try {
+                            client.end();
+                            const response = JSON.parse(data.toString());
+                            resolve(response && response.status === 'ok');
+                        } catch (e) {
+                            log.debug('Error parsing ping response:', e);
+                            resolve(false);
+                        }
+                    });
+                    
+                    // Set a data timeout
+                    setTimeout(() => {
+                        client.end();
+                        resolve(false);
+                    }, 3000);
+                });
+                
+                // Handle connection errors
+                client.on('error', (error) => {
+                    clearTimeout(timeout);
+                    log.debug(`Error connecting to ${pipeName}:`, error);
+                    resolve(false);
+                });
+            } catch (error) {
+                clearTimeout(timeout);
+                log.debug(`Exception trying to ping ${pipeName}:`, error);
+                resolve(false);
+            }
+        });
+    }
+}
+
+// Export a singleton instance
+module.exports = new InstanceManager();
+

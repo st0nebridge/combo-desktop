@@ -1,0 +1,58 @@
+{
+  "tasks": [
+    {
+      "id": "task-001",
+      "name": "Initial Analysis",
+      "description": "Review console errors when exiting the application and identify all outstanding issues",
+      "status": "completed",
+      "dependencies": [],
+      "start_time": "2025-05-01T05:37:00+01:00",
+      "end_time": "2025-05-01T05:40:00+01:00"
+    },
+    {
+      "id": "task-002",
+      "name": "Fix instance.manager.js",
+      "description": "Repair the corrupted instance.manager.js file to eliminate the need for the stub",
+      "status": "completed",
+      "dependencies": ["task-001"],
+      "start_time": "2025-05-01T05:40:00+01:00",
+      "end_time": "2025-05-01T07:48:45+01:00"
+    },
+    {
+      "id": "task-003",
+      "name": "Improve electron initialization",
+      "description": "Ensure all electron components are properly initialized and available throughout application startup",
+      "status": "completed",
+      "dependencies": ["task-001"],
+      "start_time": "2025-05-01T05:40:00+01:00",
+      "end_time": "2025-05-01T06:12:00+01:00"
+    },
+    {
+      "id": "task-004",
+      "name": "Fix window service",
+      "description": "Address any remaining issues with window creation and initialization",
+      "status": "completed",
+      "dependencies": ["task-003"],
+      "start_time": "2025-05-01T06:12:00+01:00",
+      "end_time": "2025-05-01T07:51:30+01:00"
+    },
+    {
+      "id": "task-005",
+      "name": "Remove stub implementation",
+      "description": "Remove the instance.manager.stub.js and revert to using the fixed instance.manager.js",
+      "status": "completed",
+      "dependencies": ["task-002", "task-003", "task-004"],
+      "start_time": "2025-05-01T07:51:30+01:00",
+      "end_time": "2025-05-01T07:51:30+01:00"
+    },
+    {
+      "id": "task-006",
+      "name": "Final testing and validation",
+      "description": "Test the application to ensure all fixed components work correctly",
+      "status": "not_started",
+      "dependencies": ["task-005"],
+      "start_time": null,
+      "end_time": null
+    }
+  ]
+}

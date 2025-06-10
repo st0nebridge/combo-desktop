@@ -1,0 +1,64 @@
+{
+  "request": {
+    "meta": {
+      "id": "req-001",
+      "title": "Code Analysis of src directory",
+      "created": "2025-04-30T20:09:20+01:00"
+    },
+    "context": {
+      "projectPath": "m:\\Dev\\Tools\\combo-desktop"
+    },
+    "instructions": [
+      "Perform deep analysis of all the code in src",
+      "Report on problems and recommendations",
+      "Identify why instance management may be working incorrectly"
+    ],
+    "priorities": [
+      "Thoroughness of analysis",
+      "Actionable recommendations",
+      "Understanding instance management issues"
+    ],
+    "directives": {
+      "REQUIRED": [
+        "Analyze all code in src directory",
+        "Identify potential bugs and issues",
+        "Focus on instance management problems"
+      ],
+      "PREFERRED": [
+        "Provide code examples where relevant",
+        "Suggest specific fixes for identified issues"
+      ],
+      "PROHIBITED": [
+        "Skip or ignore any files in src directory",
+        "Make assumptions without evidence in code"
+      ],
+      "CONDITIONAL": []
+    }
+  },
+  "output": {
+    "REQUIRED": [
+      "Include executive summary of findings",
+      "List all identified problems",
+      "Provide specific recommendations",
+      "Detail instance management issues"
+    ],
+    "PREFERRED": [
+      "Use markdown formatting",
+      "Include code snippets for context",
+      "Group issues by severity"
+    ],
+    "PROHIBITED": [
+      "Omit critical findings",
+      "Provide vague or generic advice"
+    ],
+    "CONDITIONAL": []
+  },
+  "variables": {},
+  "tasks": {
+    "current": null,
+    "next": null,
+    "queued": [],
+    "completed": [],
+    "context": {}
+  }
+}

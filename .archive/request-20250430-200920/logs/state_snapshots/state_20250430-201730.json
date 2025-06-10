@@ -1,0 +1,113 @@
+{
+  "timestamp": "2025-04-30T20:17:30+01:00",
+  "requestId": "req-001",
+  "currentTask": "task-003",
+  "variables": {
+    "codeBasePath": {
+      "value": "m:\\Dev\\Tools\\combo-desktop\\src",
+      "writable": false,
+      "lastModified": "2025-04-30T20:11:00+01:00",
+      "modifiedBy": "initialization"
+    },
+    "fileList": {
+      "value": [
+        "src/main.js",
+        "src/preload.js",
+        "src/cli/abstract/base-cli.js",
+        "src/cli/cli.registry.js",
+        "src/cli/index.js",
+        "src/cli/modules/help-cli.js",
+        "src/cli/modules/instance-cli.js",
+        "src/cli/modules/profile-cli.js",
+        "src/cli/modules/provider-cli.js",
+        "src/cli/old/help-cli.js",
+        "src/cli/old/instance-cli.js",
+        "src/cli/old/profile-cli.js",
+        "src/cli/old/provider-cli.js",
+        "src/config/app.config.js",
+        "src/config/user-agent.config.js",
+        "src/providers/abstract/base.provider.js",
+        "src/providers/index.js",
+        "src/providers/modules/facebook.provider.js",
+        "src/providers/modules/whatsapp.provider.js",
+        "src/providers/provider.registry.js",
+        "src/services/app.manager.js",
+        "src/services/instance.manager.js",
+        "src/services/logging.service.js",
+        "src/services/profile.manager.js",
+        "src/services/tray.service.js",
+        "src/services/window.service.js",
+        "src/utils/icons.js"
+      ],
+      "writable": true,
+      "lastModified": "2025-04-30T20:14:30+01:00",
+      "modifiedBy": "task-001"
+    },
+    "issues": {
+      "value": [
+        {
+          "id": "ISSUE-001",
+          "type": "code-quality",
+          "severity": "medium",
+          "file": "src/main.js",
+          "description": "Commented-out code block for delegating sessions to existing instances",
+          "lineRange": "57-72"
+        },
+        {
+          "id": "ISSUE-002",
+          "type": "design",
+          "severity": "medium",
+          "file": "src/services/instance.manager.js",
+          "description": "Complex state management across multiple files creating synchronization challenges",
+          "lineRange": "multiple"
+        },
+        {
+          "id": "ISSUE-003",
+          "type": "concurrency",
+          "severity": "high",
+          "file": "src/services/instance.manager.js",
+          "description": "Potential race conditions in lock acquisition and release operations",
+          "lineRange": "173-215"
+        },
+        {
+          "id": "ISSUE-004",
+          "type": "error-handling",
+          "severity": "medium",
+          "file": "src/services/instance.manager.js",
+          "description": "Some error paths may leave resources in inconsistent state",
+          "lineRange": "multiple"
+        },
+        {
+          "id": "ISSUE-005",
+          "type": "ipc",
+          "severity": "medium",
+          "file": "src/services/instance.manager.js",
+          "description": "IPC handlers may not handle all error conditions properly",
+          "lineRange": "1240-1282"
+        }
+      ],
+      "writable": true,
+      "lastModified": "2025-04-30T20:17:00+01:00",
+      "modifiedBy": "task-002"
+    },
+    "instanceManagementIssues": {
+      "value": [],
+      "writable": true,
+      "lastModified": "2025-04-30T20:11:00+01:00",
+      "modifiedBy": "initialization"
+    },
+    "recommendations": {
+      "value": [],
+      "writable": true,
+      "lastModified": "2025-04-30T20:11:00+01:00",
+      "modifiedBy": "initialization"
+    }
+  },
+  "taskState": {
+    "current": { "id": "task-003", "label": "Investigate Instance Management" },
+    "next": { "id": "task-004", "label": "Identify Issues and Recommendations" },
+    "completedCount": 2,
+    "queuedCount": 2
+  },
+  "snapshotReason": "task-transition"
+}

@@ -23,9 +23,14 @@ class ProfileManager {
      */
     constructor() {
         // Ensure app name is set before getting userData path
-        if (!app.name) {
-            const packageJson = require('../../package.json');
-            app.name = packageJson.name;
+        if (!app || !app.name) {
+            try {
+                const packageJson = require('../../package.json');
+                if (app) app.name = packageJson.name || 'combo-desktop';
+            } catch (error) {
+                log.warn('Could not load package.json:', error);
+                if (app) app.name = 'combo-desktop';
+            }
         }
 
         /** @property {Store} store - Electron store for profile data */
@@ -98,7 +103,15 @@ class ProfileManager {
      * @returns {string} Partition name in format appName:provider:profile
      */
     getPartitionName(providerName, profileName = 'default') {
-        return `${app.getName()}:${providerName}:${profileName}`;
+        let appName = 'desk-tray';
+        try {
+            if (app && typeof app.getName === 'function') {
+                appName = app.getName();
+            }
+        } catch (error) {
+            log.warn('Error getting app name, using default', error);
+        }
+        return `${appName}:${providerName}:${profileName}`;
     }
 
     /**

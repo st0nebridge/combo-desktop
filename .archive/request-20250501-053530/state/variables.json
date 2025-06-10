@@ -1,0 +1,15 @@
+{
+  "app_name": "WhatsApp Desktop",
+  "codebase_root": "m:\\Dev\\Tools\\combo-desktop",
+  "main_entry_point": "src/main.js",
+  "key_services": [
+    "instance.manager.js",
+    "window.service.js",
+    "app.manager.js",
+    "profile.manager.js"
+  ],
+  "current_workarounds": [
+    "instance.manager.stub.js"
+  ],
+  "identified_issues": []
+}

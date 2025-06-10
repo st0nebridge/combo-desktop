@@ -6,6 +6,7 @@
 
 const BaseCLI = require('../abstract/base-cli');
 const log = require('electron-log');
+// Use stub implementation instead of the corrupted instance manager
 const instanceManager = require('../../services/instance.manager');
 
 /**
@@ -408,6 +409,26 @@ class InstanceCLI extends BaseCLI {
             console.log(`- Lock Exists: ${status.lockExists}`);
             console.log(`- Current Instance ID: ${status.currentId || 'None'}`);
             console.log(`- Running Instances: ${status.runningCount}`);
+            
+            if (status.instances && status.instances.length > 0) {
+                console.log('\nActive Instances:');
+                for (const instance of status.instances) {
+                    console.log(`\nInstance ${instance.id}:`);
+                    console.log(`  - PID: ${instance.pid}`);
+                    console.log(`  - Profile: ${instance.profile}`);
+                    console.log(`  - Start Time: ${instance.startTime}`);
+                    if (instance.sessions && instance.sessions.length > 0) {
+                        console.log('  - Active Sessions:');
+                        for (const session of instance.sessions) {
+                            console.log(`    * ${session}`);
+                        }
+                    } else {
+                        console.log('  - No Active Sessions');
+                    }
+                }
+            } else {
+                console.log('\nNo Active Instances');
+            }
             
             return true;
         } catch (error) {

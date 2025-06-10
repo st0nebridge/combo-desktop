@@ -1,0 +1,76 @@
+{
+  "current": {
+    "id": "task_001_setup",
+    "label": "Initial Setup and Environment Preparation",
+    "description": "Create git branches, backup current state, validate environment",
+    "priority": "P0",
+    "conditions": [],
+    "uses": ["current_branch"],
+    "produces": ["backup_created"],
+    "status": "executing",
+    "started_at": "2025-06-10T14:30:30Z"
+  },
+  "next": {
+    "id": "task_002_instance_manager",
+    "label": "Restore Instance Manager Functionality", 
+    "description": "Compare current vs backup, selectively restore critical features",
+    "priority": "P1",
+    "conditions": ["backup_created"],
+    "uses": ["backup_created"],
+    "produces": ["instance_manager_restored"],
+    "status": "ready"
+  },
+  "queued": [
+    {
+      "id": "task_003_cli_cleanup",
+      "label": "Remove Deprecated CLI Code",
+      "description": "Verify functionality coverage and remove old CLI implementations",
+      "priority": "P2", 
+      "conditions": ["instance_manager_restored"],
+      "uses": ["instance_manager_restored"],
+      "produces": ["deprecated_code_removed"],
+      "status": "queued"
+    },
+    {
+      "id": "task_004_error_recovery",
+      "label": "Enhance Error Recovery Integration",
+      "description": "Integrate error recovery utilities throughout services",
+      "priority": "P3",
+      "conditions": ["deprecated_code_removed"],
+      "uses": ["deprecated_code_removed", "instance_manager_restored"],
+      "produces": ["error_recovery_integrated"],
+      "status": "queued"
+    },
+    {
+      "id": "task_005_test_coverage",
+      "label": "Expand Test Coverage",
+      "description": "Create comprehensive test suites for all core services",
+      "priority": "P4",
+      "conditions": ["error_recovery_integrated"],
+      "uses": ["error_recovery_integrated"],
+      "produces": ["test_coverage_expanded"],
+      "status": "queued"
+    },
+    {
+      "id": "task_006_todos",
+      "label": "Complete Minor Development Tasks",
+      "description": "Implement theme service integration and resolve TODOs",
+      "priority": "P5",
+      "conditions": ["test_coverage_expanded"],
+      "uses": ["test_coverage_expanded"],
+      "produces": ["todos_completed"],
+      "status": "queued"
+    },
+    {
+      "id": "task_007_validation",
+      "label": "Final Validation and Production Readiness",
+      "description": "Comprehensive testing and validation of all changes",
+      "priority": "P0",
+      "conditions": ["todos_completed"],
+      "uses": ["todos_completed", "instance_manager_restored", "deprecated_code_removed", "error_recovery_integrated", "test_coverage_expanded"],
+      "produces": ["stability_validated"],
+      "status": "queued"
+    }
+  ],
+  "completed": []
+}

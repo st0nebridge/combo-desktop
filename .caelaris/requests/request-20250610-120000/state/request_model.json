@@ -1,0 +1,63 @@
+{
+  "request": {
+    "meta": {
+      "protocol": "caelaris",
+      "timestamp": "20250610-120000",
+      "description": "Perform deep analysis of the combo-desktop project, identify outstanding problems, and generate a comprehensive action plan."
+    },
+    "context": {
+      "workspaceRoot": "m:\\Dev\\Tools\\combo-desktop",
+      "relevantFiles": ["#file:caelaris.md"]
+    },
+    "instructions": [
+      "Analyze the entire codebase.",
+      "Identify all potential issues, including bugs, anti-patterns, and areas for improvement.",
+      "Generate a detailed action plan with prioritized tasks to address the identified issues."
+    ],
+    "priorities": ["Accuracy of issue identification", "Comprehensiveness of action plan"],
+    "directives": {
+      "REQUIRED": ["Adhere to Caelaris Protocol specified in caelaris.md", "Log all steps and findings."],
+      "PREFERRED": ["Categorize issues by severity."],
+      "PROHIBITED": ["Do not modify any project files outside the .caelaris directory during the analysis phase."],
+      "CONDITIONAL": []
+    }
+  },
+  "output": {
+    "actionPlanPath": ".caelaris/requests/request-20250610-120000/outputs/action_plan.md",
+    "issuesLogPath": ".caelaris/requests/request-20250610-120000/outputs/issues_log.md"
+  },
+  "variables": {},
+  "tasks": {
+    "current": {},
+    "next": {},
+    "queued": [],
+    "completed": [
+        {
+            "id": "task_001_env_setup",
+            "label": "Initialize Caelaris Protocol Environment",
+            "status": "completed"
+        },
+        {
+            "id": "task_002_codebase_scan",
+            "label": "Perform Initial Codebase Scan",
+            "status": "completed"
+        },
+        {
+            "id": "task_003_identify_issues",
+            "label": "Identify Problems and Areas for Improvement",
+            "status": "completed"
+        },
+        {
+            "id": "task_004_generate_action_plan",
+            "label": "Generate Comprehensive Action Plan",
+            "status": "completed"
+        },
+        {
+            "id": "task_005_finalize_report",
+            "label": "Finalize Report and Summaries",
+            "status": "completed"
+        }
+    ],
+    "context": {}
+  }
+}

@@ -201,72 +201,99 @@ class WhatsAppProvider extends BaseProvider {
      * Inject WhatsApp-specific JavaScript for browser compatibility and service worker management
      * @method injectCustomJS
      * @override
-     * @throws {Error} If window or webContents are not available
      * @returns {void}
      */
     injectCustomJS() {
-        if (!this.window || !this.window.webContents) {
-            const error = new Error('Window or webContents not available for custom JS injection');
-            logger.error(error.message);
-            throw error;
+        // Check if window and webContents are available
+        if (!this.window) {
+            logger.warn('Window not available for custom JS injection, skipping');
+            return;
+        }
+
+        // Check if webContents is available
+        if (!this.window.webContents) {
+            logger.warn('WebContents not available for custom JS injection, skipping');
+            return;
+        }
+
+        // Check if executeJavaScript method is available
+        if (typeof this.window.webContents.executeJavaScript !== 'function') {
+            logger.warn('executeJavaScript method not available, skipping custom JS injection');
+            return;
         }
 
         logger.info('Injecting custom JavaScript for WhatsApp compatibility');
         
-        this.window.webContents.executeJavaScript(`
-            // Clear service worker registrations to avoid caching issues
-            window.navigator.serviceWorker.getRegistrations().then(registrations => {
-                console.log('[WhatsApp Provider] Unregistering service workers:', registrations.length);
-                for (let registration of registrations) {
-                    registration.unregister();
+        try {
+            this.window.webContents.executeJavaScript(`
+                // --- WhatsApp Provider: Custom JS Injection ---
+                // Clear service worker registrations to avoid caching issues
+                if (window.navigator && window.navigator.serviceWorker && typeof window.navigator.serviceWorker.getRegistrations === 'function') {
+                    window.navigator.serviceWorker.getRegistrations().then(registrations => {
+                        console.log('[WhatsApp Provider] Unregistering service workers:', registrations.length);
+                        for (let registration of registrations) {
+                            registration.unregister();
+                        }
+                    }).catch(err => {
+                        console.error('[WhatsApp Provider] Error unregistering service workers:', err);
+                    });
                 }
-            });
 
-            // Function to handle browser compatibility check
-            const handleBrowserCheck = () => {
-                // Check for various browser compatibility messages
-                const titleEl = document.querySelector('.window-title');
-                const compatMsgEl = document.querySelector('h1, .landing-title');
-                const browserWarning = document.querySelector('.browser-version-warning');
-                
-                console.log('[WhatsApp Provider] Checking for compatibility elements:');
-                console.log('[WhatsApp Provider] - Title element:', titleEl ? titleEl.innerHTML : 'not found');
-                console.log('[WhatsApp Provider] - Compatibility message:', compatMsgEl ? compatMsgEl.textContent : 'not found');
-                console.log('[WhatsApp Provider] - Browser warning:', browserWarning ? 'found' : 'not found');
-                
-                // If we find any compatibility warning elements
-                if ((titleEl && (titleEl.innerHTML.includes('Chrome') || titleEl.innerHTML.includes('browser'))) || 
-                    (compatMsgEl && compatMsgEl.textContent.includes('Google Chrome')) ||
-                    browserWarning) {
-                    console.log('[WhatsApp Provider] Detected browser compatibility warning, reloading...');
-                    // Force reload the page to apply our user agent
-                    setTimeout(() => window.location.reload(), 1000);
-                    return true;
-                }
-                return false;
-            };
-
-            // Run initial check and set up observer
-            if (!handleBrowserCheck()) {
-                // Set up observer to watch for compatibility messages
-                const observer = new MutationObserver((mutations) => {
-                    if (handleBrowserCheck()) {
-                        observer.disconnect();
+                // Define a function to check for browser compatibility issues
+                function handleBrowserCheck() {
+                    const titleEl = document.querySelector('.window-title');
+                    const compatMsgEl = document.querySelector('h1, .landing-title');
+                    const browserWarning = document.querySelector('.browser-version-warning');
+                    console.log('[WhatsApp Provider] Checking for compatibility elements:');
+                    console.log('[WhatsApp Provider] - Title element:', titleEl ? titleEl.innerHTML : 'not found');
+                    console.log('[WhatsApp Provider] - Compatibility message:', compatMsgEl ? compatMsgEl.textContent : 'not found');
+                    console.log('[WhatsApp Provider] - Browser warning:', browserWarning ? 'found' : 'not found');
+                    if ((titleEl && (titleEl.innerHTML.includes('Chrome') || titleEl.innerHTML.includes('browser'))) || 
+                        (compatMsgEl && compatMsgEl.textContent.includes('Google Chrome')) ||
+                        browserWarning) {
+                        console.log('[WhatsApp Provider] Detected browser compatibility warning, reloading...');
+                        setTimeout(() => window.location.reload(), 1000);
+                        return true;
                     }
-                });
+                    return false;
+                }
 
-                observer.observe(document.body, {
-                    childList: true,
-                    subtree: true
-                });
-            }
-        `).catch(err => {
-            logger.error('Error injecting custom JavaScript:', err);
-        });
-    }
+                // Run initial check and set up observer
+                if (!handleBrowserCheck()) {
+                    const observer = new MutationObserver((mutations) => {
+                        if (handleBrowserCheck()) {
+                            observer.disconnect();
+                        }
+                    });
+                    observer.observe(document.body, {
+                        childList: true,
+                        subtree: true
+                    });
+                }
+            `)
+            .catch(err => {
+                logger.error('Error injecting custom JavaScript:', err);
+            });
+        } catch (err) {
+            logger.error('Exception during custom JS injection:', err);
+        }
+}
 
-    /**
-     * Get context menu options for the tray icon
+/**
+ * Get context menu options for the tray icon
+ * @method getContextMenuOptions
+ * @override
+ * @returns {Array<Object>} Menu template array
+ */
+getContextMenuOptions() {
+    const baseOptions = super.getContextMenuOptions();
+    return [
+        {
+            label: 'Open WhatsApp',
+            click: () => {
+                if (this.window) {
+                    this.window.show();
+                    this.window.focus();
      * @method getContextMenuOptions
      * @override
      * @returns {Array<Object>} Menu template array
