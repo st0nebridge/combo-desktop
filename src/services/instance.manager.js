@@ -2,8 +2,8 @@
  * @file Instance management service that handles application instance lifecycle,
  * locking, and PID tracking to ensure proper multi-instance behavior.
  *
- * This is a minimal implementation to restore functionality after file corruption.
- * It implements the essential methods needed for WhatsApp to run properly.
+ * Restored from backup with enhanced transaction management, error recovery,
+ * and IPC health monitoring while preserving working functionality.
  */
 
 const { app, ipcMain } = require('electron');
@@ -14,6 +14,20 @@ const os = require('os');
 const lockfile = require('proper-lockfile');
 const net = require('net');
 const { spawn } = require('child_process');
+
+// Import transaction utilities
+const { createTransaction, createResourceLock, withTransaction } = require('../utils/transaction');
+
+// Import error recovery utilities
+const { 
+    ErrorCategory, 
+    RecoverableError, 
+    createError, 
+    safeExecute, 
+    logDiagnostics, 
+    recoverLockFile,
+    verifyDataFileIntegrity
+} = require('../utils/error-recovery');
 
 /**
  * Service for managing application instances.
@@ -91,8 +105,73 @@ class InstanceManager {
         
         /** @property {Function} lockRelease - Function to release the instance lock */
         this.lockRelease = null;
+
+        /** @property {Object} currentProfile - Current profile */
+        this.currentProfile = null;
+        
+        /** @property {Object} lockFileLock - Resource lock for instance lock file */
+        this.lockFileLock = createResourceLock('instance-lock-file');
+        
+        /** @property {Object} pidFileLock - Resource lock for PID file */
+        this.pidFileLock = createResourceLock('instance-pid-file');
+        
+        /** @property {Map} activeTransactions - Map of active transactions */
+        this.activeTransactions = new Map();
+        
+        /** @property {Object} heartbeatInterval - Heartbeat interval for health monitoring */
+        this.heartbeatInterval = null;
+        
+        /** @property {Number} heartbeatFrequency - Frequency of heartbeat in ms */
+        this.heartbeatFrequency = 30000; // 30 seconds
+        
+        /** @property {Map} lockHistory - History of lock operations for debugging */
+        this.lockHistory = new Map();
+        
+        /** @property {Object} ipcServer - IPC server instance */
+        this.ipcServer = null;
     }
 
+    /**
+     * Create a transaction for instance operations
+     * @method createInstanceTransaction
+     * @param {string} name - Transaction name
+     * @param {Object} options - Transaction options
+     * @returns {Object} Transaction object
+     */
+    createInstanceTransaction(name, options = {}) {
+        try {
+            const transaction = createTransaction(name, {
+                timeout: options.timeout || 30000,
+                retries: options.retries || 3,
+                ...options
+            });
+            
+            if (transaction) {
+                this.activeTransactions.set(name, transaction);
+                
+                // Auto-cleanup completed transactions if promise exists
+                if (transaction.promise && typeof transaction.promise.finally === 'function') {
+                    transaction.promise.finally(() => {
+                        this.activeTransactions.delete(name);
+                    });
+                } else {
+                    // Fallback cleanup for non-promise transactions
+                    setTimeout(() => {
+                        this.activeTransactions.delete(name);
+                    }, options.timeout || 30000);
+                }
+                
+                return transaction;
+            } else {
+                log.warn(`Failed to create transaction: ${name}`);
+                return null;
+            }
+        } catch (error) {
+            log.error(`Error creating transaction ${name}:`, error);
+            return null;
+        }
+    }
+    
     /**
      * Get the IPC pipe name for this instance
      * @method getIpcPipeName
@@ -155,24 +234,45 @@ class InstanceManager {
      * @returns {Promise<void>}
      */
     async initialize() {
-        try {
-            log.info('Initializing instance manager...');
-            
-            // Register cleanup handlers
-            this.registerCleanupHandlers();
-            
-            // Setup IPC server
-            this.setupIpcServer();
+        const transaction = this.createInstanceTransaction('initialization', {
+            timeout: 30000,
+            retries: 2
+        });
+        
+        return withTransaction(transaction, async () => {
+            log.info('Initializing instance manager with enhanced features...');
             
             // Generate unique instance ID
             this.instanceId = `instance-${Date.now()}-${Math.random().toString(36).substring(2, 15)}`;
             log.info(`Instance ID: ${this.instanceId}`);
             
+            // Verify and recover data file integrity
+            await safeExecute(async () => {
+                await verifyDataFileIntegrity(this.getPidFilePath());
+                await verifyDataFileIntegrity(this.getLockFilePath());
+            }, {
+                context: 'Data file integrity check',
+                fallback: () => log.warn('Data file integrity check failed, continuing with caution')
+            });
+            
+            // Register cleanup handlers first
+            this.registerCleanupHandlers();
+            
+            // Setup IPC server with enhanced error handling
+            await this.setupIpcServer();
+            
+            // Record initialization in lock history
+            this.lockHistory.set(`init-${Date.now()}`, {
+                action: 'initialize',
+                timestamp: Date.now(),
+                instanceId: this.instanceId,
+                pid: process.pid,
+                success: true
+            });
+            
+            log.info('Instance manager initialization completed successfully');
             return Promise.resolve();
-        } catch (error) {
-            log.error('Error initializing instance manager:', error);
-            return Promise.reject(error);
-        }
+        });
     }
     
     /**
@@ -181,13 +281,13 @@ class InstanceManager {
      * @private
      */
     setupIpcServer() {
-        try {
-            // Create server
+        return safeExecute(async () => {
+            // Create server with enhanced error handling
             const server = net.createServer((socket) => {
                 log.debug('Client connected to IPC server');
                 
                 socket.on('data', (data) => {
-                    try {
+                    safeExecute(() => {
                         const message = JSON.parse(data.toString());
                         log.debug('Received IPC message:', message);
                         
@@ -196,13 +296,28 @@ class InstanceManager {
                             const response = {
                                 status: 'ok',
                                 timestamp: Date.now(),
-                                instanceId: this.instanceId
+                                instanceId: this.instanceId,
+                                sessionCount: this.getSessionCount()
                             };
-                            socket.write(JSON.stringify(response));
+                            this.sendIpcResponse(socket, response);
                         }
-                    } catch (error) {
-                        log.error('Error handling IPC message:', error);
-                    }
+                        
+                        // Handle status command
+                        if (message.command === 'status') {
+                            const response = this.getStatus();
+                            this.sendIpcResponse(socket, response);
+                        }
+                    }, {
+                        context: 'IPC message handling',
+                        fallback: () => {
+                            const errorResponse = {
+                                status: 'error',
+                                message: 'Failed to process message',
+                                timestamp: Date.now()
+                            };
+                            this.sendIpcResponse(socket, errorResponse);
+                        }
+                    });
                 });
                 
                 socket.on('error', (error) => {
@@ -216,18 +331,48 @@ class InstanceManager {
             
             server.on('error', (error) => {
                 log.error('IPC server error:', error);
+                // Attempt recovery
+                if (error.code === 'EADDRINUSE') {
+                    log.warn('IPC pipe address in use, attempting recovery');
+                    setTimeout(() => this.setupIpcServer(), 1000);
+                }
             });
             
-            // Listen on named pipe
-            server.listen(this.ipcPipeName, () => {
-                log.info(`IPC server listening on ${this.ipcPipeName}`);
+            // Listen on named pipe with enhanced error handling
+            return new Promise((resolve, reject) => {
+                server.listen(this.ipcPipeName, () => {
+                    log.info(`IPC server listening on ${this.ipcPipeName}`);
+                    this.ipcServer = server;
+                    this.startHeartbeat(); // Start health monitoring
+                    resolve();
+                });
+                
+                server.on('error', reject);
             });
-            
-            // Store server reference for cleanup
-            this.ipcServer = server;
-        } catch (error) {
-            log.error('Error setting up IPC server:', error);
-        }
+        }, {
+            context: 'IPC server setup',
+            fallback: () => {
+                log.warn('IPC server setup failed, continuing without IPC');
+            }
+        });
+    }
+    
+    /**
+     * Send IPC response safely
+     * @method sendIpcResponse
+     * @param {Object} socket - Socket connection
+     * @param {Object} response - Response data
+     * @private
+     */
+    sendIpcResponse(socket, response) {
+        safeExecute(() => {
+            if (socket && !socket.destroyed) {
+                socket.write(JSON.stringify(response));
+            }
+        }, {
+            context: 'IPC response sending',
+            fallback: () => log.warn('Failed to send IPC response')
+        });
     }
 
     /**
@@ -237,39 +382,81 @@ class InstanceManager {
      * @returns {Promise<void>}
      */
     async cleanup() {
-        try {
+        const transaction = this.createInstanceTransaction('cleanup', {
+            timeout: 10000,
+            retries: 1
+        });
+        
+        return withTransaction(transaction, async () => {
             log.info('Cleaning up instance resources...');
             
-            // Close IPC server if it exists
-            if (this.ipcServer) {
-                try {
-                    this.ipcServer.close(() => {
-                        log.info('IPC server closed successfully');
-                    });
-                } catch (error) {
-                    log.warn('Error closing IPC server:', error);
-                }
+            // Stop heartbeat monitoring
+            if (this.heartbeatInterval) {
+                clearInterval(this.heartbeatInterval);
+                this.heartbeatInterval = null;
+                log.debug('Heartbeat monitoring stopped');
             }
             
-            // Release lock if it exists
+            // Close IPC server
+            if (this.ipcServer) {
+                await safeExecute(async () => {
+                    return new Promise((resolve) => {
+                        this.ipcServer.close(() => {
+                            log.info('IPC server closed successfully');
+                            resolve();
+                        });
+                        // Force close after timeout
+                        setTimeout(resolve, 2000);
+                    });
+                }, {
+                    context: 'IPC server cleanup',
+                    fallback: () => log.warn('IPC server cleanup timeout')
+                });
+                this.ipcServer = null;
+            }
+            
+            // Release lock with resource protection
             if (this.lockRelease) {
+                await safeExecute(async () => {
+                    await this.lockFileLock.acquire();
+                    try {
+                        await this.lockRelease();
+                        this.lockRelease = null;
+                        log.info('Instance lock released successfully');
+                        
+                        // Record lock history
+                        this.lockHistory.set(`release-${Date.now()}`, {
+                            action: 'release',
+                            timestamp: Date.now(),
+                            pid: process.pid,
+                            success: true
+                        });
+                    } finally {
+                        this.lockFileLock.release();
+                    }
+                }, {
+                    context: 'Lock release',
+                    fallback: () => log.warn('Failed to release instance lock properly')
+                });
+            }
+            
+            // Clear all active transactions
+            for (const [name, transaction] of this.activeTransactions) {
                 try {
-                    await this.lockRelease();
-                    this.lockRelease = null;
-                    log.info('Instance lock released successfully');
+                    transaction.cancel();
+                    log.debug(`Cancelled active transaction: ${name}`);
                 } catch (error) {
-                    log.warn('Error releasing instance lock:', error);
+                    log.warn(`Error cancelling transaction ${name}:`, error);
                 }
             }
+            this.activeTransactions.clear();
             
             // Clear all sessions
             this.providerSessions.clear();
             
+            log.info('Instance cleanup completed successfully');
             return Promise.resolve();
-        } catch (error) {
-            log.error('Error cleaning up instance resources:', error);
-            return Promise.reject(error);
-        }
+        });
     }
 
     /**
