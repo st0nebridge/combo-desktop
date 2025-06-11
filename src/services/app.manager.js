@@ -63,6 +63,18 @@ class AppManager {
             return;
         }
 
+        // Listen for last-session-closed event from instance manager
+        try {
+            instanceManager.on('last-session-closed', () => {
+                log.info('Last session closed event received from instance manager');
+                if (!this.isQuitting) {
+                    this.quit();
+                }
+            });
+        } catch (error) {
+            log.warn('Could not set up last-session-closed event handler:', error);
+        }
+
         // Handle window-all-closed event
         app.on('window-all-closed', () => {
             log.info('All windows closed, initiating application quit');
@@ -105,8 +117,18 @@ class AppManager {
                     await this.quit();
                 }
             });
+
+            app.on('will-quit', async (event) => {
+                log.info('Will-quit event triggered');
+                
+                if (!this.isQuitting) {
+                    // Prevent quit until cleanup is done
+                    event.preventDefault();
+                    await this.quit();
+                }
+            });
         } catch (error) {
-            log.warn('Could not set up before-quit event handler:', error);
+            log.warn('Could not set up quit event handlers:', error);
         }
 
         // Handle IPC messages
@@ -497,7 +519,11 @@ class AppManager {
 
                     // Exit application
                     log.info('Exiting application');
-                    app.exit(0);
+                    if (app && typeof app.quit === 'function') {
+                        app.quit();
+                    } else {
+                        process.exit(0);
+                    }
                 }, {
                     errorMessage: 'Failed during application shutdown',
                     category: ErrorCategory.INSTANCE_ERROR,

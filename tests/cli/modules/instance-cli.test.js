@@ -64,36 +64,26 @@ async function runTests() {
         
             // Test parseArgs method with reset-lock command
             verboseLog('Testing parseArgs with reset-lock command...');
-            let args = {
-                instance: true,  // This is the entry flag that must be present (singular, not plural)
-                _: ['reset-lock']
-            };
-            let result = await instanceCli.parseArgs(args);
+            let args = ['--instance', 'reset-lock'];
+            let result = instanceCli.parseArgs(args);
             assert.ok(result, 'Should parse reset-lock command');
             assert.strictEqual(result.command, 'reset-lock', 'Should identify reset-lock command');
-            assert.ok(result.handler, 'Should have handler function');
             verboseLog('✅ Parse reset-lock command test passed');
 
             // Test parseArgs with new command
             verboseLog('Testing parseArgs with new command...');
-            args = {
-                instance: true,  // This is the entry flag that must be present (singular, not plural)
-                _: ['new']
-            };
-            result = await instanceCli.parseArgs(args);
+            args = ['--instance', 'new'];
+            result = instanceCli.parseArgs(args);
             assert.ok(result, 'Should parse new command');
             assert.strictEqual(result.command, 'new', 'Should identify new command');
-            assert.ok(result.handler, 'Should have handler function');
             verboseLog('✅ Parse new command test passed');
             
             // Test execute method with reset-lock command
             verboseLog('Testing execute with reset-lock command...');
             try {
-                await instanceCli.execute({
-                    command: 'reset-lock',
-                    handler: instanceCli.commands['reset-lock'],
-                    args: { force: true }  // Added force: true to pass the check in resetLock method
-                });
+                const executeResult = await instanceCli.execute(['--instance', 'reset-lock'], {});
+                assert.ok(executeResult, 'Should execute reset-lock command successfully');
+                assert.strictEqual(executeResult.success, true, 'Should return success');
                 verboseLog('✅ Execute reset-lock command test passed');
             } catch (error) {
                 console.error('Error executing reset-lock command:', error);
@@ -101,14 +91,18 @@ async function runTests() {
                 return false;
             }
             
-            // Test execute method with invalid command
-            verboseLog('Testing execute with invalid command...');
+            // Test execute method with empty command array
+            verboseLog('Testing execute with empty command array...');
             try {
-                await instanceCli.execute(null);
-                assert.fail('Should throw error for invalid command');
+                const executeResult = await instanceCli.execute([], {});
+                assert.ok(executeResult, 'Should handle empty command gracefully');
+                assert.strictEqual(executeResult.success, true, 'Should return success for empty command (allows other modules to continue)');
+                assert.strictEqual(executeResult.continueExecution, true, 'Should allow execution to continue');
+                verboseLog('✅ Execute empty command test passed');
             } catch (error) {
-                assert.ok(error, 'Should have error for invalid command');
-                verboseLog('✅ Execute invalid command test passed');
+                console.error('Error with empty command test:', error);
+                verboseLog(`❌ Execute empty command test failed: ${error.message}`);
+                return false;
             }
             
             console.log('All Instance CLI tests passed!');

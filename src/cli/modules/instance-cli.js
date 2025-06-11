@@ -39,7 +39,9 @@ class InstanceCLI extends BaseCLI {
             'list': this.listInstances.bind(this),
             'kill': this.killInstance.bind(this),
             'status': this.getStatus.bind(this),
-            'reset': this.resetLock.bind(this)
+            'reset': this.resetLock.bind(this),
+            'reset-lock': this.resetLock.bind(this), // Add alias for backward compatibility
+            'new': this.createNewInstance.bind(this) // Add alias for 'new' command
         };
     }
 

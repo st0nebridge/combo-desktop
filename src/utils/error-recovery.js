@@ -113,6 +113,7 @@ function createError(message, options = {}) {
  * @param {string} options.category - Error category from ErrorCategory
  * @param {boolean} options.throwOnError - Whether to throw or return null on error
  * @param {Function} options.recoverFn - Function to call to recover from errors
+ * @param {Function} options.fallback - Fallback function to call if the main function fails
  * @param {object} options.context - Additional context for errors
  * @returns {Promise<*>} Result of the function or null/error
  */
@@ -133,6 +134,16 @@ async function safeExecute(fn, options = {}) {
         );
     
     recoverableError.log();
+    
+    // Try fallback function first if provided
+    if (options.fallback && typeof options.fallback === 'function') {
+        try {
+            log.info('Attempting fallback function');
+            return await options.fallback(error);
+        } catch (fallbackError) {
+            log.error('Fallback function also failed:', fallbackError);
+        }
+    }
     
     // Try to recover if specified
     if (options.recoverFn) {

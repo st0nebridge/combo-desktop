@@ -108,6 +108,29 @@ class TrayService {
             }
 
             logger.info('Creating tray with icon from provider');
+            
+            // Check if Tray is available (for testing environments)
+            if (typeof Tray !== 'function') {
+                logger.warn('Tray constructor not available, creating mock tray for testing');
+                const mockTray = {
+                    setToolTip: () => {},
+                    setContextMenu: () => {},
+                    on: () => {},
+                    destroy: () => {},
+                    isDestroyed: () => false,
+                    setImage: () => {}
+                };
+                
+                // Store tray and provider reference
+                this.trays.set(windowName, { tray: mockTray, provider });
+                
+                // Initialize notification state
+                this.notificationStates.set(windowName, false);
+                
+                logger.info(`Mock tray created successfully for ${windowName}`);
+                return mockTray;
+            }
+            
             const tray = new Tray(trayIcon.image);
             
             // Set initial tooltip

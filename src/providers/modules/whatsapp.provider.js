@@ -294,26 +294,13 @@ getContextMenuOptions() {
                 if (this.window) {
                     this.window.show();
                     this.window.focus();
-     * @method getContextMenuOptions
-     * @override
-     * @returns {Array<Object>} Menu template array
-     */
-    getContextMenuOptions() {
-        const baseOptions = super.getContextMenuOptions();
-        return [
-            {
-                label: 'Open WhatsApp',
-                click: () => {
-                    if (this.window) {
-                        this.window.show();
-                        this.window.focus();
-                    }
                 }
-            },
-            { type: 'separator' },
-            ...baseOptions
-        ];
-    }
+            }
+        },
+        { type: 'separator' },
+        ...baseOptions
+    ];
+}
 }
 
 // Export the class instead of an instance

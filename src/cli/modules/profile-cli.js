@@ -25,7 +25,7 @@ class ProfileCLI extends BaseCLI {
         super();
         
         // Define module-specific flags
-        this.moduleFlags = ['--profile'];
+        this.moduleFlags = ['--profile', '--profiles'];
         
         // Define entry flag for profile commands
         this.entryFlag = 'profile';
@@ -51,7 +51,7 @@ class ProfileCLI extends BaseCLI {
             }
             
             // Check for direct profile flags
-            if (args.includes('--profile')) {
+            if (args.includes('--profile') || args.includes('--profiles')) {
                 return true;
             }
             
@@ -76,8 +76,12 @@ class ProfileCLI extends BaseCLI {
             // Parse common flags
             this.parseCommonFlags(args, result);
             
-            // Check for --profile flag
-            const profileIndex = args.indexOf('--profile');
+            // Check for --profile or --profiles flag
+            let profileIndex = args.indexOf('--profile');
+            if (profileIndex === -1) {
+                profileIndex = args.indexOf('--profiles');
+            }
+            
             if (profileIndex !== -1 && profileIndex + 1 < args.length) {
                 const command = args[profileIndex + 1];
                 if (this.commands[command]) {
@@ -148,7 +152,7 @@ class ProfileCLI extends BaseCLI {
             // Parse the arguments
             const parsedArgs = this.parseArgs(args);
 
-            if (!parsedArgs || !parsedArgs.command) {
+            if (!parsedArgs) {
                 return {
                     success: false,
                     context,
@@ -156,14 +160,19 @@ class ProfileCLI extends BaseCLI {
                 };
             }
 
-            // Handle common flags first
-            if (parsedArgs.help) {
+            // Handle common flags first (including help)
+            if (parsedArgs.help || args.includes('--help')) {
                 this.showUsage();
                 return {
                     success: true,
                     context,
                     continueExecution: false
                 };
+            }
+            
+            // If no command but profile flag is present, default to list
+            if (!parsedArgs.command && (args.includes('--profile') || args.includes('--profiles'))) {
+                parsedArgs.command = 'list';
             }
             
             // Execute the command handler based on the command name

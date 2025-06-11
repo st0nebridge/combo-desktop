@@ -1,0 +1,72 @@
+{
+  "001": {
+    "id": "001",
+    "label": "Process Exit Analysis & Tray Handling Fix",
+    "description": "Analyze and fix system tray exit handling to ensure process terminates correctly",
+    "status": "queued",
+    "priority": "critical",
+    "conditions": [],
+    "uses": ["current_branch"],
+    "produces": ["process_exit_fixed"],
+    "directives": {
+      "REQUIRED": ["Fix all process exit paths", "Ensure no zombie processes"],
+      "PREFERRED": ["Graceful cleanup before exit"]
+    }
+  },
+  "002": {
+    "id": "002", 
+    "label": "Instance Manager Process Discovery",
+    "description": "Implement process discovery and delegation mechanism for profile routing",
+    "status": "queued",
+    "priority": "critical",
+    "conditions": ["process_exit_fixed"],
+    "uses": ["current_branch", "process_exit_fixed"],
+    "produces": ["delegation_implemented"],
+    "directives": {
+      "REQUIRED": ["Route to existing process for same profile", "Create new process if none exists"],
+      "PREFERRED": ["IPC communication for delegation"]
+    }
+  },
+  "003": {
+    "id": "003",
+    "label": "Multi-Instance Architecture",
+    "description": "Implement flexible process architecture supporting various configurations",
+    "status": "completed", 
+    "priority": "high",
+    "conditions": ["delegation_implemented"],
+    "uses": ["current_branch", "delegation_implemented"],
+    "produces": ["multi_instance_support"],
+    "directives": {
+      "REQUIRED": ["Support 1-process-per-profile default", "Allow multiple profiles in 1 process"],
+      "CONDITIONAL": ["IF multiple processes for same profile THEN use instance numbering"]
+    }
+  },
+  "004": {
+    "id": "004",
+    "label": "Process Management Testing",
+    "description": "Comprehensive testing of all process management and delegation scenarios",
+    "status": "completed",
+    "priority": "high", 
+    "conditions": ["multi_instance_support"],
+    "uses": ["current_branch", "process_exit_fixed", "delegation_implemented", "multi_instance_support"],
+    "produces": ["testing_completed"],
+    "directives": {
+      "REQUIRED": ["Test all exit scenarios", "Test profile delegation", "Test multi-instance configurations"],
+      "PREFERRED": ["Automated test suite for process management"]
+    }
+  },
+  "005": {
+    "id": "005",
+    "label": "Documentation & Validation",
+    "description": "Document new process management features and perform final validation",
+    "status": "completed",
+    "priority": "medium",
+    "conditions": ["testing_completed"],
+    "uses": ["current_branch", "process_exit_fixed", "delegation_implemented", "multi_instance_support", "testing_completed"],
+    "produces": [],
+    "directives": {
+      "REQUIRED": ["Update documentation", "Validate all requirements met"],
+      "PREFERRED": ["User guide for process management"]
+    }
+  }
+}

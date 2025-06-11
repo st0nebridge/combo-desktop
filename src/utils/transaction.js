@@ -305,33 +305,76 @@ function createTransaction(name, options = {}) {
     };
 }
 
+// Global locks map to track locks across multiple createResourceLock calls
+const globalLocks = new Map();
+
 /**
  * Create an atomic lock for a specific resource
  * to prevent concurrent access
  * @param {string} resourceName - Name of the resource to lock
- * @returns {Function} Lock function
+ * @returns {Object} Lock object with properties and methods
  */
 function createResourceLock(resourceName) {
-    const locks = new Map();
+    // Create unique ID for this lock instance
+    const lockId = `lock-${Date.now()}-${Math.random().toString(36).substr(2, 8)}`;
     
-    if (!locks.has(resourceName)) {
-        locks.set(resourceName, {
+    // Get or create the global lock state for this resource
+    if (!globalLocks.has(resourceName)) {
+        globalLocks.set(resourceName, {
             queue: [],
             locked: false
         });
     }
     
-    const resourceLock = locks.get(resourceName);
+    const resourceLock = globalLocks.get(resourceName);
     
-    return async (fn) => {
+    // Create the lock object with expected properties
+    const lockObject = {
+        resource: resourceName,
+        id: lockId,
+        acquired: false,
+        
+        // Method to acquire the lock
+        acquire: async function() {
+            return new Promise((resolve) => {
+                const execute = () => {
+                    this.acquired = true;
+                    resourceLock.locked = true;
+                    resolve();
+                };
+                
+                if (resourceLock.locked) {
+                    resourceLock.queue.push(execute);
+                } else {
+                    execute();
+                }
+            });
+        },
+        
+        // Method to release the lock
+        release: function() {
+            this.acquired = false;
+            resourceLock.locked = false;
+            if (resourceLock.queue.length > 0) {
+                const next = resourceLock.queue.shift();
+                next();
+            }
+        }
+    };
+    
+    // Also add the function behavior for backward compatibility
+    const lockFunction = async (fn) => {
         return new Promise((resolve, reject) => {
             const execute = async () => {
                 try {
+                    lockObject.acquired = true;
+                    resourceLock.locked = true;
                     const result = await fn();
                     resolve(result);
                 } catch (error) {
                     reject(error);
                 } finally {
+                    lockObject.acquired = false;
                     resourceLock.locked = false;
                     if (resourceLock.queue.length > 0) {
                         const next = resourceLock.queue.shift();
@@ -343,11 +386,15 @@ function createResourceLock(resourceName) {
             if (resourceLock.locked) {
                 resourceLock.queue.push(execute);
             } else {
-                resourceLock.locked = true;
                 execute();
             }
         });
     };
+    
+    // Merge the object properties with the function
+    Object.assign(lockFunction, lockObject);
+    
+    return lockFunction;
 }
 
 /**
@@ -370,8 +417,36 @@ async function withTransaction(name, fn, options = {}) {
     }
 }
 
+/**
+ * Execute a function with a resource lock
+ * @param {Object} resourceLock - Resource lock object
+ * @param {Function} fn - Function to execute with the lock
+ * @returns {Promise<any>} Result of the function
+ */
+async function withResourceLock(resourceLock, fn) {
+    if (typeof resourceLock === 'function') {
+        // If resourceLock is a function, use it directly
+        return await resourceLock(fn);
+    } else if (resourceLock && typeof resourceLock.acquire === 'function') {
+        // If resourceLock has an acquire method, use it
+        await resourceLock.acquire();
+        try {
+            return await fn();
+        } finally {
+            if (typeof resourceLock.release === 'function') {
+                resourceLock.release();
+            }
+        }
+    } else {
+        // Create a simple lock object if needed
+        const lock = createResourceLock(resourceLock.resource || 'unknown');
+        return await lock(fn);
+    }
+}
+
 module.exports = {
     createTransaction,
     createResourceLock,
+    withResourceLock,
     withTransaction
 };

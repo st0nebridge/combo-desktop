@@ -320,12 +320,17 @@ process.on('unhandledRejection', (reason, promise) => {
     // Don't exit the process as we're handling it
 });
 
-// Run the tests
-runTests()
-    .then(success => {
-        process.exit(success ? 0 : 1);
-    })
-    .catch(error => {
-        console.error('Error running tests:', error);
-        process.exit(1);
-    });
+// Export the runTests function for the test runner
+module.exports = { runTests };
+
+// Run the tests if this file is executed directly
+if (require.main === module) {
+    runTests()
+        .then(success => {
+            process.exit(success ? 0 : 1);
+        })
+        .catch(error => {
+            console.error('Error running tests:', error);
+            process.exit(1);
+        });
+}

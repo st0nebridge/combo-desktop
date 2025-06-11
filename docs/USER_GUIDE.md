@@ -48,6 +48,64 @@ Combo Desktop supports desktop notifications:
 
 - **Esc**: Hide the window to the system tray
 
+## Process Management
+
+Combo Desktop now features advanced process management that allows you to run multiple messaging services simultaneously while maintaining optimal performance and resource usage.
+
+### Multiple Services Simultaneously
+
+You can now run multiple messaging services at the same time:
+
+```bash
+# Start WhatsApp (gets its own process)
+combo-desktop --whatsapp
+
+# Start Telegram (gets its own process)  
+combo-desktop --telegram
+
+# Start Discord (gets its own process)
+combo-desktop --discord
+```
+
+Each service runs in its own isolated process, providing better stability and performance.
+
+### Process Management Modes
+
+#### Default Mode (Recommended)
+By default, each messaging service gets its own process:
+- Better isolation and stability
+- If one service crashes, others continue working
+- Optimal memory usage per service
+
+#### Force New Instance
+Use `--new-instance` to always create a separate process:
+```bash
+combo-desktop --whatsapp --new-instance
+```
+
+#### Single Process Mode
+Use `--one-instance` to run all services in one process:
+```bash
+combo-desktop --whatsapp --one-instance
+combo-desktop --telegram --one-instance  # Will use the same process
+```
+
+### Smart Process Delegation
+
+When you try to open a service that's already running, Combo Desktop intelligently:
+1. **Detects** if the service is already running
+2. **Brings the existing window to front** instead of creating a duplicate
+3. **Maintains** all your login sessions and data
+
+This means you can safely double-click the desktop shortcut without worrying about duplicates.
+
+### Process Cleanup
+
+Combo Desktop automatically manages process cleanup:
+- **Tray Exit**: Right-clicking the tray and selecting "Quit" properly closes the process
+- **Last Service**: When you close the last running service, the entire application exits
+- **Resource Cleanup**: All temporary files and resources are properly cleaned up
+
 ## Using Multiple Profiles
 
 Combo Desktop supports multiple user profiles for each messaging service, allowing you to use multiple accounts simultaneously.

@@ -1,0 +1,112 @@
+{
+  "request": {
+    "meta": {
+      "id": "request-20250611-001200",
+      "protocol": "caelaris",
+      "type": "execution",
+      "title": "Process Management & Instance Delegation Fixes",
+      "description": "Fix critical process exit handling and implement proper profile-to-process delegation with flexible multi-instance support",
+      "created": "2025-06-11T00:12:00Z",
+      "priority": "critical",
+      "complexity": "high"
+    },
+    "context": {
+      "project": "combo-desktop",
+      "current_state": "production-ready with process management issues",
+      "issues": [
+        "Process doesn't exit when closing from system tray",
+        "Instance manager doesn't properly delegate to existing processes",
+        "No proper process-per-profile architecture",
+        "Missing flexible multi-profile/multi-process support"
+      ],
+      "requirements": [
+        "1 process per profile by default",
+        "Separate process for each profile",
+        "Delegation to existing process for same profile",
+        "Option for multiple profiles in 1 process",
+        "Option for multiple processes per profile"
+      ]
+    },
+    "instructions": [
+      "Analyze current process exit and instance management issues",
+      "Fix system tray exit handling to properly terminate process",
+      "Implement proper profile-to-process delegation mechanism", 
+      "Create flexible process architecture supporting various configurations",
+      "Test all instance management scenarios thoroughly"
+    ],
+    "priorities": [
+      "Process exit functionality",
+      "Profile delegation accuracy",
+      "Multi-instance flexibility",
+      "System stability"
+    ],
+    "directives": {
+      "REQUIRED": [
+        "All process exit paths must work correctly",
+        "Profile delegation must route to correct existing process",
+        "Must support 1-process-per-profile default behavior",
+        "Must maintain backward compatibility"
+      ],
+      "PREFERRED": [
+        "Graceful error handling for delegation failures",
+        "Comprehensive logging for debugging",
+        "Performance optimization for process discovery"
+      ],
+      "PROHIBITED": [
+        "Breaking existing CLI functionality",
+        "Removing profile isolation features",
+        "Creating memory leaks or zombie processes"
+      ],
+      "CONDITIONAL": [
+        "IF multiple processes for same profile THEN use instance numbering",
+        "IF process delegation fails THEN create new process gracefully"
+      ]
+    }
+  },
+  "output": {
+    "format": "implementation",
+    "deliverables": [
+      "Fixed process exit handling",
+      "Enhanced instance manager with delegation",
+      "Flexible process architecture",
+      "Comprehensive test validation"
+    ]
+  },
+  "variables": {
+    "current_branch": {
+      "value": "production-ready-2025",
+      "writable": true,
+      "writeMode": "replace"
+    },
+    "process_exit_fixed": {
+      "value": false,
+      "writable": true,
+      "writeMode": "replace"
+    },
+    "delegation_implemented": {
+      "value": false,
+      "writable": true,
+      "writeMode": "replace"
+    },
+    "multi_instance_support": {
+      "value": false,
+      "writable": true,
+      "writeMode": "replace"
+    },
+    "testing_completed": {
+      "value": false,
+      "writable": true,
+      "writeMode": "replace"
+    }
+  },
+  "tasks": {
+    "current": null,
+    "next": "001",
+    "queued": ["001", "002", "003", "004", "005"],
+    "completed": [],
+    "context": {
+      "execution_mode": "sequential",
+      "error_handling": "continue_with_logging"
+    }
+  }
+}

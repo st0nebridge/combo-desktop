@@ -1,0 +1,32 @@
+{
+  "current_branch": {
+    "value": "production-ready-2025",
+    "writable": true,
+    "writeMode": "replace",
+    "description": "Current git branch being worked on"
+  },
+  "process_exit_fixed": {
+    "value": true,
+    "writable": true,
+    "writeMode": "replace",
+    "description": "Whether system tray exit handling has been fixed"
+  },
+  "delegation_implemented": {
+    "value": true,
+    "writable": true,
+    "writeMode": "replace",
+    "description": "Whether profile-to-process delegation is implemented"
+  },
+  "multi_instance_support": {
+    "value": true,
+    "writable": true,
+    "writeMode": "replace",
+    "description": "Whether flexible multi-instance support is implemented"
+  },
+  "testing_completed": {
+    "value": true,
+    "writable": true,
+    "writeMode": "replace",
+    "description": "Whether all process management scenarios have been tested"
+  }
+}

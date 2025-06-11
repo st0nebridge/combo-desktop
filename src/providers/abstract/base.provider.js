@@ -76,6 +76,16 @@ class BaseProvider {
     }
 
     /**
+     * Returns the session name for this provider (lowercase from command arg).
+     * This ensures consistent session naming between registration and unregistration.
+     * @method getSessionName
+     * @returns {string} The provider's session name (lowercase)
+     */
+    getSessionName() {
+        return this.getCommandArg().replace(/^--/, '');
+    }
+
+    /**
      * Returns the URL that this provider should load.
      * @abstract
      * @method getUrl
@@ -459,6 +469,7 @@ class BaseProvider {
      */
     getTrayIcon(hasNotification = false, isMinimized = false) {
         try {
+            const { nativeTheme } = require('electron');
             const { getIconPath } = require('../../utils/icons');
             const image = getIconPath(this.getName(), hasNotification, isMinimized);
             
@@ -468,7 +479,7 @@ class BaseProvider {
 
             return {
                 image,
-                isDarkMode: true, // TODO: Get from theme service
+                isDarkMode: nativeTheme.shouldUseDarkColors,
                 hasNotification,
                 isMinimized
             };
@@ -527,8 +538,20 @@ class BaseProvider {
                     // 3. Closing the window with forceClose
                     // 4. Triggering the last-session-closed event if needed
                     const instanceManager = require('../../services/instance.manager');
-                    log.info(`Requesting session close for ${this.getName()}:${this.profile}`);
-                    await instanceManager.unregisterSession(this);
+                    log.info(`Requesting session close for ${this.getSessionName()}:${this.profile}`);
+                    await instanceManager.unregisterSession(this.getSessionName(), this.profile);
+                    
+                    // Check if this was the last session and quit if so
+                    if (instanceManager.getSessionCount() === 0) {
+                        log.info('Last session closed, quitting application');
+                        const { app } = require('electron');
+                        if (app && typeof app.quit === 'function') {
+                            app.quit();
+                        } else {
+                            log.warn('Cannot call app.quit(), exiting process directly');
+                            process.exit(0);
+                        }
+                    }
                 } catch (error) {
                     log.error('Error in Quit action:', error);
                 }

@@ -7,6 +7,7 @@
  */
 
 const { app, ipcMain } = require('electron');
+const { EventEmitter } = require('events');
 const log = require('./logging.service');
 const path = require('path');
 const fs = require('fs');
@@ -34,12 +35,14 @@ const {
  * Handles instance lifecycle, locking, and process management.
  * @class InstanceManager
  */
-class InstanceManager {
+class InstanceManager extends EventEmitter {
     /**
      * Creates a new InstanceManager instance
      * @constructor
      */
     constructor() {
+        super(); // Call EventEmitter constructor
+        
         // Ensure singleton
         if (InstanceManager.instance) {
             return InstanceManager.instance;
@@ -287,7 +290,7 @@ class InstanceManager {
                 log.debug('Client connected to IPC server');
                 
                 socket.on('data', (data) => {
-                    safeExecute(() => {
+                    safeExecute(async () => {
                         const message = JSON.parse(data.toString());
                         log.debug('Received IPC message:', message);
                         
@@ -306,6 +309,88 @@ class InstanceManager {
                         if (message.command === 'status') {
                             const response = this.getStatus();
                             this.sendIpcResponse(socket, response);
+                        }
+                        
+                        // Handle delegation commands
+                        if (message.type === 'delegate-command' && 
+                            message.targetPid?.toString() === process.pid.toString()) {
+                            
+                            log.info(`Handling delegated command:`, message.args);
+                            
+                            // Process the command
+                            let success = false;
+                            let error = null;
+                            let result = null;
+                            
+                            try {
+                                // Execute the command using the app manager
+                                const appManager = require('./app.manager');
+                                
+                                // Parse command line arguments into session objects
+                                const sessions = [];
+                                let i = 0;
+                                while (i < message.args.length) {
+                                    const arg = message.args[i];
+                                    if (arg.startsWith('--') && arg !== '--profile') {
+                                        const provider = arg.substring(2);
+                                        let profile = 'default';
+                                        
+                                        // Check if next arg is --profile
+                                        if (i + 1 < message.args.length && message.args[i + 1] === '--profile') {
+                                            i += 2; // Skip --profile
+                                            if (i < message.args.length) {
+                                                profile = message.args[i];
+                                            }
+                                        }
+                                        
+                                        sessions.push({ provider, profile });
+                                    }
+                                    i++;
+                                }
+                                
+                                if (sessions.length > 0) {
+                                    // Initialize sessions using app manager
+                                    result = await appManager.initializeSessions(sessions, {
+                                        profileIsolation: true
+                                    });
+                                    success = result && Array.isArray(result) && result.length > 0;
+                                } else {
+                                    success = true;
+                                    result = 'No sessions to initialize';
+                                }
+                                
+                                if (!success) {
+                                    error = 'Command execution failed';
+                                    log.error('Command execution failed:', result);
+                                } else {
+                                    log.info('Command executed successfully:', result);
+                                }
+                            } catch (err) {
+                                success = false;
+                                error = err.message;
+                                log.error('Error processing command:', err);
+                            }
+                            
+                            // Send response
+                            this.sendIpcResponse(socket, {
+                                type: 'delegate-response',
+                                requestId: message.requestId,
+                                success,
+                                error,
+                                pid: process.pid,
+                                result,
+                                timestamp: Date.now()
+                            });
+                        }
+                        
+                        // Handle ping messages (for health checks)
+                        if (message.type === 'ping') {
+                            this.sendIpcResponse(socket, {
+                                type: 'pong',
+                                requestId: message.requestId,
+                                pid: process.pid,
+                                timestamp: Date.now()
+                            });
                         }
                     }, {
                         context: 'IPC message handling',
@@ -373,6 +458,205 @@ class InstanceManager {
             context: 'IPC response sending',
             fallback: () => log.warn('Failed to send IPC response')
         });
+    }
+
+    /**
+     * Get session count for this instance
+     * @method getSessionCount
+     * @returns {number} Number of sessions
+     */
+    getSessionCount() {
+        return this.providerSessions ? this.providerSessions.size : 0;
+    }
+
+    /**
+     * Get status information for this instance
+     * @method getStatus
+     * @returns {Object} Status information
+     */
+    getStatus() {
+        return {
+            status: 'ok',
+            instanceId: this.instanceId,
+            profile: this.currentProfile,
+            pid: process.pid,
+            sessionCount: this.getSessionCount(),
+            startTime: this.startTime || new Date().toISOString(),
+            timestamp: Date.now()
+        };
+    }
+
+    /**
+     * Read the lock file with error recovery
+     * @method readLockFile
+     * @private
+     * @returns {Promise<Object>} Lock file data
+     */
+    async readLockFile() {
+        const lockPath = this.instanceLockFile;
+        
+        return safeExecute(async () => {
+            const fs = require('fs').promises;
+            
+            try {
+                const data = await fs.readFile(lockPath, 'utf8');
+                const parsedData = JSON.parse(data);
+                
+                // Validate structure
+                if (!parsedData || typeof parsedData !== 'object') {
+                    log.warn('Lock file has invalid structure');
+                    return { instances: {} };
+                }
+                
+                if (!parsedData.instances || typeof parsedData.instances !== 'object') {
+                    log.warn('Lock file missing instances property, auto-repairing');
+                    parsedData.instances = {};
+                }
+                
+                return parsedData;
+            } catch (error) {
+                if (error.code === 'ENOENT') {
+                    // Lock file doesn't exist, return empty data
+                    log.debug('Lock file does not exist, returning empty data');
+                    return { instances: {} };
+                } else if (error instanceof SyntaxError) {
+                    // JSON parse error, try to recover
+                    log.warn('Lock file contains invalid JSON, attempting recovery');
+                    try {
+                        await this.recoverLockFile(lockPath);
+                        const recoveredData = await fs.readFile(lockPath, 'utf8');
+                        return JSON.parse(recoveredData);
+                    } catch (recoveryError) {
+                        log.error('Lock file recovery failed:', recoveryError);
+                        return { instances: {} };
+                    }
+                } else {
+                    throw error;
+                }
+            }
+        }, {
+            category: ErrorCategory.FILE_ERROR,
+            context: { lockPath },
+            fallback: () => ({ instances: {} })
+        });
+    }
+
+    /**
+     * Write to the lock file with atomic operations
+     * @method writeLockFile
+     * @private
+     * @param {Object} lockData - Data to write to lock file
+     * @returns {Promise<boolean>} Success status
+     */
+    async writeLockFile(lockData) {
+        return safeExecute(async () => {
+            const fs = require('fs').promises;
+            const path = require('path');
+            const crypto = require('crypto');
+            
+            const lockFilePath = this.instanceLockFile;
+            const tempFilePath = `${lockFilePath}.tmp.${process.pid}.${Date.now()}`;
+            
+            // Validate lock data
+            if (!lockData || typeof lockData !== 'object') {
+                throw createError('Invalid lock data format', {
+                    category: ErrorCategory.DATA_ERROR,
+                    context: { dataType: typeof lockData }
+                });
+            }
+            
+            if (!lockData.instances || typeof lockData.instances !== 'object') {
+                log.warn('Lock data missing instances property, auto-repairing');
+                lockData.instances = {};
+            }
+            
+            // Add metadata for integrity
+            const dataWithMetadata = {
+                ...lockData,
+                _meta: {
+                    timestamp: new Date().toISOString(),
+                    pid: process.pid,
+                    instanceId: this.instanceId,
+                    hostname: require('os').hostname(),
+                    version: '2.0'
+                }
+            };
+            
+            const dataString = JSON.stringify(dataWithMetadata, null, 2);
+            
+            try {
+                // Write to temp file first
+                await fs.writeFile(tempFilePath, dataString, 'utf8');
+                
+                // Verify temp file was written correctly
+                const tempData = await fs.readFile(tempFilePath, 'utf8');
+                JSON.parse(tempData); // Throws if invalid JSON
+                
+                // Atomically rename to target file
+                await fs.rename(tempFilePath, lockFilePath);
+                
+                log.debug('Lock file written successfully');
+                return true;
+            } catch (writeError) {
+                // Clean up temp file if it exists
+                try {
+                    await fs.unlink(tempFilePath);
+                } catch (cleanupError) {
+                    // Ignore cleanup errors
+                }
+                throw writeError;
+            }
+        }, {
+            category: ErrorCategory.FILE_ERROR,
+            context: { instanceId: this.instanceId, pid: process.pid },
+            fallback: () => {
+                log.error('Failed to write lock file');
+                return false;
+            }
+        });
+    }
+
+    /**
+     * Recover a corrupted lock file
+     * @method recoverLockFile
+     * @private
+     * @param {string} lockFilePath - Path to the lock file
+     * @returns {Promise<boolean>} Whether recovery was successful
+     */
+    async recoverLockFile(lockFilePath) {
+        try {
+            log.info(`Attempting to recover lock file: ${lockFilePath}`);
+            
+            const fs = require('fs').promises;
+            
+            // Check if file exists first
+            try {
+                await fs.access(lockFilePath);
+            } catch (accessError) {
+                log.warn('Lock file does not exist, creating new one');
+                await fs.writeFile(lockFilePath, JSON.stringify({ instances: {} }, null, 2));
+                return true;
+            }
+            
+            // Create a backup
+            const backupPath = `${lockFilePath}.corrupt.bak`;
+            const content = await fs.readFile(lockFilePath, 'utf8');
+            await fs.writeFile(backupPath, content);
+            
+            // Write a valid empty structure
+            const emptyData = {
+                instances: {},
+                recovered: true,
+                recoveryTimestamp: new Date().toISOString()
+            };
+            
+            await fs.writeFile(lockFilePath, JSON.stringify(emptyData, null, 2));
+            log.info(`Lock file recovery successful: ${lockFilePath}`);
+            return true;
+        } catch (recoveryError) {
+            log.error('Lock file recovery failed:', recoveryError);
+            return false;
+        }
     }
 
     /**
@@ -461,6 +745,108 @@ class InstanceManager {
                 clearTimeout(timeout);
                 resolve({ success: false, error: error.message });
             });
+        });
+    }
+
+    /**
+     * Initialize the instance with enhanced profile isolation
+     * @method init
+     * @param {Object} options - Initialization options
+     * @param {string} options.profile - Profile name
+     * @param {boolean} options.profileIsolation - Whether to isolate instances by profile
+     * @returns {Promise<void>}
+     */
+    async init({ profile, profileIsolation = true }) {
+        const transaction = this.createInstanceTransaction('init', {
+            timeout: 30000,
+            retries: 2
+        });
+        
+        try {
+            return await withTransaction(transaction, async () => {
+                // Validate profile name
+                if (!profile || typeof profile !== 'string') {
+                    throw createError('Invalid profile name', {
+                        category: ErrorCategory.INSTANCE_ERROR,
+                        context: { profile }
+                    });
+                }
+                
+                // Sanitize profile name for use in filenames
+                const sanitizedProfile = profile.replace(/[^a-zA-Z0-9_-]/g, '_');
+                
+                // Set current profile
+                this.currentProfile = profile;
+                log.info(`Initializing instance with profile: ${profile}, profileIsolation: ${profileIsolation}`);
+                
+                // Generate unique instance ID if not already set
+                if (!this.instanceId) {
+                    this.instanceId = `instance-${Date.now()}-${Math.random().toString(36).substring(2, 15)}`;
+                }
+                
+                // Initialize as first instance for now (proper detection would require lock file check)
+                this.isFirstInstance = true;
+                
+                // Record initialization in lock history
+                this.lockHistory.set(`init-${Date.now()}`, {
+                    action: 'init',
+                    timestamp: Date.now(),
+                    instanceId: this.instanceId,
+                    profile: profile,
+                    profileIsolation: profileIsolation,
+                    pid: process.pid,
+                    success: true
+                });
+                
+                log.info(`Instance initialized successfully: ${this.instanceId}, profile: ${this.currentProfile}, isFirst: ${this.isFirstInstance}`);
+                return Promise.resolve();
+            });
+        } catch (error) {
+            logDiagnostics('instance-init-failed', { error, profile, profileIsolation });
+            throw createError('Instance initialization failed', {
+                category: ErrorCategory.INSTANCE_ERROR,
+                cause: error,
+                context: { profile, profileIsolation }
+            });
+        }
+    }
+    
+    /**
+     * Ensure required directories exist for instance management
+     * @method ensureDirectories
+     * @returns {Promise<void>}
+     * @throws {Error} If directory creation fails
+     */
+    async ensureDirectories() {
+        return await safeExecute(async () => {
+            try {
+                // Get user data directory
+                const userDataDir = app && typeof app.getPath === 'function' ? 
+                    app.getPath('userData') : 
+                    path.join(require('os').tmpdir(), 'desk-tray');
+
+                // Create user data directory if it doesn't exist
+                await require('fs').promises.mkdir(userDataDir, { recursive: true });
+
+                // Create instance lock file if it doesn't exist
+                if (!require('fs').existsSync(this.instanceLockFile)) {
+                    await require('fs').promises.writeFile(this.instanceLockFile, JSON.stringify({ instances: {} }, null, 2));
+                }
+
+                // Create PID file if it doesn't exist
+                if (!require('fs').existsSync(this.pidFile)) {
+                    await require('fs').promises.writeFile(this.pidFile, JSON.stringify([], null, 2));
+                }
+
+                log.info('Instance management directories initialized');
+            } catch (error) {
+                log.error('Error creating directories:', error);
+                throw error;
+            }
+        }, {
+            errorMessage: 'Failed to ensure instance directories exist',
+            category: ErrorCategory.INSTANCE_ERROR,
+            context: { instanceLockFile: this.instanceLockFile, pidFile: this.pidFile }
         });
     }
 
@@ -640,13 +1026,99 @@ class InstanceManager {
      * @method unregisterSession
      * @param {string} name - Provider name
      * @param {string} profile - Profile name
-     * @returns {boolean} Success
+     * @returns {Promise<boolean>} Success
      */
-    unregisterSession(name, profile) {
+    async unregisterSession(name, profile) {
         try {
-            log.info(`Unregistering session for ${name}:${profile}`);
-            this.providerSessions.delete(`${name}:${profile}`);
-            return true;
+            const sessionKey = `${name}:${profile}`;
+            log.info(`Unregistering session for ${sessionKey}`);
+            
+            // Remove the session
+            const sessionRemoved = this.providerSessions.delete(sessionKey);
+            
+            if (sessionRemoved) {
+                // Close the associated window - need to use proper window name format
+                // Session uses lowercase (e.g., "whatsapp:default") but window uses capitalized (e.g., "WhatsApp:default")
+                const windowService = require('./window.service');
+                
+                // Try to find the window by looking through all windows for a matching profile
+                // Since we can't easily convert from session name to display name, search by provider instance
+                let windowFound = false;
+                for (const [windowName, window] of windowService.windows.entries()) {
+                    if (window.metadata && window.metadata.provider) {
+                        const provider = window.metadata.provider;
+                        const sessionName = provider.getSessionName ? provider.getSessionName() : provider.getCommandArg().replace(/^--/, '');
+                        if (sessionName === name && window.metadata.profile === profile) {
+                            if (!window.isDestroyed()) {
+                                log.info(`Closing window for ${windowName}`);
+                                window.close();
+                            }
+                            windowFound = true;
+                            break;
+                        }
+                    }
+                }
+                
+                if (!windowFound) {
+                    // Fallback: try direct window name resolution with both formats
+                    const possibleNames = [
+                        `${name}:${profile}`,           // lowercase format
+                        `${name.charAt(0).toUpperCase() + name.slice(1)}:${profile}` // capitalized format
+                    ];
+                    
+                    for (const windowName of possibleNames) {
+                        const { window } = windowService.resolveWindow(windowName);
+                        if (window && !window.isDestroyed()) {
+                            log.info(`Closing window for ${windowName}`);
+                            window.close();
+                            windowFound = true;
+                            break;
+                        }
+                    }
+                }
+                
+                if (!windowFound) {
+                    log.warn(`Could not find window to close for session ${sessionKey}`);
+                }
+                
+                // Destroy the associated tray - use the same fallback logic
+                const trayService = require('./tray.service');
+                const possibleTrayNames = [
+                    `${name}:${profile}`,           // lowercase format
+                    `${name.charAt(0).toUpperCase() + name.slice(1)}:${profile}` // capitalized format
+                ];
+                
+                let trayDestroyed = false;
+                for (const trayName of possibleTrayNames) {
+                    try {
+                        await trayService.destroyTray(trayName);
+                        log.info(`Destroyed tray for ${trayName}`);
+                        trayDestroyed = true;
+                        break;
+                    } catch (error) {
+                        // Continue to next name format
+                        log.debug(`Tray ${trayName} not found, trying next format`);
+                    }
+                }
+                
+                if (!trayDestroyed) {
+                    log.warn(`Could not find tray to destroy for session ${sessionKey}`);
+                }
+                
+                log.info(`Session ${sessionKey} unregistered successfully`);
+                
+                // Check if this was the last session
+                if (this.providerSessions.size === 0) {
+                    log.info('All sessions closed, triggering application cleanup');
+                    // Emit event or trigger cleanup
+                    this.emit('last-session-closed');
+                }
+                
+                return true;
+            } else {
+                log.warn(`Session ${sessionKey} was not found for unregistration`);
+                return false;
+            }
         } catch (error) {
             log.error(`Error unregistering session for ${name}:${profile}:`, error);
             return false;
@@ -704,6 +1176,815 @@ class InstanceManager {
             memoryUsage: process.memoryUsage(),
             timestamp: Date.now()
         };
+    }
+
+    /**
+     * Get all running instances
+     * @method getInstances
+     * @returns {Promise<Array>} Array of running instances
+     */
+    async getInstances() {
+        try {
+            const instances = [];
+            
+            // Check if current instance is running
+            if (this.instanceId) {
+                instances.push({
+                    id: this.instanceId,
+                    pid: process.pid,
+                    profile: this.currentProfile?.name || 'default',
+                    startTime: Date.now() - (process.uptime() * 1000),
+                    sessions: this.getSessions().map(session => session.name || session.provider)
+                });
+            }
+            
+            // Try to find other instances by checking lock files
+            // This is a simplified implementation - in a full implementation,
+            // you would scan for active IPC pipes or PID files
+            log.debug(`Found ${instances.length} running instances`);
+            return instances;
+        } catch (error) {
+            log.error('Error getting instances:', error);
+            return [];
+        }
+    }
+
+    /**
+     * Create a new instance
+     * @method createNewInstance
+     * @returns {Promise<Object>} Result object with success and instanceId
+     */
+    async createNewInstance() {
+        try {
+            log.info('Creating new instance via CLI request');
+            
+            // For CLI purposes, we'll spawn a new process
+            const { spawn } = require('child_process');
+            const path = require('path');
+            
+            const mainPath = path.join(__dirname, '../main.js');
+            const child = spawn(process.execPath, [mainPath, '--new-instance'], {
+                detached: true,
+                stdio: 'ignore'
+            });
+            
+            child.unref();
+            
+            const newInstanceId = `instance-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+            
+            log.info(`New instance process spawned with PID: ${child.pid}`);
+            
+            return {
+                success: true,
+                instanceId: newInstanceId,
+                pid: child.pid
+            };
+        } catch (error) {
+            log.error('Error creating new instance:', error);
+            return {
+                success: false,
+                error: error.message
+            };
+        }
+    }
+
+    /**
+     * Kill a specific instance by ID
+     * @method killInstance
+     * @param {string} instanceId - Instance ID to kill
+     * @returns {Promise<boolean>} True if instance was killed successfully
+     */
+    async killInstance(instanceId) {
+        try {
+            log.info(`Attempting to kill instance: ${instanceId}`);
+            
+            // If trying to kill current instance, perform cleanup
+            if (instanceId === this.instanceId) {
+                log.info('Killing current instance');
+                await this.cleanup();
+                process.exit(0);
+                return true;
+            }
+            
+            // For other instances, this would require IPC communication
+            // or PID tracking - simplified implementation
+            log.warn(`Cannot kill external instance ${instanceId} - feature not fully implemented`);
+            return false;
+        } catch (error) {
+            log.error(`Error killing instance ${instanceId}:`, error);
+            return false;
+        }
+    }
+
+    /**
+     * Reset instance lock (emergency use only)
+     * @method resetLock
+     * @returns {Promise<boolean>} True if lock was reset successfully
+     */
+    async resetLock() {
+        try {
+            log.warn('Resetting instance lock (emergency operation)');
+            
+            const fs = require('fs').promises;
+            const lockFilePath = this.getLockFilePath();
+            
+            return await safeExecute(async () => {
+                await this.lockFileLock.acquire();
+                try {
+                    // Check if lock file exists
+                    try {
+                        await fs.access(lockFilePath);
+                        await fs.unlink(lockFilePath);
+                        log.info('Lock file removed successfully');
+                    } catch (error) {
+                        if (error.code === 'ENOENT') {
+                            log.info('Lock file does not exist, nothing to reset');
+                        } else {
+                            throw error;
+                        }
+                    }
+                    
+                    // Reset internal lock state
+                    if (this.lockRelease) {
+                        try {
+                            await this.lockRelease();
+                        } catch (error) {
+                            log.warn('Error releasing existing lock:', error);
+                        }
+                        this.lockRelease = null;
+                    }
+                    
+                    // Record lock history
+                    this.lockHistory.set(`reset-${Date.now()}`, {
+                        action: 'reset',
+                        timestamp: Date.now(),
+                        pid: process.pid,
+                        success: true
+                    });
+                    
+                    log.info('Instance lock reset completed successfully');
+                    return true;
+                } finally {
+                    this.lockFileLock.release();
+                }
+            }, {
+                context: 'Reset instance lock',
+                fallback: () => {
+                    log.error('Failed to reset instance lock with fallback');
+                    return false;
+                }
+            });
+        } catch (error) {
+            log.error('Error resetting instance lock:', error);
+            return false;
+        }
+    }
+
+    /**
+     * Process sessions with multi-instance architecture support
+     * @method processSessions
+     * @param {Array} sessions - Sessions to process
+     * @param {boolean} forceNewInstance - Force creation of new instance
+     * @param {boolean} oneInstance - Use single instance for all sessions
+     * @param {boolean} profileIsolation - Whether to isolate by profile
+     * @returns {Promise<Object>} Processing result with localSessions and delegatedSessions
+     */
+    async processSessions(sessions, forceNewInstance = false, oneInstance = false, profileIsolation = true) {
+        try {
+            log.info('Processing sessions with multi-instance architecture', { 
+                sessionCount: sessions?.length || 0,
+                forceNewInstance,
+                oneInstance,
+                profileIsolation
+            });
+            
+            const result = {
+                localSessions: [],
+                delegatedSessions: []
+            };
+            
+            if (!sessions || !Array.isArray(sessions) || sessions.length === 0) {
+                log.warn('No sessions to process');
+                return result;
+            }
+            
+            // If forcing new instance, handle all sessions locally
+            if (forceNewInstance) {
+                log.info('Force new instance mode: handling all sessions locally');
+                result.localSessions = [...sessions];
+                
+                // Initialize instance if not already done
+                if (!this.instanceId) {
+                    const profile = sessions[0]?.profile || 'default';
+                    await this.init({
+                        profile,
+                        profileIsolation
+                    });
+                }
+                
+                return result;
+            }
+            
+            // Group sessions by profile for delegation logic
+            const sessionsByProfile = new Map();
+            for (const session of sessions) {
+                const profile = session.profile || 'default';
+                if (!sessionsByProfile.has(profile)) {
+                    sessionsByProfile.set(profile, []);
+                }
+                sessionsByProfile.get(profile).push(session);
+            }
+            
+            // Process each profile group according to instance management rules
+            for (const [profile, profileSessions] of sessionsByProfile) {
+                const delegationResult = await this.handleProfileSessionDelegation(
+                    profile, 
+                    profileSessions, 
+                    {
+                        oneInstance,
+                        profileIsolation,
+                        strictProfileIsolation: profileIsolation && !oneInstance
+                    }
+                );
+                
+                // Add results to our response
+                result.localSessions.push(...delegationResult.newSessions);
+                result.delegatedSessions.push(...delegationResult.delegatedSessions);
+            }
+            
+            // Initialize instance for local sessions if needed
+            if (result.localSessions.length > 0 && !this.instanceId) {
+                const profile = result.localSessions[0]?.profile || 'default';
+                await this.init({
+                    profile,
+                    profileIsolation
+                });
+            }
+            
+            log.info('Session processing completed', {
+                localSessions: result.localSessions.length,
+                delegatedSessions: result.delegatedSessions.length
+            });
+            
+            return result;
+            
+        } catch (error) {
+            log.error('Error processing sessions:', error);
+            return {
+                localSessions: sessions || [],
+                delegatedSessions: [],
+                error: error.message
+            };
+        }
+    }
+
+    /**
+     * Handle profile session delegation with flexible architecture
+     * @method handleProfileSessionDelegation
+     * @param {string} profile - Profile to handle delegation for
+     * @param {Array<Object>} profileSessions - Sessions for the profile
+     * @param {Object} options - Delegation options
+     * @returns {Promise<Object>} Delegation result
+     */
+    async handleProfileSessionDelegation(profile, profileSessions, options = {}) {
+        try {
+            const {
+                oneInstance = false,
+                profileIsolation = true,
+                strictProfileIsolation = true
+            } = options;
+            
+            log.info(`Handling session delegation for profile ${profile}`, {
+                sessionCount: profileSessions.length,
+                oneInstance,
+                profileIsolation,
+                strictProfileIsolation
+            });
+            
+            const result = {
+                delegatedSessions: [],
+                newSessions: [],
+                delegationFailReason: null
+            };
+            
+            // Validate inputs
+            if (!profile || !profileSessions || !Array.isArray(profileSessions)) {
+                log.error('Invalid parameters for session delegation');
+                result.delegationFailReason = 'invalid_parameters';
+                result.newSessions.push(...(Array.isArray(profileSessions) ? profileSessions : []));
+                return result;
+            }
+            
+            // Get all running instances
+            const allInstances = await this.getInstances();
+            const runningInstances = allInstances.filter(instance => {
+                try {
+                    // Check if process exists
+                    process.kill(instance.pid, 0);
+                    return true;
+                } catch (error) {
+                    return false;
+                }
+            });
+            
+            // Priority function for selecting best instance for delegation
+            const getInstancePriority = (instance) => {
+                let score = 0;
+                
+                // Prefer instances with the same profile
+                if (instance.profile === profile) score += 1000;
+                
+                // Prefer instances with fewer sessions
+                if (instance.sessions && Array.isArray(instance.sessions)) {
+                    score -= instance.sessions.length * 10;
+                }
+                
+                // Prefer older instances (more established)
+                if (instance.startTime) {
+                    const ageInMinutes = (Date.now() - new Date(instance.startTime).getTime()) / (60 * 1000);
+                    score += Math.min(ageInMinutes, 60); // Cap at 60 minutes
+                }
+                
+                return score;
+            };
+            
+            // Sort instances by priority
+            runningInstances.sort((a, b) => getInstancePriority(b) - getInstancePriority(a));
+            
+            // Handle one-instance mode (delegate to any existing instance)
+            if (oneInstance && runningInstances.length > 0) {
+                const targetInstance = runningInstances[0]; // Highest priority instance
+                log.info(`One instance mode: delegating to instance ${targetInstance.id} (pid: ${targetInstance.pid})`);
+                
+                try {
+                    const success = await this.delegateToInstance(targetInstance, profileSessions);
+                    if (success) {
+                        log.info(`Successfully delegated ${profileSessions.length} sessions to instance ${targetInstance.id}`);
+                        result.delegatedSessions.push(...profileSessions);
+                        return result;
+                    } else {
+                        log.warn(`Failed to delegate to instance ${targetInstance.id} in one-instance mode`);
+                    }
+                } catch (delegateError) {
+                    log.error(`Error delegating to instance ${targetInstance.id}:`, delegateError);
+                }
+                
+                // If delegation failed in one-instance mode, run locally
+                result.delegationFailReason = 'delegation_failed';
+                result.newSessions.push(...profileSessions);
+                return result;
+            }
+            
+            // Normal profile-based delegation logic
+            if (profileIsolation && strictProfileIsolation) {
+                // Find instance with exact profile match
+                const targetInstance = runningInstances.find(instance => instance.profile === profile);
+                
+                if (targetInstance) {
+                    log.info(`Delegating ${profileSessions.length} sessions to existing instance ${targetInstance.id} (pid: ${targetInstance.pid})`);
+                    
+                    try {
+                        // Double verify the instance is still running
+                        process.kill(targetInstance.pid, 0);
+                        
+                        // Attempt delegation with retry logic
+                        let success = false;
+                        let retryCount = 0;
+                        const maxRetries = 3;
+                        
+                        while (!success && retryCount < maxRetries) {
+                            try {
+                                success = await this.delegateToInstance(targetInstance, profileSessions);
+                                if (success) break;
+                            } catch (delegateError) {
+                                log.warn(`Delegation attempt ${retryCount + 1} failed:`, delegateError);
+                            }
+                            
+                            retryCount++;
+                            if (retryCount < maxRetries) {
+                                log.info(`Retrying delegation (attempt ${retryCount + 1}/${maxRetries})`);
+                                await new Promise(r => setTimeout(r, 500 * retryCount)); // Increasing backoff
+                            }
+                        }
+                        
+                        if (success) {
+                            log.info(`Successfully delegated ${profileSessions.length} sessions to instance ${targetInstance.id}`);
+                            result.delegatedSessions.push(...profileSessions);
+                            return result;
+                        } else {
+                            log.error(`Failed to delegate to instance ${targetInstance.id} after ${maxRetries} attempts`);
+                            result.delegationFailReason = 'max_retries_exceeded';
+                        }
+                    } catch (processError) {
+                        log.error(`Target instance ${targetInstance.id} is no longer running`);
+                        result.delegationFailReason = 'target_instance_not_running';
+                    }
+                } else {
+                    log.info(`No instance found for profile ${profile}, will create new instance`);
+                    result.delegationFailReason = 'no_matching_profile_instance';
+                }
+            }
+            
+            // If we reach here, delegation either failed or wasn't applicable
+            // Run sessions locally in this instance
+            result.newSessions.push(...profileSessions);
+            return result;
+            
+        } catch (error) {
+            log.error('Error handling provider session delegation:', error);
+            // Return a safe result even in case of errors
+            return {
+                delegatedSessions: [],
+                newSessions: profileSessions || [],
+                delegationFailReason: 'unexpected_error'
+            };
+        }
+    }
+
+    /**
+     * Get instances with enhanced metadata
+     * @method getInstances
+     * @returns {Promise<Array<Object>>} Array of instance objects
+     */
+    async getInstances() {
+        try {
+            const lockData = await this.readLockFile();
+            return Object.entries(lockData.instances || {}).map(([id, instance]) => ({
+                id,
+                pid: instance.pid,
+                profile: instance.profile,
+                startTime: instance.startTime,
+                pipeName: instance.pipeName,
+                sessions: instance.sessions || []
+            }));
+        } catch (error) {
+            log.error('Error getting instances:', error);
+            return [];
+        }
+    }
+
+    /**
+     * Get instance by profile
+     * @method getInstanceByProfile
+     * @param {string} profile - Profile name
+     * @returns {Promise<Object|null>} Instance object or null
+     */
+    async getInstanceByProfile(profile) {
+        try {
+            const instances = await this.getInstances();
+            return instances.find(instance => {
+                try {
+                    // Check if process is still running
+                    process.kill(instance.pid, 0);
+                    return instance.profile === profile;
+                } catch (error) {
+                    return false;
+                }
+            }) || null;
+        } catch (error) {
+            log.error('Error getting instance by profile:', error);
+            return null;
+        }
+    }
+
+    /**
+     * Delegate sessions to existing instances
+     * @method delegateSessions
+     * @param {Array<Object>} sessions - Sessions to delegate
+     * @param {boolean} profileIsolation - Whether to respect profile isolation
+     * @returns {Promise<boolean>} True if delegation was successful
+     */
+    async delegateSessions(sessions, profileIsolation = true) {
+        try {
+            if (!sessions || !Array.isArray(sessions) || sessions.length === 0) {
+                log.error('Invalid or empty sessions array for delegation');
+                return false;
+            }
+
+            log.info('Delegating sessions to existing instances:', sessions);
+            
+            // Group sessions by profile for delegation
+            const sessionsByProfile = new Map();
+            for (const session of sessions) {
+                const profile = session.profile || 'default';
+                if (!sessionsByProfile.has(profile)) {
+                    sessionsByProfile.set(profile, []);
+                }
+                sessionsByProfile.get(profile).push(session);
+            }
+            
+            let allSuccessful = true;
+            
+            // Process each profile group
+            for (const [profile, profileSessions] of sessionsByProfile) {
+                if (profileIsolation) {
+                    // Find instance with matching profile
+                    const targetInstance = await this.getInstanceByProfile(profile);
+                    
+                    if (targetInstance) {
+                        log.info(`Delegating ${profileSessions.length} sessions to existing instance ${targetInstance.id} (pid: ${targetInstance.pid})`);
+                        
+                        const success = await this.delegateToInstance(targetInstance, profileSessions);
+                        if (!success) {
+                            log.error(`Failed to delegate sessions for profile ${profile}`);
+                            allSuccessful = false;
+                        }
+                    } else {
+                        log.info(`No instance found for profile ${profile}, delegation failed`);
+                        allSuccessful = false;
+                    }
+                } else {
+                    // Find any active instance
+                    const instances = await this.getInstances();
+                    const targetInstance = instances.find(instance => {
+                        try {
+                            process.kill(instance.pid, 0);
+                            return true;
+                        } catch (error) {
+                            return false;
+                        }
+                    });
+                    
+                    if (targetInstance) {
+                        const success = await this.delegateToInstance(targetInstance, profileSessions);
+                        if (!success) {
+                            log.error(`Failed to delegate sessions to instance ${targetInstance.id}`);
+                            allSuccessful = false;
+                        }
+                    } else {
+                        log.info('No instances found for delegation');
+                        allSuccessful = false;
+                    }
+                }
+            }
+            
+            return allSuccessful;
+        } catch (error) {
+            log.error('Error delegating sessions:', error);
+            return false;
+        }
+    }
+
+    /**
+     * Delegate sessions to a specific instance
+     * @method delegateToInstance
+     * @param {Object} targetInstance - Target instance to delegate to
+     * @param {Array<Object>} sessions - Sessions to delegate
+     * @returns {Promise<boolean>} True if delegation was successful
+     */
+    async delegateToInstance(targetInstance, sessions) {
+        try {
+            if (!targetInstance || !sessions || !Array.isArray(sessions)) {
+                log.error('Invalid arguments for delegateToInstance');
+                return false;
+            }
+
+            // Delegate each session
+            for (const session of sessions) {
+                try {
+                    const args = [];
+                    if (session.provider) {
+                        args.push(`--${session.provider}`);
+                    }
+                    if (session.profile) {
+                        args.push('--profile', session.profile);
+                    }
+
+                    const success = await this.delegateCommandToInstance(targetInstance.id, args);
+                    if (!success) {
+                        log.error(`Failed to delegate session ${session.provider}:${session.profile} to instance ${targetInstance.id}`);
+                        return false;
+                    }
+                } catch (error) {
+                    log.error(`Error delegating session ${session.provider}:${session.profile}:`, error);
+                    return false;
+                }
+            }
+
+            log.info(`Successfully delegated ${sessions.length} sessions to instance ${targetInstance.id}`);
+            return true;
+        } catch (error) {
+            log.error('Error in delegateToInstance:', error);
+            return false;
+        }
+    }
+
+    /**
+     * Delegate a command to a specific instance
+     * @method delegateCommandToInstance
+     * @param {string} instanceId - Target instance ID
+     * @param {Array<string>} args - Command line arguments
+     * @returns {Promise<boolean>} True if delegation was successful
+     */
+    async delegateCommandToInstance(instanceId, args) {
+        return safeExecute(async () => {
+            log.info(`Delegating command to instance ${instanceId}:`, args);
+            
+            // Get target instance details
+            const instances = await this.getInstances();
+            const targetInstance = instances.find(instance => instance.id === instanceId);
+            
+            if (!targetInstance) {
+                log.error(`Instance ${instanceId} not found`);
+                return false;
+            }
+
+            // Create pipe name for target instance
+            const packageJson = require('../../package.json');
+            const pipeName = targetInstance.pipeName || `\\\\.\\pipe\\${packageJson.name}-${targetInstance.pid}`;
+
+            // Create a unique request ID for tracking
+            const requestId = `req-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+            
+            // Use Promise for IPC communication
+            return await new Promise((resolve, reject) => {
+                const net = require('net');
+                let isResolved = false;
+                let client = null;
+                let connectionTimeout = null;
+                
+                // Helper function for cleanup
+                const cleanupRequest = () => {
+                    if (connectionTimeout) {
+                        clearTimeout(connectionTimeout);
+                        connectionTimeout = null;
+                    }
+                    if (client) {
+                        try { client.end(); } catch {}
+                        try { client.destroy(); } catch {}
+                    }
+                };
+
+                try {
+                    // Connect with socket connection timeout
+                    client = net.connect(pipeName);
+                    
+                    // Set a connection timeout (5 seconds)
+                    connectionTimeout = setTimeout(() => {
+                        if (!isResolved) {
+                            isResolved = true;
+                            log.error(`Connection timeout connecting to instance ${instanceId}`);
+                            cleanupRequest();
+                            resolve(false);
+                        }
+                    }, 5000);
+                    
+                    // Handle successful connection
+                    client.on('connect', () => {
+                        // Clear connection timeout since we're connected
+                        if (connectionTimeout) {
+                            clearTimeout(connectionTimeout);
+                            connectionTimeout = null;
+                        }
+                        
+                        log.info(`Connected to instance ${instanceId} pipe`);
+                        
+                        // Send command to target instance
+                        const message = {
+                            type: 'delegate-command',
+                            requestId,
+                            targetPid: targetInstance.pid,
+                            args: args || []
+                        };
+                        
+                        client.write(JSON.stringify(message));
+                    });
+                    
+                    // Handle response data
+                    client.on('data', (data) => {
+                        if (isResolved) return;
+                        
+                        try {
+                            const response = JSON.parse(data.toString());
+                            log.debug('Received delegation response:', response);
+                            
+                            if (response.requestId === requestId) {
+                                isResolved = true;
+                                cleanupRequest();
+                                resolve(response.success === true);
+                            }
+                        } catch (parseError) {
+                            log.error('Error parsing delegation response:', parseError);
+                        }
+                    });
+                    
+                    // Handle connection errors
+                    client.on('error', (error) => {
+                        if (!isResolved) {
+                            isResolved = true;
+                            log.error(`Connection error delegating to instance ${instanceId}:`, error);
+                            cleanupRequest();
+                            resolve(false);
+                        }
+                    });
+                    
+                    // Handle connection close
+                    client.on('end', () => {
+                        if (!isResolved) {
+                            isResolved = true;
+                            log.warn(`Connection closed while delegating to instance ${instanceId}`);
+                            cleanupRequest();
+                            resolve(false);
+                        }
+                    });
+                    
+                } catch (error) {
+                    if (!isResolved) {
+                        isResolved = true;
+                        log.error(`Error setting up delegation to instance ${instanceId}:`, error);
+                        cleanupRequest();
+                        resolve(false);
+                    }
+                }
+            });
+        }, {
+            category: ErrorCategory.IPC_ERROR,
+            context: { instanceId, argsCount: args?.length },
+            recoverFn: (error) => {
+                log.error('Error in delegateCommandToInstance recovered:', error);
+                return false;
+            }
+        });
+    }
+
+    /**
+     * Delegate a command to any running instance or create new instance
+     * @method delegateCommand
+     * @param {Array<string>} args - Command line arguments to delegate
+     * @param {string} [targetProfile] - Optional profile to target for delegation
+     * @returns {Promise<boolean>} True if command was delegated successfully
+     */
+    async delegateCommand(args, targetProfile = null) {
+        try {
+            if (!Array.isArray(args)) {
+                log.error('Invalid arguments for command delegation', { args });
+                return false;
+            }
+
+            log.info('Delegating command:', { args, targetProfile });
+
+            // Get running instances
+            const instances = await this.getInstances();
+            
+            if (!instances || instances.length === 0) {
+                log.error('No instances found for command delegation');
+                return false;
+            }
+            
+            // Find target instance
+            let targetInstance = null;
+            
+            if (targetProfile) {
+                // Find instance with matching profile
+                log.info(`Looking for instance with profile: ${targetProfile}`);
+                
+                targetInstance = instances.find(instance => {
+                    try {
+                        // Check if process is still running
+                        process.kill(instance.pid, 0);
+                        
+                        // Check if profile matches
+                        const profileMatches = instance.profile === targetProfile;
+                        
+                        if (profileMatches) {
+                            log.info(`Found matching instance for profile ${targetProfile}: ${instance.id} (PID: ${instance.pid})`);
+                        }
+                        
+                        return profileMatches;
+                    } catch (error) {
+                        log.debug(`Instance ${instance.id} (PID: ${instance.pid}) is not running`);
+                        return false;
+                    }
+                });
+            } else {
+                // Use first running instance
+                log.info('No target profile specified, looking for any running instance');
+                
+                targetInstance = instances.find(instance => {
+                    try {
+                        // Check if process is still running
+                        process.kill(instance.pid, 0);
+                        log.info(`Found running instance: ${instance.id} (PID: ${instance.pid})`);
+                        return true;
+                    } catch (error) {
+                        log.debug(`Instance ${instance.id} (PID: ${instance.pid}) is not running`);
+                        return false;
+                    }
+                });
+            }
+
+            if (!targetInstance) {
+                log.error('No suitable instance found for delegation', { targetProfile });
+                return false;
+            }
+
+            // Delegate command to target instance
+            log.info(`Delegating command to instance ${targetInstance.id} (PID: ${targetInstance.pid})`);
+            return await this.delegateCommandToInstance(targetInstance.id, args);
+        } catch (error) {
+            log.error('Error delegating command:', error);
+            return false;
+        }
     }
 }
 

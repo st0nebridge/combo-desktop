@@ -197,6 +197,26 @@ class ProfileManager {
     }
 
     /**
+     * Get the currently active profile
+     * @method getActiveProfile
+     * @returns {Object|null} Active profile data or null if none found
+     */
+    getActiveProfile() {
+        const profiles = this.store.get('profiles');
+        for (const profile of Object.values(profiles)) {
+            if (profile.active) {
+                return {
+                    name: profile.profileName,
+                    provider: profile.providerName,
+                    options: profile.options || {},
+                    ...profile
+                };
+            }
+        }
+        return null; // No active profile found
+    }
+
+    /**
      * Get all profiles for a specific provider
      * @method getProfilesByProvider
      * @param {string} providerName - Provider name
