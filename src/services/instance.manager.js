@@ -89,6 +89,7 @@ class InstanceManager extends EventEmitter {
         } catch (error) {
             log.warn('Could not load package.json for IPC pipe name, using default', error);
         }
+        // Use consistent pipe name format across Windows
         this.ipcPipeName = `\\\\.\\pipe\\${appName}-${process.pid}`;
         
         /** @property {number} lockRetryCount - Number of times to retry acquiring lock */
@@ -132,6 +133,9 @@ class InstanceManager extends EventEmitter {
         
         /** @property {Object} ipcServer - IPC server instance */
         this.ipcServer = null;
+        
+        /** @property {boolean} _initialized - Flag to prevent duplicate initialization */
+        this._initialized = false;
     }
 
     /**
@@ -237,6 +241,12 @@ class InstanceManager extends EventEmitter {
      * @returns {Promise<void>}
      */
     async initialize() {
+        // Make this method idempotent - only initialize once per process
+        if (this._initialized) {
+            log.debug('Instance manager already initialized, skipping');
+            return Promise.resolve();
+        }
+        
         const transaction = this.createInstanceTransaction('initialization', {
             timeout: 30000,
             retries: 2
@@ -245,9 +255,11 @@ class InstanceManager extends EventEmitter {
         return withTransaction(transaction, async () => {
             log.info('Initializing instance manager with enhanced features...');
             
-            // Generate unique instance ID
-            this.instanceId = `instance-${Date.now()}-${Math.random().toString(36).substring(2, 15)}`;
-            log.info(`Instance ID: ${this.instanceId}`);
+            // Generate unique instance ID only if not already set
+            if (!this.instanceId) {
+                this.instanceId = `instance-${Date.now()}-${Math.random().toString(36).substring(2, 15)}`;
+                log.info(`Instance ID: ${this.instanceId}`);
+            }
             
             // Verify and recover data file integrity
             await safeExecute(async () => {
@@ -274,6 +286,10 @@ class InstanceManager extends EventEmitter {
             });
             
             log.info('Instance manager initialization completed successfully');
+            
+            // Mark as initialized to prevent duplicate initialization
+            this._initialized = true;
+            
             return Promise.resolve();
         });
     }
@@ -378,7 +394,7 @@ class InstanceManager extends EventEmitter {
                                 success,
                                 error,
                                 pid: process.pid,
-                                result,
+                                result: success ? 'Command executed successfully' : error,
                                 timestamp: Date.now()
                             });
                         }
@@ -414,25 +430,49 @@ class InstanceManager extends EventEmitter {
                 });
             });
             
-            server.on('error', (error) => {
-                log.error('IPC server error:', error);
-                // Attempt recovery
-                if (error.code === 'EADDRINUSE') {
-                    log.warn('IPC pipe address in use, attempting recovery');
-                    setTimeout(() => this.setupIpcServer(), 1000);
-                }
-            });
-            
             // Listen on named pipe with enhanced error handling
             return new Promise((resolve, reject) => {
+                // Track retry attempts to prevent infinite loops
+                this._ipcServerRetryCount = (this._ipcServerRetryCount || 0);
+                const maxRetries = 3;
+                
                 server.listen(this.ipcPipeName, () => {
                     log.info(`IPC server listening on ${this.ipcPipeName}`);
                     this.ipcServer = server;
+                    this._ipcServerRetryCount = 0; // Reset retry count on success
                     this.startHeartbeat(); // Start health monitoring
                     resolve();
                 });
                 
-                server.on('error', reject);
+                server.on('error', (error) => {
+                    log.error('IPC server error:', error);
+                    
+                    // Handle address in use error with retry limit
+                    if (error.code === 'EADDRINUSE' && this._ipcServerRetryCount < maxRetries) {
+                        this._ipcServerRetryCount++;
+                        log.warn(`IPC pipe address in use, attempting recovery (attempt ${this._ipcServerRetryCount}/${maxRetries})`);
+                        
+                        // Use exponential backoff for retries
+                        const retryDelay = 1000 * Math.pow(2, this._ipcServerRetryCount - 1);
+                        setTimeout(() => {
+                            if (this._ipcServerRetryCount <= maxRetries) {
+                                this.setupIpcServer().catch(retryError => {
+                                    log.error('IPC server retry failed:', retryError);
+                                });
+                            }
+                        }, retryDelay);
+                        
+                        // Don't reject immediately, let the retry handle it
+                        return;
+                    }
+                    
+                    // For other errors or max retries exceeded, reject
+                    if (this._ipcServerRetryCount >= maxRetries) {
+                        log.error(`Max IPC server retry attempts (${maxRetries}) exceeded, giving up`);
+                        this._ipcServerRetryCount = 0;
+                    }
+                    reject(error);
+                });
             });
         }, {
             context: 'IPC server setup',
@@ -451,12 +491,16 @@ class InstanceManager extends EventEmitter {
      */
     sendIpcResponse(socket, response) {
         safeExecute(() => {
-            if (socket && !socket.destroyed) {
-                socket.write(JSON.stringify(response));
+            // Validate that connection is still writable
+            if (socket && !socket.destroyed && socket.writable) {
+                const responseJson = JSON.stringify(response);
+                socket.write(responseJson);
+            } else {
+                log.warn('Attempted to send response on closed/unwritable connection');
             }
         }, {
             context: 'IPC response sending',
-            fallback: () => log.warn('Failed to send IPC response')
+            fallback: () => log.warn('Failed to send IPC response due to connection error')
         });
     }
 
@@ -784,6 +828,14 @@ class InstanceManager extends EventEmitter {
                     this.instanceId = `instance-${Date.now()}-${Math.random().toString(36).substring(2, 15)}`;
                 }
                 
+                // Initialize IPC server and other resources only if not already done
+                if (!this._initialized) {
+                    await this.initialize();
+                }
+                
+                // Register this instance in the lock file
+                await this.registerInstanceInLockFile(profile);
+                
                 // Initialize as first instance for now (proper detection would require lock file check)
                 this.isFirstInstance = true;
                 
@@ -929,6 +981,9 @@ class InstanceManager extends EventEmitter {
                 }
             }
             this.activeTransactions.clear();
+            
+            // Unregister this instance from the lock file
+            await this.unregisterInstanceFromLockFile();
             
             // Clear all sessions
             this.providerSessions.clear();
@@ -1179,30 +1234,36 @@ class InstanceManager extends EventEmitter {
     }
 
     /**
-     * Get all running instances
+     * Get all running instances from lock file
      * @method getInstances
      * @returns {Promise<Array>} Array of running instances
      */
     async getInstances() {
         try {
-            const instances = [];
+            const lockData = await this.readLockFile();
+            const instances = Object.entries(lockData.instances || {}).map(([id, instance]) => ({
+                id,
+                pid: instance.pid,
+                profile: instance.profile,
+                startTime: instance.startTime,
+                pipeName: instance.pipeName,
+                sessions: instance.sessions || []
+            }));
             
-            // Check if current instance is running
-            if (this.instanceId) {
-                instances.push({
-                    id: this.instanceId,
-                    pid: process.pid,
-                    profile: this.currentProfile?.name || 'default',
-                    startTime: Date.now() - (process.uptime() * 1000),
-                    sessions: this.getSessions().map(session => session.name || session.provider)
-                });
+            // Filter out dead instances
+            const liveInstances = [];
+            for (const instance of instances) {
+                try {
+                    // Check if process is still running
+                    process.kill(instance.pid, 0);
+                    liveInstances.push(instance);
+                } catch (error) {
+                    log.debug(`Instance ${instance.id} with PID ${instance.pid} is no longer running`);
+                }
             }
             
-            // Try to find other instances by checking lock files
-            // This is a simplified implementation - in a full implementation,
-            // you would scan for active IPC pipes or PID files
-            log.debug(`Found ${instances.length} running instances`);
-            return instances;
+            log.debug(`Found ${liveInstances.length} live instances`);
+            return liveInstances;
         } catch (error) {
             log.error('Error getting instances:', error);
             return [];
@@ -1535,13 +1596,23 @@ class InstanceManager extends EventEmitter {
                 return result;
             }
             
-            // Normal profile-based delegation logic
+            // Normal profile-based delegation logic with default profile exclusivity
             if (profileIsolation && strictProfileIsolation) {
-                // Find instance with exact profile match
-                const targetInstance = runningInstances.find(instance => instance.profile === profile);
+                let targetInstance = null;
+                
+                // For "default" profile, implement exclusivity - any instance with default profile should be used
+                if (profile === 'default') {
+                    targetInstance = runningInstances.find(instance => instance.profile === 'default');
+                    if (targetInstance) {
+                        log.info(`Default profile exclusivity: found existing default instance ${targetInstance.id} (pid: ${targetInstance.pid})`);
+                    }
+                } else {
+                    // For non-default profiles, find exact profile match
+                    targetInstance = runningInstances.find(instance => instance.profile === profile);
+                }
                 
                 if (targetInstance) {
-                    log.info(`Delegating ${profileSessions.length} sessions to existing instance ${targetInstance.id} (pid: ${targetInstance.pid})`);
+                    log.info(`Delegating ${profileSessions.length} sessions to existing instance ${targetInstance.id} (pid: ${targetInstance.pid}) for profile ${profile}`);
                     
                     try {
                         // Double verify the instance is still running
@@ -1601,27 +1672,6 @@ class InstanceManager extends EventEmitter {
         }
     }
 
-    /**
-     * Get instances with enhanced metadata
-     * @method getInstances
-     * @returns {Promise<Array<Object>>} Array of instance objects
-     */
-    async getInstances() {
-        try {
-            const lockData = await this.readLockFile();
-            return Object.entries(lockData.instances || {}).map(([id, instance]) => ({
-                id,
-                pid: instance.pid,
-                profile: instance.profile,
-                startTime: instance.startTime,
-                pipeName: instance.pipeName,
-                sessions: instance.sessions || []
-            }));
-        } catch (error) {
-            log.error('Error getting instances:', error);
-            return [];
-        }
-    }
 
     /**
      * Get instance by profile
@@ -1789,9 +1839,10 @@ class InstanceManager extends EventEmitter {
                 return false;
             }
 
-            // Create pipe name for target instance
+            // Create pipe name for target instance - use consistent format
             const packageJson = require('../../package.json');
-            const pipeName = targetInstance.pipeName || `\\\\.\\pipe\\${packageJson.name}-${targetInstance.pid}`;
+            const appName = packageJson.name || 'desk-tray';
+            const pipeName = targetInstance.pipeName || `\\\\.\\pipe\\${appName}-${targetInstance.pid}`;
 
             // Create a unique request ID for tracking
             const requestId = `req-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -1847,7 +1898,17 @@ class InstanceManager extends EventEmitter {
                             args: args || []
                         };
                         
-                        client.write(JSON.stringify(message));
+                        // Check if client is still writable before sending
+                        if (client && !client.destroyed && client.writable) {
+                            client.write(JSON.stringify(message));
+                        } else {
+                            log.warn('Client connection not writable, cannot send delegation command');
+                            if (!isResolved) {
+                                isResolved = true;
+                                cleanupRequest();
+                                resolve(false);
+                            }
+                        }
                     });
                     
                     // Handle response data
@@ -1986,6 +2047,88 @@ class InstanceManager extends EventEmitter {
             return false;
         }
     }
+
+    /**
+     * Register this instance in the lock file
+     * @method registerInstanceInLockFile
+     * @param {string} profile - Profile name
+     * @returns {Promise<void>}
+     */
+    async registerInstanceInLockFile(profile) {
+        try {
+            log.info(`Registering instance ${this.instanceId} in lock file with profile: ${profile}`);
+            
+            // Read current lock file
+            const lockData = await this.readLockFile();
+            
+            // Add this instance
+            if (!lockData.instances) {
+                lockData.instances = {};
+            }
+            
+            lockData.instances[this.instanceId] = {
+                pid: process.pid,
+                profile: profile,
+                startTime: new Date().toISOString(),
+                pipeName: this.ipcPipeName,
+                sessions: [],
+                metadata: {
+                    hostname: require('os').hostname(),
+                    platform: process.platform,
+                    nodeVersion: process.version
+                }
+            };
+            
+            // Write back to lock file
+            const success = await this.writeLockFile(lockData);
+            if (success) {
+                log.info(`Instance ${this.instanceId} registered successfully in lock file`);
+            } else {
+                log.error(`Failed to register instance ${this.instanceId} in lock file`);
+            }
+        } catch (error) {
+            log.error('Error registering instance in lock file:', error);
+            // Don't throw - this shouldn't prevent instance startup
+        }
+    }
+
+    /**
+     * Unregister this instance from the lock file
+     * @method unregisterInstanceFromLockFile
+     * @returns {Promise<void>}
+     */
+    async unregisterInstanceFromLockFile() {
+        try {
+            if (!this.instanceId) {
+                log.warn('No instance ID to unregister');
+                return;
+            }
+            
+            log.info(`Unregistering instance ${this.instanceId} from lock file`);
+            
+            // Read current lock file
+            const lockData = await this.readLockFile();
+            
+            // Remove this instance
+            if (lockData.instances && lockData.instances[this.instanceId]) {
+                delete lockData.instances[this.instanceId];
+                
+                // Write back to lock file
+                const success = await this.writeLockFile(lockData);
+                if (success) {
+                    log.info(`Instance ${this.instanceId} unregistered successfully from lock file`);
+                } else {
+                    log.error(`Failed to unregister instance ${this.instanceId} from lock file`);
+                }
+            } else {
+                log.warn(`Instance ${this.instanceId} was not found in lock file`);
+            }
+        } catch (error) {
+            log.error('Error unregistering instance from lock file:', error);
+        }
+    }
+
+    // ...existing code...
 }
 
 // Export a singleton instance
