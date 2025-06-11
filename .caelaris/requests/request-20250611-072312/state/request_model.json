@@ -1,0 +1,102 @@
+{
+  "request": {
+    "meta": {
+      "protocol": "caelaris",
+      "type": "investigation",
+      "timestamp": "20250611-072312",
+      "title": "Fix WhatsApp Tray Exit Delegation Issue",
+      "priority": "high"
+    },
+    "context": {
+      "issue": "WhatsApp tray exit closes entire process instead of just unloading WhatsApp instance",
+      "expected_behavior": "Tray exit should only unload that specific instance and remove its tray icon",
+      "current_behavior": "Tray exit closes the entire process even when other instances are running",
+      "environment": "delegation scenario where multiple providers run in same process"
+    },
+    "instructions": [
+      "Investigate why WhatsApp tray exit closes entire process",
+      "Analyze the quit handler logic in base.provider.js", 
+      "Test the session counting mechanism during delegation",
+      "Identify the root cause of incorrect session state",
+      "Implement fix to only unload specific instance",
+      "Validate fix works in delegation scenarios"
+    ],
+    "priorities": [
+      "Preserve session state integrity",
+      "Ensure proper instance isolation", 
+      "Maintain correct tray behavior per instance"
+    ],
+    "directives": {
+      "REQUIRED": [
+        "Follow existing code patterns and architecture",
+        "Maintain backward compatibility",
+        "Add comprehensive logging for debugging",
+        "Test both isolated and delegation scenarios"
+      ],
+      "PREFERRED": [
+        "Minimize changes to core logic",
+        "Use existing error handling patterns",
+        "Document changes thoroughly"
+      ],
+      "PROHIBITED": [
+        "Breaking existing functionality",
+        "Removing safety checks",
+        "Making untested changes"
+      ],
+      "CONDITIONAL": []
+    }
+  },
+  "output": {
+    "expected_files": [
+      "logs/investigation_report.md",
+      "outputs/fix_implementation.md", 
+      "outputs/test_results.md"
+    ]
+  },
+  "variables": {
+    "session_count": {
+      "writeMode": "replace",
+      "writable": true,
+      "value": null
+    },
+    "quit_handler_analysis": {
+      "writeMode": "append", 
+      "writable": true,
+      "value": null
+    },
+    "delegation_state": {
+      "writeMode": "replace",
+      "writable": true, 
+      "value": null
+    }
+  },
+  "tasks": {
+    "current": {
+      "id": "001",
+      "label": "Analyze Current Delegation Logs",
+      "status": "ready"
+    },
+    "next": {
+      "id": "002", 
+      "label": "Test Real-World Delegation Scenario"
+    },
+    "queued": [
+      {
+        "id": "003",
+        "label": "Identify Root Cause"
+      },
+      {
+        "id": "004", 
+        "label": "Implement Fix"
+      },
+      {
+        "id": "005",
+        "label": "Validate Solution"
+      }
+    ],
+    "completed": [],
+    "context": {
+      "investigation_phase": "initial"
+    }
+  }
+}

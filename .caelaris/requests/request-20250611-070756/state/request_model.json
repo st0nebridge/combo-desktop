@@ -1,0 +1,118 @@
+{
+  "request": {
+    "meta": {
+      "protocol": "caelaris",
+      "type": "investigation",
+      "id": "delegation-issue-investigation",
+      "timestamp": "2025-06-11T07:07:56Z",
+      "description": "Investigate delegation issues in tray management after testing modifications"
+    },
+    "context": {
+      "previous_work": "Completed tray exit behavior investigation and testing",
+      "issue_description": "User reports delegation issues after previous testing",
+      "workspace": "m:/Dev/Tools/combo-desktop",
+      "affected_components": ["delegation", "tray", "session_management"]
+    },
+    "instructions": [
+      "Analyze recent test logs and changes",
+      "Identify delegation-specific issues",
+      "Determine if modifications broke delegation functionality", 
+      "Provide targeted fixes for delegation problems",
+      "Validate fixes don't regress previous work"
+    ],
+    "priorities": [
+      "Critical: Restore delegation functionality",
+      "High: Maintain tray exit behavior correctness",
+      "Medium: Preserve test coverage",
+      "Low: Documentation updates"
+    ],
+    "directives": {
+      "REQUIRED": [
+        "Use semantic_search to find delegation-related code",
+        "Analyze error logs from delegation testing",
+        "Test delegation scenarios before and after fixes",
+        "Maintain backwards compatibility with existing functionality"
+      ],
+      "PREFERRED": [
+        "Create focused test cases for delegation issues",
+        "Add monitoring/logging for delegation flows",
+        "Document delegation architecture changes"
+      ],
+      "PROHIBITED": [
+        "Making changes without understanding root cause",
+        "Breaking existing tray exit functionality",
+        "Removing test coverage"
+      ],
+      "CONDITIONAL": []
+    }
+  },
+  "output": {
+    "format": "markdown",
+    "structure": "investigation_report",
+    "requirements": [
+      "Root cause analysis",
+      "Specific fixes implemented", 
+      "Test validation results",
+      "Impact assessment"
+    ]
+  },
+  "variables": {
+    "delegation_logs": {
+      "value": null,
+      "writable": true,
+      "writeMode": "replace",
+      "description": "Logs from delegation testing"
+    },
+    "error_analysis": {
+      "value": null,
+      "writable": true,
+      "writeMode": "replace", 
+      "description": "Analysis of delegation errors"
+    },
+    "fixes_applied": {
+      "value": [],
+      "writable": true,
+      "writeMode": "append",
+      "description": "List of fixes implemented"
+    },
+    "test_results": {
+      "value": null,
+      "writable": true,
+      "writeMode": "replace",
+      "description": "Validation test results"
+    }
+  },
+  "tasks": {
+    "current": {
+      "id": "task_001",
+      "label": "Analyze delegation logs and identify issues",
+      "conditions": [],
+      "uses": [],
+      "produces": ["delegation_logs", "error_analysis"],
+      "next": "task_002"
+    },
+    "next": {
+      "id": "task_002", 
+      "label": "Investigate delegation code and test scenarios",
+      "conditions": ["task_001_complete"],
+      "uses": ["delegation_logs", "error_analysis"],
+      "produces": ["fixes_applied"],
+      "next": "task_003"
+    },
+    "queued": [
+      {
+        "id": "task_003",
+        "label": "Implement and validate fixes",
+        "conditions": ["task_002_complete"],
+        "uses": ["fixes_applied"],
+        "produces": ["test_results"],
+        "next": null
+      }
+    ],
+    "completed": [],
+    "context": {
+      "total_tasks": 3,
+      "estimated_duration": "30-45 minutes"
+    }
+  }
+}

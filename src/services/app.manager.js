@@ -308,7 +308,15 @@ class AppManager {
 
                         // Initialize the provider with the specified profile
                         log.info(`Spawning ${providerName} with profile: ${profile}`);
-                        const instance = await provider.spawn(profile);
+                        
+                        // Build spawn options with window show behavior if available
+                        const spawnOptions = {};
+                        if (context.windowShowBehavior) {
+                            spawnOptions.windowShowBehavior = context.windowShowBehavior;
+                            log.info(`Using window show behavior: ${context.windowShowBehavior} for ${providerName}`);
+                        }
+                        
+                        const instance = await provider.spawn(profile, spawnOptions);
                         
                         // Verify instance was created successfully
                         if (!instance) {
@@ -462,7 +470,7 @@ class AppManager {
             // Process any sessions that were handled by CLI modules
             if (cliResult && cliResult.context.sessions && cliResult.context.sessions.length > 0) {
                 log.info('Processing sessions from CLI context:', cliResult.context.sessions);
-                await this.initializeSessions(cliResult.context.sessions);
+                await this.initializeSessions(cliResult.context.sessions, cliResult.context);
             } else {
                 // Initialize default providers if no specific ones were processed
                 await this.initializeDefaultProviders();

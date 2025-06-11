@@ -191,10 +191,10 @@ class ProviderRegistry {
                 return {
                     name: provider.getName(),
                     commandArg: provider.getCommandArg(),
-                    spawn: async (profile = 'default') => {
+                    spawn: async (profile = 'default', options = {}) => {
                         try {
                             let new_provider = new ProviderClass();
-                            await new_provider.initializeProvider(profile);
+                            await new_provider.initializeProvider(profile, options);
                             if (!new_provider.window) {
                                 throw new Error(`Failed to initialize window for ${provider.getName()} with profile ${profile}`);
                             }

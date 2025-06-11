@@ -1,0 +1,63 @@
+{
+  "timestamp": "2025-06-11T02:26:38.757Z",
+  "component": {
+    "error": {},
+    "session": {
+      "provider": "whatsapp",
+      "profile": "test"
+    },
+    "context": {
+      "windowShowBehavior": "minimize"
+    }
+  },
+  "process": {
+    "pid": 21968,
+    "platform": "win32",
+    "arch": "x64",
+    "versions": {
+      "node": "20.6.1",
+      "acorn": "8.10.0",
+      "ada": "2.6.0",
+      "ares": "1.19.1",
+      "base64": "0.5.0",
+      "brotli": "1.0.9",
+      "cjs_module_lexer": "1.2.2",
+      "cldr": "43.1",
+      "icu": "73.2",
+      "llhttp": "8.1.1",
+      "modules": "115",
+      "napi": "9",
+      "nghttp2": "1.55.1",
+      "nghttp3": "0.7.0",
+      "ngtcp2": "0.8.1",
+      "openssl": "3.0.10+quic",
+      "simdutf": "3.2.17",
+      "tz": "2023c",
+      "undici": "5.23.0",
+      "unicode": "15.0",
+      "uv": "1.46.0",
+      "uvwasi": "0.0.18",
+      "v8": "11.3.244.8-node.14",
+      "zlib": "1.2.13.1-motley"
+    },
+    "memoryUsage": {
+      "rss": 50040832,
+      "heapTotal": 11935744,
+      "heapUsed": 8627072,
+      "external": 2225845,
+      "arrayBuffers": 25055
+    }
+  },
+  "system": {
+    "hostname": "LEN-99",
+    "type": "Windows_NT",
+    "platform": "win32",
+    "arch": "x64",
+    "release": "10.0.26100",
+    "uptime": 153817.484,
+    "totalmem": 36442779648,
+    "freemem": 8723042304,
+    "cpus": 8
+  },
+  "error": {}
+}

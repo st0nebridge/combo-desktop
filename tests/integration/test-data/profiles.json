@@ -1,0 +1,10 @@
+{
+	"profiles": {
+		"combo-desktop:whatsapp:test": {
+			"providerName": "whatsapp",
+			"profileName": "test",
+			"options": {},
+			"createdAt": "2025-06-11T02:26:38.655Z"
+		}
+	}
+}

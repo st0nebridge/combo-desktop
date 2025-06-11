@@ -1,0 +1,33 @@
+{
+  "current": {
+    "id": "task_001",
+    "label": "Analyze delegation logs and identify issues",
+    "conditions": [],
+    "uses": [],
+    "produces": ["delegation_logs", "error_analysis"],
+    "next": "task_002"
+  },
+  "next": {
+    "id": "task_002", 
+    "label": "Investigate delegation code and test scenarios",
+    "conditions": ["task_001_complete"],
+    "uses": ["delegation_logs", "error_analysis"],
+    "produces": ["fixes_applied"],
+    "next": "task_003"
+  },
+  "queued": [
+    {
+      "id": "task_003",
+      "label": "Implement and validate fixes",
+      "conditions": ["task_002_complete"],
+      "uses": ["fixes_applied"],
+      "produces": ["test_results"],
+      "next": null
+    }
+  ],
+  "completed": [],
+  "context": {
+    "total_tasks": 3,
+    "estimated_duration": "30-45 minutes"
+  }
+}

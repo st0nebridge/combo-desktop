@@ -168,17 +168,30 @@ class ProviderCLI extends BaseCLI {
                     
                     // Check for tray flag
                     result.tray = args.includes('--tray');
-                    
-                    // Check for options flag
-                    const optionsIndex = args.indexOf('--options');
-                    if (optionsIndex !== -1 && optionsIndex + 1 < args.length) {
-                        try {
-                            result.options = JSON.parse(args[optionsIndex + 1]);
-                        } catch (error) {
-                            logger.error('Error parsing options JSON:', error);
-                            result.options = {};
-                        }
-                    }
+                }
+            }
+            
+            // Check for window show behavior flag (outside provider loop)
+            const windowShowIndex = args.indexOf('--window-show');
+            if (windowShowIndex !== -1 && windowShowIndex + 1 < args.length) {
+                const windowShowValue = args[windowShowIndex + 1];
+                const validBehaviors = ['auto', 'minimize', 'hidden', 'background', 'bring-to-front'];
+                if (validBehaviors.includes(windowShowValue)) {
+                    result.windowShowBehavior = windowShowValue;
+                    logger.info(`Found window show behavior: ${windowShowValue}`);
+                } else {
+                    logger.warn(`Invalid window show behavior: ${windowShowValue}. Valid options: ${validBehaviors.join(', ')}`);
+                }
+            }
+            
+            // Check for options flag (outside provider loop)
+            const optionsIndex = args.indexOf('--options');
+            if (optionsIndex !== -1 && optionsIndex + 1 < args.length) {
+                try {
+                    result.options = JSON.parse(args[optionsIndex + 1]);
+                } catch (error) {
+                    logger.error('Error parsing options JSON:', error);
+                    result.options = {};
                 }
             }
             
@@ -215,6 +228,11 @@ class ProviderCLI extends BaseCLI {
             // Update context with provider information
             context.providers = parsedArgs.providers;
             context.sessions = parsedArgs.sessions;
+            
+            // Pass window show behavior to context if specified
+            if (parsedArgs.windowShowBehavior) {
+                context.windowShowBehavior = parsedArgs.windowShowBehavior;
+            }
             
             // Handle common flags first
             if (parsedArgs.help) {
@@ -293,11 +311,14 @@ Provider Management Commands:
 Provider Options:
   --profile <n>                         Use specific profile
   --tray                                   Start in tray mode
+  --window-show <behavior>                 Window show behavior (auto, minimize, hidden, background, bring-to-front)
   --options <json>                         Provider-specific options as JSON
 
 Examples:
   ${cmd} --provider list               List all available providers
   ${cmd} --whatsapp --profile work     Start WhatsApp with work profile
+  ${cmd} --whatsapp --window-show hidden    Start WhatsApp hidden in background
+  ${cmd} --facebook --window-show minimize  Start Facebook minimized to tray
 `);
     }
 
@@ -326,6 +347,7 @@ OPTIONS
 -------
 --profile <n>                         Use specific profile configuration
 --tray                                   Start in tray mode (minimized)
+--window-show <behavior>                 Window show behavior: auto (default), minimize, hidden, background, bring-to-front
 --options <json>                         Provider-specific options as JSON string
 
 EXAMPLES
@@ -333,13 +355,23 @@ EXAMPLES
 ${cmd} --provider list               List all available providers
 ${cmd} --whatsapp                    Start WhatsApp with default profile
 ${cmd} --whatsapp --profile work     Start WhatsApp with work profile
+${cmd} --whatsapp --window-show hidden    Start WhatsApp hidden in background
 ${cmd} --facebook --tray             Start Facebook in tray mode
+${cmd} --facebook --window-show minimize  Start Facebook minimized to tray
 
 NOTES
 -----
 - Each provider may have additional specific options
 - The --options parameter accepts a valid JSON string
 - Multiple providers can be started simultaneously
+
+WINDOW SHOW BEHAVIORS
+---------------------
+- auto: Show and focus window immediately (default)
+- minimize: Create window but minimize to tray
+- hidden: Create window but keep it hidden
+- background: Create window in background without focus
+- bring-to-front: Show existing window and bring to front (for delegation)
 `);
     }
 

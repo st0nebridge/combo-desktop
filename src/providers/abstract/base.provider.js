@@ -51,6 +51,9 @@ class BaseProvider {
         
         /** @property {boolean} isQuitting - Whether provider is quitting */
         this.isQuitting = false;
+        
+        /** @property {string} windowShowBehavior - How to show the window when initialized */
+        this.windowShowBehavior = 'auto';
     }
 
     /**
@@ -102,6 +105,45 @@ class BaseProvider {
      */
     getNotificationInterval() {
         return 3000; // 3 seconds
+    }
+
+    /**
+     * Returns the window show behavior configuration for this provider.
+     * Available options:
+     * - 'auto' (default): Show and focus window immediately
+     * - 'minimize': Create window but minimize to tray
+     * - 'hidden': Create window but keep it hidden
+     * - 'background': Create window in background without focus
+     * - 'bring-to-front': Show existing window and bring to front (for existing windows)
+     * @method getDefaultWindowShowBehavior
+     * @returns {string} The default window show behavior
+     */
+    getDefaultWindowShowBehavior() {
+        return 'auto';
+    }
+
+    /**
+     * Set the window show behavior for this provider instance.
+     * @method setWindowShowBehavior
+     * @param {string} behavior - The window show behavior ('auto', 'minimize', 'hidden', 'background', 'bring-to-front')
+     * @throws {Error} If behavior is invalid
+     */
+    setWindowShowBehavior(behavior) {
+        const validBehaviors = ['auto', 'minimize', 'hidden', 'background', 'bring-to-front'];
+        if (!validBehaviors.includes(behavior)) {
+            throw new Error(`Invalid window show behavior: ${behavior}. Valid options: ${validBehaviors.join(', ')}`);
+        }
+        this.windowShowBehavior = behavior;
+        log.info(`[${this.getName()}] Window show behavior set to: ${behavior}`);
+    }
+
+    /**
+     * Get the current window show behavior for this provider instance.
+     * @method getWindowShowBehavior
+     * @returns {string} The current window show behavior
+     */
+    getWindowShowBehavior() {
+        return this.windowShowBehavior || this.getDefaultWindowShowBehavior();
     }
 
     /**
@@ -182,9 +224,11 @@ class BaseProvider {
      * Initialize the provider with a specific profile
      * @method initializeProvider
      * @param {string} profile - Profile name
+     * @param {Object} options - Initialization options
+     * @param {string} [options.windowShowBehavior] - Window show behavior override
      * @returns {Promise<void>}
      */
-    async initializeProvider(profile) {
+    async initializeProvider(profile, options = {}) {
         try {
             if (!profile) {
                 throw new Error('Profile name is required');
@@ -193,12 +237,20 @@ class BaseProvider {
             // Store profile name
             this.profile = profile;
 
+            // Set window show behavior if provided
+            if (options.windowShowBehavior) {
+                this.setWindowShowBehavior(options.windowShowBehavior);
+            }
+
             // Check if window already exists
             const windowName = this.getWindowName(profile);
             const existingWindow = windowService.getWindow(windowName);
             if (existingWindow && !existingWindow.isDestroyed()) {
                 log.info(`Window already exists for ${this.getName()} with profile: ${profile}`);
                 this.window = existingWindow;
+                
+                // Apply window show behavior to existing window
+                await this.applyWindowShowBehavior(true);
                 return;
             }
 
@@ -211,6 +263,9 @@ class BaseProvider {
             // Initialize window content
             await this.initializeWindow(profile);
 
+            // Apply window show behavior to new window
+            await this.applyWindowShowBehavior(false);
+
             // Create tray icon after window is initialized
             await trayService.createTray(this, windowName);
 
@@ -218,6 +273,81 @@ class BaseProvider {
         } catch (error) {
             log.error(`Error initializing provider ${this.getName()}:`, error);
             throw error;
+        }
+    }
+
+    /**
+     * Apply the configured window show behavior to the provider window.
+     * @method applyWindowShowBehavior
+     * @param {boolean} isExistingWindow - Whether this is an existing window or newly created
+     * @returns {Promise<void>}
+     */
+    async applyWindowShowBehavior(isExistingWindow = false) {
+        if (!this.window || this.window.isDestroyed()) {
+            log.warn(`[${this.getName()}] Cannot apply window show behavior - no window available`);
+            return;
+        }
+
+        const behavior = this.getWindowShowBehavior();
+        log.info(`[${this.getName()}] Applying window show behavior: ${behavior} (existing: ${isExistingWindow})`);
+
+        try {
+            switch (behavior) {
+                case 'auto':
+                    // Default behavior: show and focus window
+                    this.window.show();
+                    this.window.focus();
+                    break;
+
+                case 'minimize':
+                    // Create window but minimize to tray
+                    if (!isExistingWindow) {
+                        // For new windows, show briefly then minimize
+                        this.window.showInactive();
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                    }
+                    this.window.hide(); // Hide to tray
+                    break;
+
+                case 'hidden':
+                    // Create window but keep it hidden
+                    if (this.window.isVisible()) {
+                        this.window.hide();
+                    }
+                    // Don't show the window at all
+                    break;
+
+                case 'background':
+                    // Create window in background without focus
+                    if (!this.window.isVisible()) {
+                        this.window.showInactive();
+                    }
+                    break;
+
+                case 'bring-to-front':
+                    // Show existing window and bring to front
+                    this.window.show();
+                    this.window.focus();
+                    this.window.moveTop();
+                    break;
+
+                default:
+                    log.warn(`[${this.getName()}] Unknown window show behavior: ${behavior}, using auto`);
+                    this.window.show();
+                    this.window.focus();
+                    break;
+            }
+
+            log.debug(`[${this.getName()}] Window show behavior '${behavior}' applied successfully`);
+        } catch (error) {
+            log.error(`[${this.getName()}] Error applying window show behavior '${behavior}':`, error);
+            // Fallback to default behavior
+            try {
+                this.window.show();
+                this.window.focus();
+            } catch (fallbackError) {
+                log.error(`[${this.getName()}] Fallback window show also failed:`, fallbackError);
+            }
         }
     }
 
@@ -517,46 +647,75 @@ class BaseProvider {
                 }
             },
             { type: 'separator' },
-            this.getQuitMenuItem()
+            this.getCloseInstanceMenuItem(),
+            this.getQuitApplicationMenuItem()
         ];
     }
 
     /**
-     * Get a reusable Quit menu item for tray and context menus
-     * @method getQuitMenuItem
+     * Get Close Instance menu item for tray context menus
+     * @method getCloseInstanceMenuItem
      * @private
-     * @returns {Object} Quit menu item
+     * @returns {Object} Close Instance menu item
      */
-    getQuitMenuItem() {
+    getCloseInstanceMenuItem() {
         return {
-            label: 'Quit',
+            label: 'Close Instance',
             click: async () => {
                 try {
-                    // Unregister the session - this will handle:
-                    // 1. Cleaning up the session
-                    // 2. Destroying the tray icon
-                    // 3. Closing the window with forceClose
-                    // 4. Triggering the last-session-closed event if needed
+                    // Close only this specific provider instance
                     const instanceManager = require('../../services/instance.manager');
-                    log.info(`Requesting session close for ${this.getSessionName()}:${this.profile}`);
+                    
+                    log.info(`Closing instance for ${this.getSessionName()}:${this.profile}`);
                     await instanceManager.unregisterSession(this.getSessionName(), this.profile);
                     
-                    // Check if this was the last session and quit if so
-                    if (instanceManager.getSessionCount() === 0) {
-                        log.info('Last session closed, quitting application');
-                        const { app } = require('electron');
-                        if (app && typeof app.quit === 'function') {
-                            app.quit();
-                        } else {
-                            log.warn('Cannot call app.quit(), exiting process directly');
-                            process.exit(0);
-                        }
-                    }
+                    // Note: We do NOT quit the application here - only close this instance
+                    const remainingCount = instanceManager.getSessionCount();
+                    log.info(`Instance closed - ${remainingCount} sessions remain`);
                 } catch (error) {
-                    log.error('Error in Quit action:', error);
+                    log.error('Error in Close Instance action:', error);
                 }
             }
         };
+    }
+
+    /**
+     * Get Quit Application menu item for tray context menus
+     * @method getQuitApplicationMenuItem
+     * @private
+     * @returns {Object} Quit Application menu item
+     */
+    getQuitApplicationMenuItem() {
+        return {
+            label: 'Quit Application',
+            click: async () => {
+                try {
+                    // Force quit the entire application regardless of remaining sessions
+                    log.info('User requested application quit via tray menu');
+                    const { app } = require('electron');
+                    if (app && typeof app.quit === 'function') {
+                        app.quit();
+                    } else {
+                        log.warn('Cannot call app.quit(), exiting process directly');
+                        process.exit(0);
+                    }
+                } catch (error) {
+                    log.error('Error in Quit Application action:', error);
+                }
+            }
+        };
+    }
+
+    /**
+     * Get a reusable Quit menu item for tray and context menus (DEPRECATED)
+     * @method getQuitMenuItem
+     * @private
+     * @returns {Object} Quit menu item
+     * @deprecated Use getCloseInstanceMenuItem() or getQuitApplicationMenuItem() instead
+     */
+    getQuitMenuItem() {
+        // For backward compatibility, default to close instance behavior
+        return this.getCloseInstanceMenuItem();
     }
 
     /**
