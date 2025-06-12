@@ -314,35 +314,44 @@ class TrayService {
      * Destroy a tray icon and clean up resources
      * @method destroyTray
      * @param {string} windowName - Name of window with tray
-     * @returns {Promise<void>}
+     * @returns {Promise<boolean>} True if tray was destroyed, false if not found
      */
     async destroyTray(windowName) {
         try {
             const trayInfo = this.trays.get(windowName);
             if (!trayInfo) {
                 logger.debug(`No tray found for window: ${windowName}`);
-                return;
+                return false;
             }
 
             const { tray } = trayInfo;
             if (tray && !tray.isDestroyed()) {
                 logger.info(`Destroying tray for ${windowName}`);
                 tray.destroy();
+                logger.info(`Tray destroyed successfully for ${windowName}`);
+            } else {
+                logger.debug(`Tray for ${windowName} was already destroyed or invalid`);
             }
 
             // Clear notification state and timer
             if (this.notificationTimers.has(windowName)) {
                 clearInterval(this.notificationTimers.get(windowName));
                 this.notificationTimers.delete(windowName);
+                logger.debug(`Cleared notification timer for ${windowName}`);
             }
+            
             this.notificationStates.delete(windowName);
             this.trays.delete(windowName);
+            
+            logger.info(`Cleaned up all tray resources for ${windowName}`);
+            return true;
         } catch (error) {
             logger.error(`Error destroying tray for ${windowName}:`, error);
-            // Force cleanup on timeout
+            // Force cleanup on error to prevent memory leaks
             this.notificationTimers.delete(windowName);
             this.notificationStates.delete(windowName);
             this.trays.delete(windowName);
+            return false;
         }
     }
 

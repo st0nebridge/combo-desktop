@@ -1202,28 +1202,65 @@ class InstanceManager extends EventEmitter {
                     log.warn(`Could not find window to close for session ${sessionKey}`);
                 }
                 
-                // Destroy the associated tray - use the same fallback logic
+                // Destroy the associated tray - use enhanced fallback logic
                 const trayService = require('./tray.service');
-                const possibleTrayNames = [
-                    `${name}:${profile}`,           // lowercase format
-                    `${name.charAt(0).toUpperCase() + name.slice(1)}:${profile}` // capitalized format
-                ];
+                const providerRegistry = require('../providers/provider.registry');
+                
+                // Get all possible tray name formats
+                const possibleTrayNames = [];
+                
+                // Try to get the actual provider display name from registry
+                try {
+                    const provider = providerRegistry.getProvider(name);
+                    if (provider && provider.getName) {
+                        possibleTrayNames.push(`${provider.getName()}:${profile}`); // Provider display name format
+                    }
+                } catch (error) {
+                    log.debug(`Could not get provider display name for ${name}`);
+                }
+                
+                // Add common known mappings for case sensitivity
+                const knownMappings = {
+                    'whatsapp': 'WhatsApp',
+                    'facebook': 'Facebook'
+                };
+                
+                if (knownMappings[name]) {
+                    possibleTrayNames.push(`${knownMappings[name]}:${profile}`);
+                }
+                
+                // Add fallback formats
+                possibleTrayNames.push(
+                    `${name}:${profile}`,           // lowercase format (whatsapp:default)
+                    `${name.charAt(0).toUpperCase() + name.slice(1)}:${profile}`, // simple capitalized (Whatsapp:default)
+                    `${name.toUpperCase()}:${profile}` // all uppercase format
+                );
+                
+                // Remove duplicates
+                const uniqueTrayNames = [...new Set(possibleTrayNames)];
                 
                 let trayDestroyed = false;
-                for (const trayName of possibleTrayNames) {
+                for (const trayName of uniqueTrayNames) {
                     try {
-                        await trayService.destroyTray(trayName);
-                        log.info(`Destroyed tray for ${trayName}`);
-                        trayDestroyed = true;
-                        break;
+                        const trayInfo = trayService.trays.get(trayName);
+                        if (trayInfo) {
+                            const destroyed = await trayService.destroyTray(trayName);
+                            if (destroyed) {
+                                log.info(`Successfully destroyed tray for ${trayName}`);
+                                trayDestroyed = true;
+                                break;
+                            }
+                        } else {
+                            log.debug(`No tray found for name: ${trayName}`);
+                        }
                     } catch (error) {
                         // Continue to next name format
-                        log.debug(`Tray ${trayName} not found, trying next format`);
+                        log.debug(`Failed to destroy tray ${trayName}:`, error);
                     }
                 }
                 
                 if (!trayDestroyed) {
-                    log.warn(`Could not find tray to destroy for session ${sessionKey}`);
+                    log.warn(`Could not find any tray to destroy for session ${sessionKey}. Available trays: ${[...trayService.trays.keys()].join(', ')}`);
                 }
                 
                 log.info(`Session ${sessionKey} unregistered successfully`);
