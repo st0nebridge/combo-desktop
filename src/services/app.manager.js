@@ -515,6 +515,10 @@ class AppManager {
                     const instanceManager = require('./instance.manager');
                     await instanceManager.cleanup();
 
+                    // Clean up logging to prevent EPIPE errors during exit
+                    const loggingService = require('./logging.service');
+                    await loggingService.cleanup();
+
                     // Force close any remaining windows
                     const windows = windowService.getAllWindows();
                     for (const window of windows) {
@@ -525,13 +529,15 @@ class AppManager {
                         }
                     }
 
-                    // Exit application
+                    // Exit application with slight delay to ensure cleanup completes
                     log.info('Exiting application');
-                    if (app && typeof app.quit === 'function') {
-                        app.quit();
-                    } else {
-                        process.exit(0);
-                    }
+                    setTimeout(() => {
+                        if (app && typeof app.quit === 'function') {
+                            app.quit();
+                        } else {
+                            process.exit(0);
+                        }
+                    }, 100);
                 }, {
                     errorMessage: 'Failed during application shutdown',
                     category: ErrorCategory.INSTANCE_ERROR,

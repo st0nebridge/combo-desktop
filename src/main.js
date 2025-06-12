@@ -68,27 +68,25 @@ async function main() {
             
             // Delegate sessions to existing instances if needed
             if (delegatedSessions && Array.isArray(delegatedSessions) && delegatedSessions.length > 0) {
-                logger.info('Delegating sessions to existing instances:', delegatedSessions);
+                logger.info('Sessions already delegated during processing:', delegatedSessions);
                 
-                // Delegate sessions to existing instances
-                const delegationResult = await instanceManager.delegateSessions(
-                    delegatedSessions,
-                    profileIsolation
-                );
+                // Sessions in delegatedSessions are already delegated by handleProfileSessionDelegation
+                // No need to delegate again - just check if we should quit
+                logger.info('Session delegation successful');
                 
-                if (delegationResult) {
-                    logger.info('Session delegation successful');
+                // If all sessions were delegated and none are local, quit this instance
+                if (localSessions.length === 0) {
+                    logger.info('All sessions delegated, preparing to quit this instance');
                     
-                    // If all sessions were delegated and none are local, quit this instance
-                    if (localSessions.length === 0) {
-                        logger.info('All sessions delegated, quitting this instance');
+                    // Cleanup logging to prevent EPIPE errors during exit
+                    const loggingService = require('./services/logging.service');
+                    await loggingService.cleanup();
+                    
+                    // Small delay to ensure cleanup completes
+                    setTimeout(() => {
                         app.quit();
-                        return;
-                    }
-                } else {
-                    logger.warn('Session delegation failed, running all sessions locally');
-                    // If delegation failed, run all sessions locally
-                    localSessions.push(...delegatedSessions);
+                    }, 100);
+                    return;
                 }
             }
             

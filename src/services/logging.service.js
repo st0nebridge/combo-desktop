@@ -21,6 +21,7 @@ class LoggingService {
      */
     constructor() {
         this.initializeLogging();
+        this.setupErrorHandling();
     }
 
     /**
@@ -70,6 +71,70 @@ class LoggingService {
      */
     debug(...args) {
         log.debug(...args);
+    }
+
+    /**
+     * Clean up logging before process exit to prevent EPIPE errors
+     * @method cleanup
+     * @returns {Promise<void>}
+     */
+    async cleanup() {
+        try {
+            // Disable console transport to prevent writing to closed streams
+            log.transports.console.level = false;
+            
+            // Wait a small amount of time for any pending writes to complete
+            await new Promise(resolve => setTimeout(resolve, 50));
+            
+            log.info('Logging cleanup completed');
+        } catch (error) {
+            // Ignore errors during cleanup to prevent exit issues
+            console.error('Error during logging cleanup:', error.message);
+        }
+    }
+
+    /**
+     * Setup error handling for stream write errors (like EPIPE)
+     * @method setupErrorHandling
+     * @private
+     */
+    setupErrorHandling() {
+        // Handle console transport errors gracefully
+        if (log.transports.console && log.transports.console.stream) {
+            const originalWrite = log.transports.console.stream.write;
+            log.transports.console.stream.write = function(...args) {
+                try {
+                    return originalWrite.apply(this, args);
+                } catch (error) {
+                    if (error.code === 'EPIPE' || error.code === 'ECONNRESET') {
+                        // Ignore broken pipe errors during process exit
+                        return false;
+                    }
+                    throw error;
+                }
+            };
+        }
+
+        // Handle process stdout/stderr errors
+        if (process.stdout) {
+            process.stdout.on('error', (error) => {
+                if (error.code === 'EPIPE') {
+                    // Ignore EPIPE errors on stdout during process exit
+                    return;
+                }
+                console.error('stdout error:', error);
+            });
+        }
+
+        if (process.stderr) {
+            process.stderr.on('error', (error) => {
+                if (error.code === 'EPIPE') {
+                    // Ignore EPIPE errors on stderr during process exit
+                    return;
+                }
+                console.error('stderr error:', error);
+            });
+        }
     }
 }
 

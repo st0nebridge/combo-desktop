@@ -359,20 +359,29 @@ class InstanceManager extends EventEmitter {
                                             }
                                         }
                                         
-                                        sessions.push({ provider, profile });
+                                        // Check if session already exists to avoid duplicates
+                                        const sessionKey = `${provider}:${profile}`;
+                                        if (this.providerSessions.has(sessionKey)) {
+                                            log.info(`Session ${sessionKey} already exists, skipping delegation`);
+                                        } else {
+                                            sessions.push({ provider, profile });
+                                            log.info(`Session ${sessionKey} will be created via delegation`);
+                                        }
                                     }
                                     i++;
                                 }
                                 
                                 if (sessions.length > 0) {
                                     // Initialize sessions using app manager
+                                    log.info(`Initializing ${sessions.length} new sessions via delegation`);
                                     result = await appManager.initializeSessions(sessions, {
                                         profileIsolation: true
                                     });
                                     success = result && Array.isArray(result) && result.length > 0;
                                 } else {
                                     success = true;
-                                    result = 'No sessions to initialize';
+                                    result = 'No new sessions to initialize (all sessions already exist)';
+                                    log.info('Delegation command handled - no new sessions needed');
                                 }
                                 
                                 if (!success) {
@@ -793,6 +802,57 @@ class InstanceManager extends EventEmitter {
     }
 
     /**
+     * Early lightweight registration to enable delegation checks
+     * @method earlyRegister
+     * @param {string} profile - Profile name
+     * @returns {Promise<void>}
+     */
+    async earlyRegister(profile) {
+        try {
+            // Validate profile name
+            if (!profile || typeof profile !== 'string') {
+                throw createError('Invalid profile name for early registration', {
+                    category: ErrorCategory.INSTANCE_ERROR,
+                    context: { profile }
+                });
+            }
+            
+            // Set current profile
+            this.currentProfile = profile;
+            
+            // Generate unique instance ID if not already set
+            if (!this.instanceId) {
+                this.instanceId = `instance-${Date.now()}-${Math.random().toString(36).substring(2, 15)}`;
+            }
+            
+            log.info(`Early registration for delegation checks: ${this.instanceId}, profile: ${profile}`);
+            
+            // Do minimal initialization if needed
+            if (!this._initialized) {
+                await this.initialize();
+            }
+            
+            // Register this instance in the lock file for delegation detection
+            await this.registerInstanceInLockFile(profile);
+            
+            // Set first instance flag by checking lock file state
+            const lockData = await this.readLockFile();
+            const instanceCount = Object.keys(lockData.instances || {}).length;
+            this.isFirstInstance = instanceCount <= 1; // We just added ourselves
+            
+            log.info(`Early registration completed: ${this.instanceId}, isFirst: ${this.isFirstInstance}`);
+            
+        } catch (error) {
+            log.error('Error in early registration:', error);
+            throw createError('Early registration failed', {
+                category: ErrorCategory.INSTANCE_ERROR,
+                cause: error,
+                context: { profile }
+            });
+        }
+    }
+
+    /**
      * Initialize the instance with enhanced profile isolation
      * @method init
      * @param {Object} options - Initialization options
@@ -833,11 +893,15 @@ class InstanceManager extends EventEmitter {
                     await this.initialize();
                 }
                 
-                // Register this instance in the lock file
-                await this.registerInstanceInLockFile(profile);
+                // Register this instance in the lock file (skip if already done in earlyRegister)
+                const lockData = await this.readLockFile();
+                if (!lockData.instances || !lockData.instances[this.instanceId]) {
+                    await this.registerInstanceInLockFile(profile);
+                }
                 
-                // Initialize as first instance for now (proper detection would require lock file check)
-                this.isFirstInstance = true;
+                // Determine if this is the first instance by checking lock file
+                const instanceCount = Object.keys(lockData.instances || {}).length;
+                this.isFirstInstance = instanceCount <= 1;
                 
                 // Record initialization in lock history
                 this.lockHistory.set(`init-${Date.now()}`, {
@@ -1250,16 +1314,33 @@ class InstanceManager extends EventEmitter {
                 sessions: instance.sessions || []
             }));
             
-            // Filter out dead instances
+            // Filter out dead instances and track which ones to clean up
             const liveInstances = [];
+            const deadInstanceIds = [];
+            
             for (const instance of instances) {
                 try {
                     // Check if process is still running
                     process.kill(instance.pid, 0);
-                    liveInstances.push(instance);
+                    
+                    // Additional validation: check if it's actually our application
+                    const isOurProcess = await this.validateProcessIsOurs(instance.pid);
+                    if (isOurProcess) {
+                        liveInstances.push(instance);
+                    } else {
+                        log.debug(`Instance ${instance.id} with PID ${instance.pid} is not our process (PID reused)`);
+                        deadInstanceIds.push(instance.id);
+                    }
                 } catch (error) {
                     log.debug(`Instance ${instance.id} with PID ${instance.pid} is no longer running`);
+                    deadInstanceIds.push(instance.id);
                 }
+            }
+            
+            // Clean up dead instances from lock file if any found
+            if (deadInstanceIds.length > 0) {
+                await this.cleanupDeadInstances(deadInstanceIds);
+                log.info(`Cleaned up ${deadInstanceIds.length} dead instances from lock file`);
             }
             
             log.debug(`Found ${liveInstances.length} live instances`);
@@ -1446,6 +1527,12 @@ class InstanceManager extends EventEmitter {
                 return result;
             }
             
+            // Do early lightweight registration so delegation checks can find us
+            if (!this.instanceId) {
+                const profile = sessions[0]?.profile || 'default';
+                await this.earlyRegister(profile);
+            }
+            
             // Group sessions by profile for delegation logic
             const sessionsByProfile = new Map();
             for (const session of sessions) {
@@ -1540,6 +1627,12 @@ class InstanceManager extends EventEmitter {
             const allInstances = await this.getInstances();
             const runningInstances = allInstances.filter(instance => {
                 try {
+                    // Exclude current process from delegation targets to prevent self-delegation
+                    if (instance.pid === process.pid) {
+                        log.debug(`Excluding current process (PID: ${process.pid}) from delegation targets`);
+                        return false;
+                    }
+                    
                     // Check if process exists
                     process.kill(instance.pid, 0);
                     return true;
@@ -2128,7 +2221,88 @@ class InstanceManager extends EventEmitter {
         }
     }
 
-    // ...existing code...
+    /**
+     * Clean up dead instances from lock file
+     * @method cleanupDeadInstances
+     * @private
+     * @param {Array<string>} deadInstanceIds - Array of dead instance IDs to remove
+     * @returns {Promise<void>}
+     */
+    async cleanupDeadInstances(deadInstanceIds) {
+        if (!deadInstanceIds || deadInstanceIds.length === 0) {
+            return;
+        }
+        
+        try {
+            const lockData = await this.readLockFile();
+            let hasChanges = false;
+            
+            for (const instanceId of deadInstanceIds) {
+                if (lockData.instances && lockData.instances[instanceId]) {
+                    log.debug(`Removing dead instance ${instanceId} from lock file`);
+                    delete lockData.instances[instanceId];
+                    hasChanges = true;
+                }
+            }
+            
+            if (hasChanges) {
+                await this.writeLockFile(lockData);
+                log.debug(`Successfully cleaned up ${deadInstanceIds.length} dead instances`);
+            }
+        } catch (error) {
+            log.error('Error cleaning up dead instances:', error);
+            // Don't throw - this is a cleanup operation that shouldn't block the main flow
+        }
+    }
+
+    /**
+     * Validate that a PID belongs to our application
+     * @method validateProcessIsOurs
+     * @private
+     * @param {number} pid - Process ID to validate
+     * @returns {Promise<boolean>} True if the process is our application
+     */
+    async validateProcessIsOurs(pid) {
+        try {
+            if (process.platform === 'win32') {
+                // On Windows, check if the process name is 'electron.exe' or our app name
+                const { execSync } = require('child_process');
+                const result = execSync(`powershell -command "Get-Process -Id ${pid} -ErrorAction SilentlyContinue | Select-Object ProcessName"`, { 
+                    encoding: 'utf8',
+                    timeout: 5000 
+                });
+                
+                const processName = result.trim().toLowerCase();
+                
+                // Check if it's electron (our app) or has our app name
+                if (processName.includes('electron') || processName.includes('desk-tray')) {
+                    return true;
+                }
+                
+                log.debug(`PID ${pid} is not our process: ${processName}`);
+                return false;
+            } else {
+                // On Unix-like systems, check the process command line
+                const { execSync } = require('child_process');
+                try {
+                    const result = execSync(`ps -p ${pid} -o comm=`, { 
+                        encoding: 'utf8',
+                        timeout: 5000 
+                    });
+                    
+                    const processName = result.trim().toLowerCase();
+                    return processName.includes('electron') || processName.includes('desk-tray');
+                } catch (error) {
+                    // Process doesn't exist
+                    return false;
+                }
+            }
+        } catch (error) {
+            log.debug(`Error validating process ${pid}:`, error.message);
+            // If we can't validate, assume it's not ours to be safe
+            return false;
+        }
+    }
 }
 
 // Export a singleton instance
