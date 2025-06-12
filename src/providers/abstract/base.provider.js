@@ -660,20 +660,34 @@ class BaseProvider {
      */
     getCloseInstanceMenuItem() {
         return {
-            label: 'Close Instance',
+            label: 'Unload Instance',
             click: async () => {
                 try {
                     // Close only this specific provider instance
                     const instanceManager = require('../../services/instance.manager');
+                    const windowService = require('../../services/window.service');
                     
-                    log.info(`Closing instance for ${this.getSessionName()}:${this.profile}`);
+                    log.info(`Unloading instance for ${this.getSessionName()}:${this.profile}`);
+                    
+                    // Set forceClose flag to bypass window close prevention
+                    const windowName = this.getWindowName(this.profile || 'default');
+                    const { window } = windowService.resolveWindow(windowName);
+                    if (window && !window.isDestroyed()) {
+                        window.forceClose = true;
+                    }
+                    
                     await instanceManager.unregisterSession(this.getSessionName(), this.profile);
                     
                     // Note: We do NOT quit the application here - only close this instance
                     const remainingCount = instanceManager.getSessionCount();
-                    log.info(`Instance closed - ${remainingCount} sessions remain`);
+                    log.info(`Instance unloaded - ${remainingCount} sessions remain`);
+                    
+                    // If this was the last instance, the process should exit automatically
+                    if (remainingCount === 0) {
+                        log.info('Last instance unloaded, process will exit');
+                    }
                 } catch (error) {
-                    log.error('Error in Close Instance action:', error);
+                    log.error('Error in Unload Instance action:', error);
                 }
             }
         };
@@ -690,9 +704,54 @@ class BaseProvider {
             label: 'Quit Application',
             click: async () => {
                 try {
+                    const instanceManager = require('../../services/instance.manager');
+                    const { dialog, app } = require('electron');
+                    
+                    // Get current session count and list
+                    const sessionCount = instanceManager.getSessionCount();
+                    const sessions = Array.from(instanceManager.providerSessions.keys());
+                    
+                    log.info(`User requested application quit via tray menu. Current sessions: ${sessionCount}`);
+                    
+                    if (sessionCount > 1) {
+                        // Show confirmation dialog when multiple instances are running
+                        const otherSessions = sessions.filter(session => 
+                            session !== `${this.getSessionName()}:${this.profile || 'default'}`
+                        );
+                        
+                        const response = await dialog.showMessageBox({
+                            type: 'question',
+                            buttons: ['Quit All', 'Cancel'],
+                            defaultId: 1,
+                            title: 'Quit Application',
+                            message: `Quit ${app.getName()}?`,
+                            detail: `This will close all ${sessionCount} running instances:\n\n` +
+                                   `• ${sessions.join('\n• ')}\n\n` +
+                                   `Are you sure you want to quit?`
+                        });
+                        
+                        if (response.response !== 0) {
+                            log.info('User cancelled application quit');
+                            return;
+                        }
+                    } else if (sessionCount === 1) {
+                        // Show simple confirmation for single instance
+                        const response = await dialog.showMessageBox({
+                            type: 'question',
+                            buttons: ['Quit', 'Cancel'],
+                            defaultId: 1,
+                            title: 'Quit Application',
+                            message: `Quit ${app.getName()}?`
+                        });
+                        
+                        if (response.response !== 0) {
+                            log.info('User cancelled application quit');
+                            return;
+                        }
+                    }
+                    
                     // Force quit the entire application regardless of remaining sessions
-                    log.info('User requested application quit via tray menu');
-                    const { app } = require('electron');
+                    log.info('User confirmed application quit via tray menu');
                     if (app && typeof app.quit === 'function') {
                         app.quit();
                     } else {
@@ -701,6 +760,13 @@ class BaseProvider {
                     }
                 } catch (error) {
                     log.error('Error in Quit Application action:', error);
+                    // Fallback to direct quit if dialog fails
+                    const { app } = require('electron');
+                    if (app && typeof app.quit === 'function') {
+                        app.quit();
+                    } else {
+                        process.exit(0);
+                    }
                 }
             }
         };

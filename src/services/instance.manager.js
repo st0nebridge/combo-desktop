@@ -1169,7 +1169,8 @@ class InstanceManager extends EventEmitter {
                         const sessionName = provider.getSessionName ? provider.getSessionName() : provider.getCommandArg().replace(/^--/, '');
                         if (sessionName === name && window.metadata.profile === profile) {
                             if (!window.isDestroyed()) {
-                                log.info(`Closing window for ${windowName}`);
+                                log.info(`Force closing window for ${windowName}`);
+                                window.forceClose = true; // Ensure window actually closes instead of hiding
                                 window.close();
                             }
                             windowFound = true;
@@ -1188,7 +1189,8 @@ class InstanceManager extends EventEmitter {
                     for (const windowName of possibleNames) {
                         const { window } = windowService.resolveWindow(windowName);
                         if (window && !window.isDestroyed()) {
-                            log.info(`Closing window for ${windowName}`);
+                            log.info(`Force closing window for ${windowName}`);
+                            window.forceClose = true; // Ensure window actually closes instead of hiding
                             window.close();
                             windowFound = true;
                             break;

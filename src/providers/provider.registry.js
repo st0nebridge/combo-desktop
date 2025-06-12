@@ -6,6 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 const log = require('electron-log');
+const instanceManager = require('../services/instance.manager');
 
 /**
  * Service for managing provider registration and lifecycle.
@@ -198,6 +199,15 @@ class ProviderRegistry {
                             if (!new_provider.window) {
                                 throw new Error(`Failed to initialize window for ${provider.getName()} with profile ${profile}`);
                             }
+                            
+                            // Register the session with the instance manager
+                            const sessionRegistered = instanceManager.registerSession(provider.getName(), profile);
+                            if (!sessionRegistered) {
+                                log.warn(`Failed to register session for ${provider.getName()}:${profile}`);
+                            } else {
+                                log.info(`Successfully registered session for ${provider.getName()}:${profile}`);
+                            }
+                            
                             return new_provider;
                         } catch (error) {
                             log.error(`Error spawning provider ${provider.getName()}:`, error);

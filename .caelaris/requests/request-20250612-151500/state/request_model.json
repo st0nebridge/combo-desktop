@@ -1,0 +1,82 @@
+{
+  "request": {
+    "meta": {
+      "protocol": "caelaris",
+      "type": "investigation",
+      "timestamp": "20250612-151500",
+      "title": "Fix Close Instance Tray Menu Functionality",
+      "priority": "high"
+    },
+    "context": {
+      "issue": "Close Instance tray menu does not properly close instance and remove tray icon",
+      "expected_behavior": "Close Instance should unload the specific provider instance and remove its tray icon",
+      "current_behavior": "Close Instance menu exists but does not properly function",
+      "environment": "Multi-provider delegation scenario with tray icons"
+    },
+    "instructions": [
+      "Analyze current Close Instance implementation in base provider",
+      "Investigate tray service integration and cleanup",
+      "Test session unregistration and tray destruction",
+      "Identify root cause of functionality failure",
+      "Implement proper Close Instance behavior",
+      "Validate fix works in real delegation scenarios"
+    ],
+    "priorities": [
+      "Ensure proper session cleanup",
+      "Verify tray icon removal",
+      "Maintain backward compatibility",
+      "Test in delegation scenarios"
+    ],
+    "directives": {
+      "REQUIRED": [
+        "Must properly unregister sessions",
+        "Must destroy tray icons",
+        "Must not crash application",
+        "Must preserve other running instances"
+      ],
+      "PREFERRED": [
+        "Maintain existing menu structure",
+        "Provide clear user feedback",
+        "Log operations for debugging"
+      ],
+      "PROHIBITED": [
+        "Breaking existing functionality",
+        "Causing memory leaks",
+        "Affecting other provider instances"
+      ]
+    }
+  },
+  "variables": {
+    "analysis_complete": { "value": false, "writable": true, "writeMode": "replace" },
+    "root_cause_identified": { "value": false, "writable": true, "writeMode": "replace" },
+    "fix_implemented": { "value": false, "writable": true, "writeMode": "replace" },
+    "validation_passed": { "value": false, "writable": true, "writeMode": "replace" }
+  },
+  "tasks": {
+    "current": {
+      "id": "001",
+      "label": "Analyze Current Implementation",
+      "status": "current"
+    },
+    "queued": [
+      {
+        "id": "002", 
+        "label": "Identify Root Cause",
+        "status": "queued",
+        "conditions": ["analysis_complete"]
+      },
+      {
+        "id": "003",
+        "label": "Implement Fix", 
+        "status": "queued",
+        "conditions": ["root_cause_identified"]
+      },
+      {
+        "id": "004",
+        "label": "Validate Solution",
+        "status": "queued", 
+        "conditions": ["fix_implemented"]
+      }
+    ]
+  }
+}

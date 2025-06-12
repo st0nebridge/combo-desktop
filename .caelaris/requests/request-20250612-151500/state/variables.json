@@ -1,0 +1,6 @@
+{
+  "analysis_complete": { "value": true, "writable": true, "writeMode": "replace" },
+  "root_cause_identified": { "value": false, "writable": true, "writeMode": "replace" },
+  "fix_implemented": { "value": false, "writable": true, "writeMode": "replace" },
+  "validation_passed": { "value": false, "writable": true, "writeMode": "replace" }
+}

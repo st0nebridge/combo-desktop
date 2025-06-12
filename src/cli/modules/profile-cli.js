@@ -50,9 +50,19 @@ class ProfileCLI extends BaseCLI {
                 return false;
             }
             
-            // Check for direct profile flags
-            if (args.includes('--profile') || args.includes('--profiles')) {
+            // Check for --profiles flag (always for profile management)
+            if (args.includes('--profiles')) {
                 return true;
+            }
+            
+            // Check for --profile flag followed by a profile management command
+            const profileIndex = args.indexOf('--profile');
+            if (profileIndex !== -1 && profileIndex + 1 < args.length) {
+                const nextArg = args[profileIndex + 1];
+                // Only handle if the next argument is a profile management command
+                if (this.commands[nextArg]) {
+                    return true;
+                }
             }
             
             return false;
