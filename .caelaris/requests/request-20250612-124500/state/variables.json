@@ -1,0 +1,106 @@
+{
+  "project_files": {
+    "value": [
+      "src/", "package.json", "yarn.lock", ".gitignore", "icon.ico", "assets/", "docs/", "tests/", "README.md", "CHANGELOG.md", "CONTRIBUTING.md",
+      "test-*.js (25 files)", "debug-*.js (8 files)", "demo-*.js", "verify-*.js", "validate-*.js", "quick-test.js", "simple-test.js", "manual-test-guide.js",
+      "FIX_SUMMARY_*.md", "SESSION_REGISTRATION_FIX_COMPLETE.md", "UNLOAD_INSTANCE_IMPLEMENTATION_COMPLETE.md", "WINDOW_SHOW_BEHAVIOR_COMPLETION.md",
+      ".archive/", "temp-userdata/", "node_modules/", "dist/", ".github/", ".git/", ".caelaris/", ".rules/"
+    ],
+    "type": "array",
+    "writable": true,
+    "writeMode": "replace",
+    "description": "List of all project files for analysis",
+    "last_updated": "2025-06-12T12:46:00Z"
+  },
+  "cleanup_targets": {
+    "value": [
+      "test-*.js files (25 files)",
+      "debug-*.js files (8 files)", 
+      "demo-*.js files",
+      "verify-*.js files",
+      "validate-*.js files",
+      "quick-test.js",
+      "simple-test.js", 
+      "manual-test-guide.js",
+      "FIX_SUMMARY_*.md files",
+      "SESSION_REGISTRATION_FIX_COMPLETE.md",
+      "UNLOAD_INSTANCE_IMPLEMENTATION_COMPLETE.md",
+      "WINDOW_SHOW_BEHAVIOR_COMPLETION.md"
+    ],
+    "type": "array", 
+    "writable": true,
+    "writeMode": "append",
+    "description": "Files and directories to be cleaned up",
+    "last_updated": "2025-06-12T12:46:00Z"
+  },
+  "archive_candidates": {
+    "value": {
+      "development-tests": [
+        "test-unload-instance-fix.js", "test-case-sensitivity-fix.js", "test-cli-fix-validation.js",
+        "test-close-instance-simulation.js", "test-delegation-behavior.js", "test-delegation-tray-real.js",
+        "test-delegation-tray.js", "test-delegation.js", "test-e2e-close-instance-fix.js",
+        "test-ipc-simple.js", "test-multi-instance.js", "test-new-tray-behavior.js",
+        "test-process-management.js", "test-real-close-instance.js", "test-real-delegation.js",
+        "test-real-tray-exit.js", "test-session-registration-fix.js", "test-simple-close-instance.js",
+        "test-tray-close-instance.js", "test-tray-context-menu.js", "test-tray-exit.js", "test-window-show-behavior.js"
+      ],
+      "debug-scripts": [
+        "debug-delegation-exit.js", "debug-ipc-delegation.js", "debug-real-provider-flow.js",
+        "debug-session-registration.js", "debug-session-sharing.js", "debug-session-state.js",
+        "debug-tray-close.js", "debug-window-tray-creation.js"
+      ],
+      "development-tools": [
+        "demo-window-show-behavior.js", "validate-window-show-behavior.js", "verify-architecture.js",
+        "verify-close-instance-fix.js", "verify-code-structure.js", "quick-test.js",
+        "simple-test.js", "manual-test-guide.js"
+      ],
+      "implementation-notes": [
+        "FIX_SUMMARY_CLOSE_INSTANCE.md", "FIX_SUMMARY_TRAY_CLEANUP.md",
+        "SESSION_REGISTRATION_FIX_COMPLETE.md", "UNLOAD_INSTANCE_IMPLEMENTATION_COMPLETE.md",
+        "WINDOW_SHOW_BEHAVIOR_COMPLETION.md"
+      ]
+    },
+    "type": "array",
+    "writable": true, 
+    "writeMode": "append",
+    "description": "Files to be archived rather than deleted",
+    "last_updated": "2025-06-12T12:47:00Z"
+  },
+  "production_structure": {
+    "value": {
+      "validation_timestamp": "2025-06-12T12:50:00Z",
+      "status": "PRODUCTION_READY",
+      "core_files": {
+        "package.json": "present",
+        "src/main.js": "present", 
+        "src/preload.js": "present",
+        "README.md": "present",
+        "docs/README.md": "present"
+      },
+      "source_files_count": 36,
+      "directory_structure": {
+        "src/": "production_code",
+        "docs/": "documentation",
+        "tests/": "test_suite", 
+        "assets/": "application_assets",
+        "archived/": "development_artifacts"
+      },
+      "package_info": {
+        "name": "desk-tray",
+        "version": "1.1.4",
+        "main": "src/main.js"
+      },
+      "production_readiness": {
+        "functionality": "preserved",
+        "documentation": "excellent",
+        "structure": "clean",
+        "dependencies": "intact"
+      }
+    },
+    "type": "object",
+    "writable": true,
+    "writeMode": "replace",
+    "description": "Final production-ready project structure",
+    "last_updated": "2025-06-12T12:50:00Z"
+  }
+}

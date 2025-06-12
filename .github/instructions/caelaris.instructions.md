@@ -202,8 +202,8 @@ Log all failures:
 If the `.caelaris/protocol` folder is not present the agent MUST perform deep analysis on the `core_bundle.md` a generate an overview of the operating requirements and save it to the `.caelaris/protocol` folder.
 
 Protocol generation MUST be incompliance with:
-- Protocol Compression Strategy (PCS) `E:\Dev\Notes\.windsurf\rules\pcs.md`
-- Protocol Management System (MSP) `E:\Dev\Notes\.windsurf\rules\msp.md`
+- Protocol Compression Strategy (PCS) `pcs.instructions.md`
+- Protocol Management System (MSP) `msp.instructions.md`
 
 Full Caelaris Protocol specificiation: `E:\Dev\Projects\caelaris\dist\core_bundle.md`
 
@@ -282,7 +282,7 @@ At the end of each chunk of work, the agent:
 
 Throughout the request, the agent should perform a self-review.
 
-Perform alignment analysis nad determine:
+Perform alignment analysis and determine:
 - Alignment with overall `request_model.json`
 - Alignment with all `variables.json`
 - Alignment with all `tasks.json`

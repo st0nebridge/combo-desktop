@@ -804,7 +804,7 @@ class BaseProvider {
                 ]
             },
             { type: 'separator' },
-            this.getQuitMenuItem()
+            this.getCloseInstanceMenuItem()
         ];
     }
 

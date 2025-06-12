@@ -1,0 +1,22 @@
+{
+  "timestamp": "2025-06-12T12:46:00Z",
+  "request_id": "request-20250612-124500",
+  "current_task_id": "task_001",
+  "reason": "task_completion",
+  "variables": {
+    "project_files": {
+      "count": 30,
+      "categories": ["production_code", "dev_scripts", "documentation", "config"]
+    },
+    "cleanup_targets": {
+      "count": 35,
+      "risk_level": "low",
+      "impact": "zero_production_impact"
+    }
+  },
+  "task_state": {
+    "completed": ["task_001"],
+    "current": "promoting_next",
+    "next": "task_002"
+  }
+}

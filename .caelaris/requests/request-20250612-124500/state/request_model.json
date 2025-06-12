@@ -1,0 +1,154 @@
+{
+  "request": {
+    "meta": {
+      "id": "request-20250612-124500",
+      "protocol": "caelaris",
+      "type": "production-cleanup",
+      "timestamp": "2025-06-12T12:45:00Z",
+      "description": "Clean up project folder, archive test files, organize docs for production readiness"
+    },
+    "context": {
+      "project": "combo-desktop",
+      "current_state": "development with test files and temporary artifacts",
+      "target_state": "production-ready codebase with clean structure",
+      "recent_changes": [
+        "Implemented Unload Instance functionality",
+        "Fixed tray cleanup and case sensitivity issues",
+        "Created multiple test and debug files"
+      ]
+    },
+    "instructions": [
+      "Analyze current project structure and identify cleanup targets",
+      "Archive or remove temporary test files and debug scripts",
+      "Organize documentation for production use",
+      "Ensure all production code is properly documented",
+      "Create clean project structure suitable for deployment"
+    ],
+    "priorities": [
+      "Preserve all production code and functionality",
+      "Maintain comprehensive documentation",
+      "Remove clutter while keeping essential development artifacts",
+      "Ensure easy future maintenance and development"
+    ],
+    "directives": {
+      "REQUIRED": [
+        "Preserve all production source code in src/ directory",
+        "Keep essential documentation files",
+        "Archive rather than delete important test files",
+        "Maintain package.json and core configuration files",
+        "Ensure no functionality is lost during cleanup"
+      ],
+      "PREFERRED": [
+        "Create archived/ directory for temporary files",
+        "Organize docs/ directory with clear structure",
+        "Remove redundant or outdated files",
+        "Standardize file naming conventions"
+      ],
+      "PROHIBITED": [
+        "Delete any files in src/ directory without analysis",
+        "Remove package.json or core config files",
+        "Delete user data or profiles",
+        "Remove functional test files that may be needed"
+      ],
+      "CONDITIONAL": [
+        "If test files are duplicates, keep the most comprehensive version",
+        "If documentation is outdated, update rather than remove"
+      ]
+    }
+  },
+  "output": {
+    "format": "structured_cleanup_report",
+    "deliverables": [
+      "Cleaned project structure",
+      "Archived temporary files",
+      "Organized documentation",
+      "Production readiness report"
+    ]
+  },
+  "variables": {
+    "project_files": {
+      "value": [],
+      "type": "array",
+      "writable": true,
+      "writeMode": "replace",
+      "description": "List of all project files for analysis"
+    },
+    "cleanup_targets": {
+      "value": [],
+      "type": "array", 
+      "writable": true,
+      "writeMode": "append",
+      "description": "Files and directories to be cleaned up"
+    },
+    "archive_candidates": {
+      "value": [],
+      "type": "array",
+      "writable": true, 
+      "writeMode": "append",
+      "description": "Files to be archived rather than deleted"
+    },
+    "production_structure": {
+      "value": {},
+      "type": "object",
+      "writable": true,
+      "writeMode": "replace",
+      "description": "Final production-ready project structure"
+    }
+  },
+  "tasks": {
+    "current": {},
+    "next": {
+      "id": "task_001",
+      "label": "Analyze Current Project Structure",
+      "description": "Scan project directory and categorize all files",
+      "uses": [],
+      "produces": ["project_files", "cleanup_targets"],
+      "conditions": [],
+      "priority": "high"
+    },
+    "queued": [
+      {
+        "id": "task_002", 
+        "label": "Identify Archive Candidates",
+        "description": "Categorize temporary, test, and debug files for archival",
+        "uses": ["project_files", "cleanup_targets"],
+        "produces": ["archive_candidates"],
+        "conditions": ["task_001_completed"],
+        "priority": "high"
+      },
+      {
+        "id": "task_003",
+        "label": "Create Archive Structure", 
+        "description": "Create archived/ directory and move temporary files",
+        "uses": ["archive_candidates"],
+        "produces": [],
+        "conditions": ["task_002_completed"],
+        "priority": "medium"
+      },
+      {
+        "id": "task_004",
+        "label": "Organize Documentation",
+        "description": "Clean up and organize docs/ directory",
+        "uses": ["project_files"],
+        "produces": [],
+        "conditions": ["task_003_completed"],
+        "priority": "medium"
+      },
+      {
+        "id": "task_005",
+        "label": "Validate Production Structure",
+        "description": "Ensure all functionality is preserved and structure is clean",
+        "uses": ["production_structure"],
+        "produces": [],
+        "conditions": ["task_004_completed"],
+        "priority": "high"
+      }
+    ],
+    "completed": [],
+    "context": {
+      "working_directory": "m:\\Dev\\Tools\\combo-desktop",
+      "backup_location": "archived/",
+      "preservation_priority": "functionality_first"
+    }
+  }
+}

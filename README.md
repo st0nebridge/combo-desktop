@@ -132,6 +132,32 @@ combo-desktop/
 └── ...
 ```
 
+## Project Structure
+
+This project maintains a clean structure for production use:
+
+```
+combo-desktop/
+├── src/                 # Production source code
+├── docs/               # User and developer documentation
+├── tests/              # Formal test suite
+├── assets/             # Application assets
+├── archived/           # Archived development files
+├── package.json        # Project configuration
+├── README.md          # This file
+└── CHANGELOG.md       # Version history
+```
+
+### Archived Development Files
+
+Development and debugging files have been moved to the `archived/` directory to maintain a clean production codebase:
+- `archived/development-tests/` - Individual test scripts from development
+- `archived/debug-scripts/` - Debugging utilities and diagnostic tools
+- `archived/development-tools/` - Demo scripts and validation tools
+- `archived/implementation-notes/` - Development completion documentation
+
+These files can be restored to the project root if needed for development work.
+
 ## Profile Management
 
 Combo Desktop supports multiple user profiles for each messaging service. This allows you to use multiple accounts simultaneously.
