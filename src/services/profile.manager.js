@@ -10,11 +10,9 @@ const log = require('electron-log');
 // Import error recovery utilities
 const { 
     ErrorCategory, 
-    RecoverableError, 
     createError, 
     safeExecute, 
-    logDiagnostics, 
-    verifyDataFileIntegrity 
+    logDiagnostics,
 } = require('../utils/error-recovery');
 const { createTransaction, withTransaction } = require('../utils/transaction');
 
@@ -37,10 +35,10 @@ class ProfileManager {
         if (!app || !app.name) {
             try {
                 const packageJson = require('../../package.json');
-                if (app) app.name = packageJson.name || 'combo-desktop';
+                if (app) app.name = packageJson.name || 'desk-tray';
             } catch (error) {
                 log.warn('Could not load package.json:', error);
-                if (app) app.name = 'combo-desktop';
+                if (app) app.name = 'desk-tray';
             }
         }
 

@@ -9,7 +9,6 @@ const logger = require('./logging.service');
 // Import error recovery utilities
 const { 
     ErrorCategory, 
-    RecoverableError, 
     createError, 
     safeExecute, 
     logDiagnostics 

@@ -3,27 +3,21 @@
  * and coordination between various services and providers.
  */
 
-const { app, BrowserWindow } = require('electron');
+const { app } = require('electron');
 const log = require('electron-log');
 const { ipcMain } = require('electron');
 const windowService = require('./window.service');
 const trayService = require('./tray.service');
 const profileManager = require('./profile.manager');
-// Use stub implementation instead of the corrupted instance manager
 const instanceManager = require('./instance.manager');
 const providerRegistry = require('../providers');
-const path = require('path');
-const fs = require('fs');
-const { globalShortcut } = require('electron');
 
 // Import error recovery utilities
 const { 
     ErrorCategory, 
-    RecoverableError, 
     createError, 
     safeExecute, 
     logDiagnostics, 
-    verifyDataFileIntegrity 
 } = require('../utils/error-recovery');
 const { createTransaction, withTransaction } = require('../utils/transaction');
 

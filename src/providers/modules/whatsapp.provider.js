@@ -7,7 +7,6 @@
 
 const BaseProvider = require('../abstract/base.provider');
 const logger = require('../../services/logging.service');
-const userAgentConfig = require('../../config/user-agent.config');
 
 /**
  * WhatsApp web integration provider implementation.

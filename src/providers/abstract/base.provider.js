@@ -773,18 +773,6 @@ class BaseProvider {
     }
 
     /**
-     * Get a reusable Quit menu item for tray and context menus (DEPRECATED)
-     * @method getQuitMenuItem
-     * @private
-     * @returns {Object} Quit menu item
-     * @deprecated Use getCloseInstanceMenuItem() or getQuitApplicationMenuItem() instead
-     */
-    getQuitMenuItem() {
-        // For backward compatibility, default to close instance behavior
-        return this.getCloseInstanceMenuItem();
-    }
-
-    /**
      * Get tray menu template
      * @returns {Array<Object>} Menu template
      */

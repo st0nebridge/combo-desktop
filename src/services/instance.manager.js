@@ -6,15 +6,12 @@
  * and IPC health monitoring while preserving working functionality.
  */
 
-const { app, ipcMain } = require('electron');
+const { app } = require('electron');
 const { EventEmitter } = require('events');
 const log = require('./logging.service');
 const path = require('path');
-const fs = require('fs');
 const os = require('os');
-const lockfile = require('proper-lockfile');
 const net = require('net');
-const { spawn } = require('child_process');
 
 // Import transaction utilities
 const { createTransaction, createResourceLock, withTransaction } = require('../utils/transaction');
@@ -22,11 +19,9 @@ const { createTransaction, createResourceLock, withTransaction } = require('../u
 // Import error recovery utilities
 const { 
     ErrorCategory, 
-    RecoverableError, 
     createError, 
     safeExecute, 
     logDiagnostics, 
-    recoverLockFile,
     verifyDataFileIntegrity
 } = require('../utils/error-recovery');
 

@@ -16,16 +16,6 @@ try {
 
 const log = require('electron-log');
 
-// Import error recovery utilities
-const { 
-    ErrorCategory, 
-    RecoverableError, 
-    createError, 
-    safeExecute, 
-    logDiagnostics 
-} = require('../utils/error-recovery');
-const { createTransaction, withTransaction } = require('../utils/transaction');
-
 /**
  * Service for managing application windows.
  * Handles window lifecycle, state management, and events:
@@ -92,6 +82,7 @@ class WindowService {
             
             // Check if Electron components are available
             if (!BrowserWindow || !app) {
+                // TODO: Clean up these mock implementations
                 log.warn('Could not initialize window service: Electron components unavailable');
                 // Create a mock implementation for critical methods
                 this.createWindow = (windowName, windowOptions, metadata) => {
@@ -199,6 +190,7 @@ class WindowService {
             
             // Check if BrowserWindow is available and is a constructor
             if (typeof BrowserWindow !== 'function') {
+                // TODO: Cleanup mocks
                 log.warn(`BrowserWindow is not available or not a constructor (type: ${typeof BrowserWindow}), using mock implementation`);
                 
                 // Create a mock window object with the necessary properties and methods
@@ -414,6 +406,9 @@ class WindowService {
      * @returns {Promise<void>}
      */
     async cleanupProviderSessions(window, windowName) {
+
+        // TODO see if this can be removed
+        
         if (window.isDestroyed()) {
             return;
         }
