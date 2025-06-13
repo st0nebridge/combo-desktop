@@ -120,7 +120,7 @@ class ProfileManager {
      * @method getPartitionName
      * @param {string} providerName - Provider name
      * @param {string} [profileName='default'] - Profile name
-     * @returns {string} Partition name in format appName:provider:profile
+     * @returns {string} Partition name in format appName-provider-profile (using hyphens instead of colons)
      */
     getPartitionName(providerName, profileName = 'default') {
         let appName = 'desk-tray';
@@ -131,7 +131,8 @@ class ProfileManager {
         } catch (error) {
             log.warn('Error getting app name, using default', error);
         }
-        return `${appName}:${providerName}:${profileName}`;
+        // Use hyphens instead of colons to avoid filesystem path issues
+        return `${appName}-${providerName}-${profileName}`;
     }
 
     /**

@@ -220,13 +220,27 @@ class AppManager {
                             profileIsolation
                         });
                     }
-                    // No sessions or providers defined
+                    // No sessions or providers defined - check if defaults are available
                     else {
-                        log.info('No sessions or providers defined, initializing default providers');
-                        await this.initializeProviders([], { 
-                            profile: context.profile || 'default',
-                            profileIsolation
-                        });
+                        log.info('No sessions or providers defined, checking for available defaults');
+                        const availableProviders = providerRegistry.getAvailableProviders();
+                        
+                        if (!availableProviders || availableProviders.length === 0) {
+                            log.error('No providers are available and none were specified');
+                            log.info('Application will exit as no services can be provided');
+                            
+                            // Exit gracefully
+                            const { app } = require('electron');
+                            if (app && typeof app.quit === 'function') {
+                                app.quit();
+                            } else {
+                                process.exit(0);
+                            }
+                            return;
+                        }
+                        
+                        log.info(`Found ${availableProviders.length} available providers, initializing defaults`);
+                        await this.initializeDefaultProviders();
                     }
 
                     this.initialized = true;
@@ -310,6 +324,12 @@ class AppManager {
                             log.info(`Using window show behavior: ${context.windowShowBehavior} for ${providerName}`);
                         }
                         
+                        // Pass temp flag from session to spawn options
+                        if (session.isTemp) {
+                            spawnOptions.isTemp = true;
+                            log.info(`Setting temp mode for ${providerName}:${profile}`);
+                        }
+                        
                         const instance = await provider.spawn(profile, spawnOptions);
                         
                         // Verify instance was created successfully
@@ -320,8 +340,8 @@ class AppManager {
                             });
                         }
 
-                        // Register the session with the instance manager
-                        await instanceManager.registerSession(providerName, profile);
+                        // Register the session with the instance manager using provider name, not command arg
+                        await instanceManager.registerSession(provider.name, profile);
 
                         output.push(instance);
                         log.info(`Initialized ${providerName} with profile: ${profile}`);
@@ -382,21 +402,72 @@ class AppManager {
     async initializeDefaultProviders() {
         try {
             log.info('Initializing default providers');
+            
+            // Check if any providers are available
+            const availableProviders = providerRegistry.getAvailableProviders();
+            if (!availableProviders || availableProviders.length === 0) {
+                log.error('No providers are available - cannot initialize any services');
+                log.info('Application will exit as no services can be provided');
+                
+                // Exit gracefully
+                const { app } = require('electron');
+                if (app && typeof app.quit === 'function') {
+                    app.quit();
+                } else {
+                    process.exit(0);
+                }
+                return;
+            }
+            
+            log.info(`Found ${availableProviders.length} available providers:`, 
+                availableProviders.map(p => p.name));
+            
             // Get active profile
             const activeProfile = await profileManager.getActiveProfile();
             
             if (activeProfile) {
-                log.info(`Using active profile: ${activeProfile.name} (${activeProfile.provider})`);
-                await this.initializeProviders([activeProfile.provider]);
+                // Verify the active profile's provider is available
+                const providerExists = availableProviders.some(p => 
+                    p.commandArg.replace(/^--/, '') === activeProfile.provider);
+                
+                if (providerExists) {
+                    log.info(`Using active profile: ${activeProfile.name} (${activeProfile.provider})`);
+                    await this.initializeProviders([activeProfile.provider]);
+                } else {
+                    log.warn(`Active profile provider '${activeProfile.provider}' not available, falling back to defaults`);
+                    await this.initializeDefaultProviderFallback(availableProviders);
+                }
             } else {
                 log.info('No active profile found, using default providers');
-                // Initialize default providers
-                const defaultProviders = ['whatsapp'];
-                await this.initializeProviders(defaultProviders);
+                await this.initializeDefaultProviderFallback(availableProviders);
             }
         } catch (error) {
             log.error('Error initializing default providers:', error);
             throw error;
+        }
+    }
+
+    /**
+     * Initialize fallback default providers when no active profile or provider unavailable
+     * @method initializeDefaultProviderFallback
+     * @param {Array} availableProviders - List of available providers
+     * @returns {Promise<void>}
+     * @private
+     */
+    async initializeDefaultProviderFallback(availableProviders) {
+        // Try to use WhatsApp as default if available
+        const whatsappProvider = availableProviders.find(p => 
+            p.commandArg.replace(/^--/, '') === 'whatsapp');
+        
+        if (whatsappProvider) {
+            log.info('Using WhatsApp as default provider');
+            await this.initializeProviders(['whatsapp']);
+        } else {
+            // Use the first available provider
+            const firstProvider = availableProviders[0];
+            const providerName = firstProvider.commandArg.replace(/^--/, '');
+            log.info(`WhatsApp not available, using first available provider: ${providerName}`);
+            await this.initializeProviders([providerName]);
         }
     }
 
@@ -409,8 +480,8 @@ class AppManager {
      */
     async initializeProviders(providers, context = {}) {
         try {
-            if (!providers || !Array.isArray(providers)) {
-                log.warn('No providers to initialize');
+            if (!providers || !Array.isArray(providers) || providers.length === 0) {
+                log.warn('No providers specified to initialize');
                 return;
             }
 
@@ -419,7 +490,8 @@ class AppManager {
             // Convert providers array to sessions array with proper profile handling
             const sessions = providers.map(provider => ({
                 provider,
-                profile: context.profile || 'default'
+                profile: context.profile || 'default',
+                isTemp: context.isTemp || false  // Pass temp flag to sessions
             }));
 
             // Initialize sessions

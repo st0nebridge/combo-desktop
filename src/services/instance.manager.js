@@ -339,11 +339,19 @@ class InstanceManager extends EventEmitter {
                                 
                                 // Parse command line arguments into session objects
                                 const sessions = [];
+                                let globalTempFlag = false;
+                                
+                                // First pass: check for global --temp flag
+                                if (message.args.includes('--temp')) {
+                                    globalTempFlag = true;
+                                    log.info('Temp flag detected in delegation command');
+                                }
+                                
                                 let i = 0;
                                 while (i < message.args.length) {
                                     const arg = message.args[i];
-                                    if (arg.startsWith('--') && arg !== '--profile') {
-                                        const provider = arg.substring(2);
+                                    if (arg.startsWith('--') && arg !== '--profile' && arg !== '--temp') {
+                                        const commandArg = arg.substring(2); // Remove --
                                         let profile = 'default';
                                         
                                         // Check if next arg is --profile
@@ -354,13 +362,29 @@ class InstanceManager extends EventEmitter {
                                             }
                                         }
                                         
-                                        // Check if session already exists to avoid duplicates
-                                        const sessionKey = `${provider}:${profile}`;
-                                        if (this.providerSessions.has(sessionKey)) {
-                                            log.info(`Session ${sessionKey} already exists, skipping delegation`);
+                                        // Convert command arg to provider name for consistency
+                                        const providerRegistry = require('../../providers');
+                                        const availableProviders = providerRegistry.getAvailableProviders();
+                                        const providerInfo = availableProviders.find(p => 
+                                            p.commandArg.replace(/^--/, '') === commandArg);
+                                        
+                                        if (providerInfo) {
+                                            const providerName = providerInfo.name; // Use the actual provider name
+                                            
+                                            // Check if session already exists to avoid duplicates
+                                            const sessionKey = `${providerName}:${profile}`;
+                                            if (this.providerSessions.has(sessionKey)) {
+                                                log.info(`Session ${sessionKey} already exists, skipping delegation`);
+                                            } else {
+                                                sessions.push({ 
+                                                    provider: providerName,  // Use provider name, not command arg
+                                                    profile,
+                                                    isTemp: globalTempFlag  // Pass temp flag to delegated session
+                                                });
+                                                log.info(`Session ${sessionKey} will be created via delegation${globalTempFlag ? ' (temp mode)' : ''}`);
+                                            }
                                         } else {
-                                            sessions.push({ provider, profile });
-                                            log.info(`Session ${sessionKey} will be created via delegation`);
+                                            log.warn(`Provider not found for command arg: ${commandArg}`);
                                         }
                                     }
                                     i++;
@@ -1926,6 +1950,9 @@ class InstanceManager extends EventEmitter {
                     if (session.profile) {
                         args.push('--profile', session.profile);
                     }
+                    if (session.isTemp) {
+                        args.push('--temp');
+                    }
 
                     const success = await this.delegateCommandToInstance(targetInstance.id, args);
                     if (!success) {
@@ -2268,21 +2295,47 @@ class InstanceManager extends EventEmitter {
         }
         
         try {
-            const lockData = await this.readLockFile();
-            let hasChanges = false;
+            log.info(`Cleaning up ${deadInstanceIds.length} dead instances from lock file`);
             
-            for (const instanceId of deadInstanceIds) {
-                if (lockData.instances && lockData.instances[instanceId]) {
-                    log.debug(`Removing dead instance ${instanceId} from lock file`);
-                    delete lockData.instances[instanceId];
-                    hasChanges = true;
+            // Acquire lock for atomic cleanup
+            await this.lockFileLock.acquire(async () => {
+                const lockData = await this.readLockFile();
+                let cleanedCount = 0;
+                
+                for (const instanceId of deadInstanceIds) {
+                    if (lockData.instances && lockData.instances[instanceId]) {
+                        const instance = lockData.instances[instanceId];
+                        log.info(`Removing dead instance ${instanceId} (PID: ${instance.pid})`);
+                        delete lockData.instances[instanceId];
+                        cleanedCount++;
+                    }
                 }
-            }
-            
-            if (hasChanges) {
-                await this.writeLockFile(lockData);
-                log.debug(`Successfully cleaned up ${deadInstanceIds.length} dead instances`);
-            }
+                
+                if (cleanedCount > 0) {
+                    // Add cleanup entry to history for debugging
+                    if (!lockData.history) {
+                        lockData.history = [];
+                    }
+                    
+                    lockData.history.push({
+                        action: 'cleanup',
+                        timestamp: Date.now(),
+                        cleanedInstances: deadInstanceIds,
+                        cleanedBy: process.pid,
+                        reason: 'dead_process_cleanup'
+                    });
+                    
+                    // Keep only last 50 history entries
+                    if (lockData.history.length > 50) {
+                        lockData.history = lockData.history.slice(-50);
+                    }
+                    
+                    await this.writeLockFile(lockData);
+                    log.info(`Successfully cleaned up ${cleanedCount} dead instances`);
+                } else {
+                    log.debug('No dead instances to clean up');
+                }
+            });
         } catch (error) {
             log.error('Error cleaning up dead instances:', error);
             // Don't throw - this is a cleanup operation that shouldn't block the main flow
@@ -2298,36 +2351,64 @@ class InstanceManager extends EventEmitter {
      */
     async validateProcessIsOurs(pid) {
         try {
-            if (process.platform === 'win32') {
-                // On Windows, check if the process name is 'electron.exe' or our app name
-                const { execSync } = require('child_process');
-                const result = execSync(`powershell -command "Get-Process -Id ${pid} -ErrorAction SilentlyContinue | Select-Object ProcessName"`, { 
-                    encoding: 'utf8',
-                    timeout: 5000 
-                });
-                
-                const processName = result.trim().toLowerCase();
-                
-                // Check if it's electron (our app) or has our app name
-                if (processName.includes('electron') || processName.includes('desk-tray')) {
-                    return true;
-                }
-                
-                log.debug(`PID ${pid} is not our process: ${processName}`);
+            // First check if process exists at all
+            try {
+                process.kill(pid, 0);
+            } catch (error) {
+                log.debug(`PID ${pid} does not exist`);
                 return false;
+            }
+
+            if (process.platform === 'win32') {
+                // On Windows, use more robust process checking
+                const { execSync } = require('child_process');
+                try {
+                    // Get both process name and command line
+                    const result = execSync(`powershell -command "Get-Process -Id ${pid} -ErrorAction SilentlyContinue | Select-Object ProcessName, CommandLine | Format-List"`, { 
+                        encoding: 'utf8',
+                        timeout: 3000 
+                    });
+                    
+                    const processInfo = result.toLowerCase();
+                    
+                    // Check if it's electron or our app
+                    const isElectron = processInfo.includes('electron') || processInfo.includes('desk-tray');
+                    const hasOurPath = processInfo.includes('combo-desktop') || processInfo.includes(process.execPath.toLowerCase());
+                    
+                    if (isElectron || hasOurPath) {
+                        log.debug(`PID ${pid} validated as our process`);
+                        return true;
+                    }
+                    
+                    log.debug(`PID ${pid} is not our process: ${processInfo.substring(0, 100)}`);
+                    return false;
+                } catch (error) {
+                    log.debug(`Failed to validate PID ${pid} on Windows: ${error.message}`);
+                    return false;
+                }
             } else {
                 // On Unix-like systems, check the process command line
                 const { execSync } = require('child_process');
                 try {
-                    const result = execSync(`ps -p ${pid} -o comm=`, { 
+                    const result = execSync(`ps -p ${pid} -o args=`, { 
                         encoding: 'utf8',
-                        timeout: 5000 
+                        timeout: 3000 
                     });
                     
-                    const processName = result.trim().toLowerCase();
-                    return processName.includes('electron') || processName.includes('desk-tray');
+                    const processArgs = result.trim().toLowerCase();
+                    const isOurProcess = processArgs.includes('electron') || 
+                                       processArgs.includes('desk-tray') ||
+                                       processArgs.includes('combo-desktop');
+                    
+                    if (isOurProcess) {
+                        log.debug(`PID ${pid} validated as our process`);
+                        return true;
+                    }
+                    
+                    log.debug(`PID ${pid} is not our process: ${processArgs.substring(0, 100)}`);
+                    return false;
                 } catch (error) {
-                    // Process doesn't exist
+                    log.debug(`Failed to validate PID ${pid} on Unix: ${error.message}`);
                     return false;
                 }
             }

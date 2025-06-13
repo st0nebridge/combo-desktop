@@ -103,6 +103,12 @@ class ProviderCLI extends BaseCLI {
             // Parse common flags
             this.parseCommonFlags(args, result);
             
+            // Check for --temp flag for automatic cleanup
+            result.isTemp = args.includes('--temp');
+            if (result.isTemp) {
+                logger.info('Temp flag detected - sessions will be cleared on exit');
+            }
+            
             // Check for --provider flag and commands
             const providerIndex = args.indexOf('--provider');
             if (providerIndex !== -1 && providerIndex + 1 < args.length) {
@@ -160,9 +166,10 @@ class ProviderCLI extends BaseCLI {
                         if (existingIndex === -1) {
                             result.sessions.push({
                                 provider: providerName,
-                                profile: profile
+                                profile: profile,
+                                isTemp: result.isTemp  // Pass temp flag to session
                             });
-                            logger.info(`Added session: ${providerName}:${profile}`);
+                            logger.info(`Added session: ${providerName}:${profile}${result.isTemp ? ' (temp)' : ''}`);
                         }
                     }
                     

@@ -426,13 +426,24 @@ class WindowService {
                 const instanceManager = require('./instance.manager');
                 await instanceManager.unregisterSession(providerName, profile);
 
-                // Clear session data if this is a provider window
-                const partitionName = provider.getPartitionName(profile);
-                const { session } = require('electron');
-                const partitionSession = session.fromPartition(partitionName);
-                if (partitionSession) {
-                    await partitionSession.clearStorageData();
-                    log.info(`Cleared session data for ${windowName}`);
+                // Only clear session data if temp flag was set
+                if (window.metadata.isTemp) {
+                    log.info(`Temp flag set, clearing session data for ${windowName}`);
+                    
+                    // Get the actual partition name used (with persist: prefix)
+                    let partitionName = provider.getPartitionName(profile);
+                    if (!partitionName.startsWith('persist:')) {
+                        partitionName = `persist:${partitionName}`;
+                    }
+                    
+                    const { session } = require('electron');
+                    const partitionSession = session.fromPartition(partitionName);
+                    if (partitionSession) {
+                        await partitionSession.clearStorageData();
+                        log.info(`Cleared session data for ${windowName} (partition: ${partitionName})`);
+                    }
+                } else {
+                    log.info(`Session data preserved for ${windowName} (temp flag not set)`);
                 }
             }
 

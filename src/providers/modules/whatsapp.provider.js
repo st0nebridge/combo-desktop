@@ -52,16 +52,6 @@ class WhatsAppProvider extends BaseProvider {
     }
 
     /**
-     * Get partition name for this provider
-     * @method getPartitionName
-     * @override
-     * @returns {string} Partition name 'whatsapp'
-     */
-    getPartitionName() {
-        return 'whatsapp';
-    }
-
-    /**
      * Get base icon path
      * @method getBaseIconPath
      * @override
@@ -104,8 +94,7 @@ class WhatsAppProvider extends BaseProvider {
             minWidth: 800,
             minHeight: 600,
             webPreferences: {
-                ...this.getWebPreferences(),
-                partition: this.getPartitionName()
+                ...this.getWebPreferences()
             }
         };
     }

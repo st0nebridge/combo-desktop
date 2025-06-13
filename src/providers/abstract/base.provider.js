@@ -226,6 +226,7 @@ class BaseProvider {
      * @param {string} profile - Profile name
      * @param {Object} options - Initialization options
      * @param {string} [options.windowShowBehavior] - Window show behavior override
+     * @param {boolean} [options.isTemp] - Whether this is a temporary session that should be cleaned up on exit
      * @returns {Promise<void>}
      */
     async initializeProvider(profile, options = {}) {
@@ -249,16 +250,32 @@ class BaseProvider {
                 log.info(`Window already exists for ${this.getName()} with profile: ${profile}`);
                 this.window = existingWindow;
                 
+                // Update metadata if temp flag is set
+                if (options.isTemp && this.window.metadata) {
+                    this.window.metadata.isTemp = true;
+                    log.info(`Updated existing window to temp mode for ${this.getName()}:${profile}`);
+                }
+                
                 // Apply window show behavior to existing window
                 await this.applyWindowShowBehavior(true);
                 return;
             }
 
             // Create new window if it doesn't exist
-            await this.spawnWindow(profile);
+            const metadata = {};
+            if (options.isTemp) {
+                metadata.isTemp = true;
+                log.info(`Creating temporary session for ${this.getName()}:${profile}`);
+            }
+            
+            await this.spawnWindow(profile, metadata);
             if (!this.window) {
                 throw new Error('Failed to create window');
             }
+
+            // Configure the session after window creation
+            const partitionName = this.getPartitionName(profile);
+            this.configureSession(partitionName);
 
             // Initialize window content
             await this.initializeWindow(profile);
@@ -269,7 +286,7 @@ class BaseProvider {
             // Create tray icon after window is initialized
             await trayService.createTray(this, windowName);
 
-            log.info(`Provider ${this.getName()} initialized with profile: ${profile}`);
+            log.info(`Provider ${this.getName()} initialized with profile: ${profile}${options.isTemp ? ' (temp mode)' : ''}`);
         } catch (error) {
             log.error(`Error initializing provider ${this.getName()}:`, error);
             throw error;
@@ -489,11 +506,18 @@ class BaseProvider {
 
             // Get partition name following the required format: ${app.getName()}:${providerName}:${profileName}
             const partitionName = this.getPartitionName(profile);
-            log.info(`Using partition: ${partitionName}`);
+            
+            // Ensure the partition name is persistent by prefixing with 'persist:'
+            let persistentPartition = partitionName;
+            if (!partitionName.startsWith('persist:')) {
+                persistentPartition = `persist:${partitionName}`;
+            }
+            
+            log.info(`Using partition: ${partitionName} -> ${persistentPartition}`);
 
             windowConfig.webPreferences = {
                 ...webPreferences,
-                partition: partitionName
+                partition: persistentPartition
             };
             
             const windowName = this.getWindowName(profile);
@@ -522,15 +546,40 @@ class BaseProvider {
      * @private
      */
     configureSession(partition) {
-        const session = require('electron').session;
-        const partitionSession = session.fromPartition(partition);
+        const { session } = require('electron');
+        
+        // Ensure the partition name is persistent by prefixing with 'persist:'
+        // This is required for Electron to store the session data to disk
+        let persistentPartition = partition;
+        if (!partition.startsWith('persist:')) {
+            persistentPartition = `persist:${partition}`;
+        }
+        
+        log.info(`[${this.getName()}] Configuring session for partition: ${partition} -> ${persistentPartition}`);
+        
+        const partitionSession = session.fromPartition(persistentPartition);
         
         // Set user agent
         const userAgent = this.getUserAgent();
         if (userAgent) {
             partitionSession.setUserAgent(userAgent);
-            log.info(`[${this.getName()}] Set user agent for partition ${partition}: ${userAgent}`);
+            log.info(`[${this.getName()}] Set user agent for partition ${persistentPartition}: ${userAgent}`);
         }
+        
+        // Verify session persistence
+        try {
+            const storagePath = partitionSession.getStoragePath();
+            if (storagePath) {
+                log.info(`[${this.getName()}] Session storage path: ${storagePath}`);
+            } else {
+                log.warn(`[${this.getName()}] No storage path for partition ${persistentPartition} - session may not persist`);
+            }
+        } catch (error) {
+            log.debug(`[${this.getName()}] Could not get storage path (normal for Electron < 20): ${error.message}`);
+        }
+        
+        // Store the actual partition name used for cleanup
+        this._actualPartitionName = persistentPartition;
     }
 
     /**
