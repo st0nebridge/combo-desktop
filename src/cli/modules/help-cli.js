@@ -1,6 +1,21 @@
 /**
- * @module HelpCLI
+ * @module cli/modules/help-cli
  * @description CLI module for displaying help information and documentation.
+ * 
+ * @input {Array<string>} args - Command line arguments
+ * @output {Object} result - Execution result with success and continueExecution flags
+ * 
+ * @dependencies
+ * - cli/abstract/base-cli - Base CLI class
+ * - services/logging.service - Application logging
+ * 
+ * @example
+ * // Show help
+ * electron . --help
+ * // Show version
+ * electron . --version
+ * // Show manual
+ * electron . --manual
  */
 
 const BaseCLI = require('../abstract/base-cli');
@@ -26,8 +41,11 @@ class HelpCLI extends BaseCLI {
         // Define entry flag for help commands
         this.entryFlag = 'help';
 
-        // Initialize CLI modules map
-        this.cliModules = {};
+        // Initialize CLI modules map - loaded lazily when needed
+        this.cliModules = null;
+        
+        // Reference to registry - set lazily
+        this._registry = null;
 
         // Bind command functions using .bind() pattern for command mapping
         this.commands = {
@@ -35,27 +53,59 @@ class HelpCLI extends BaseCLI {
             'help': this.showUsage.bind(this),
             'manual': this.showManual.bind(this)
         };
-
-        // Wait for next tick to ensure registry is initialized
-        process.nextTick(() => {
-            this.loadCliModules();
-        });
     }
 
     /**
-     * Load all CLI modules from the registry
+     * Get the CLI registry instance (lazy loading)
      * @private
+     * @returns {Object|null} CLI registry or null if not available
+     */
+    getRegistry() {
+        if (this._registry) {
+            return this._registry;
+        }
+        
+        // Try to get registry from various sources
+        if (global.cliRegistry) {
+            this._registry = global.cliRegistry;
+            return this._registry;
+        }
+        
+        // Try requiring the registry directly
+        try {
+            this._registry = require('../cli.registry');
+            return this._registry;
+        } catch (error) {
+            log.debug('Could not load CLI registry:', error.message);
+            return null;
+        }
+    }
+
+    /**
+     * Load all CLI modules from the registry (lazy loading)
+     * @private
+     * @returns {Object} Map of topic to module
      */
     loadCliModules() {
+        // Return cached modules if available
+        if (this.cliModules !== null) {
+            return this.cliModules;
+        }
+        
+        this.cliModules = {};
+        
         try {
-            // Clear existing modules
-            this.cliModules = {};
+            const registry = this.getRegistry();
+            if (!registry) {
+                log.debug('CLI Registry not available yet');
+                return this.cliModules;
+            }
 
             // Get modules from registry
-            const modules = global.cliRegistry.getModules();
+            const modules = registry.getModules();
             if (!modules) {
-                log.error('CLI Registry not initialized');
-                return;
+                log.debug('No modules in registry');
+                return this.cliModules;
             }
 
             // Iterate through all registered modules
@@ -73,8 +123,19 @@ class HelpCLI extends BaseCLI {
 
             log.debug('Loaded manual topics:', Object.keys(this.cliModules));
         } catch (error) {
-            log.error('Error loading CLI modules:', error);
+            log.debug('Error loading CLI modules:', error.message);
         }
+        
+        return this.cliModules;
+    }
+
+    /**
+     * Invalidate cached modules (call when registry changes)
+     * @method invalidateCache
+     */
+    invalidateCache() {
+        this.cliModules = null;
+        this._registry = null;
     }
 
     /**

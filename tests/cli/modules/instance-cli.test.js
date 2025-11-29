@@ -143,4 +143,15 @@ if (require.main === module) {
     });
 }
 
+if (typeof describe === 'function') {
+    describe('InstanceCLI legacy suite', () => {
+        test('executes instance CLI tests', async () => {
+            const result = await runTests();
+            expect(result).toBe(true);
+        });
+    });
+}
+
+module.exports = { runTests };
+
 module.exports = { runTests };

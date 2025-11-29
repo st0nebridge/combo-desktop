@@ -1,3 +1,52 @@
-/node_modules/
-/dist/
-/.idea/
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tgz
+
+# IDE/Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+logs/
+test-*.log
+
+# Coverage
+coverage/
+
+# Temp files
+temp-*/
+*.tmp
+*.temp
+
+# Test artifacts
+test-output.log
+test-error.log
+
+# Package manager
+yarn-error.log
+.yarn/
+.pnp.*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Archive (keep in repo but ignore backup files)
+*.bak
+*.backup
+
+# Electron
+*.asar

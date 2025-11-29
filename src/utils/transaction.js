@@ -1,8 +1,24 @@
 /**
- * Transaction utility module
- * Provides utilities for implementing transaction-like behavior in JavaScript
- * with rollback capabilities, state snapshots, and error handling
+ * @module shared/transaction
+ * @description Transaction utility module for implementing transaction-like behavior.
+ * Provides utilities for atomic multi-step operations with rollback capabilities,
+ * state snapshots, and comprehensive error handling.
+ * 
+ * @input {string} name - Transaction name for identification
+ * @input {Object} options - Transaction configuration options
+ * @output {Object} transaction - Transaction context with step/commit/rollback methods
+ * 
+ * @dependencies
+ * - electron-log - Application logging
+ * - fs.promises - Async file operations
+ * - crypto - Transaction ID generation
+ * 
+ * @example
+ * const { createTransaction, withTransaction } = require('./utils/transaction');
+ * const tx = createTransaction('my-operation');
+ * await withTransaction(tx, async () => { await tx.step('step1', action); });
  */
+
 const fs = require('fs').promises;
 const path = require('path');
 const crypto = require('crypto');

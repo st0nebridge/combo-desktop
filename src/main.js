@@ -1,6 +1,22 @@
 /**
- * Main entry point for the application.
- * Handles initialization and command line argument processing.
+ * @module main
+ * @description Main entry point for the Desk Tray application.
+ * Handles initialization, command line argument processing, and application lifecycle orchestration.
+ * 
+ * @input {Array<string>} process.argv - Command line arguments
+ * @output {void} - Runs application lifecycle
+ * 
+ * @dependencies
+ * - services/app.manager - Application lifecycle management
+ * - services/instance.manager - Instance and session management
+ * - cli - Command line interface processing
+ * 
+ * @example
+ * // Run with provider
+ * electron . --whatsapp
+ * 
+ * // Run with profile
+ * electron . --whatsapp --profile work
  */
 
 const { app, BrowserWindow } = require('electron');

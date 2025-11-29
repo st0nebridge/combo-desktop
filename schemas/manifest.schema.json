@@ -1,0 +1,133 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://desk-tray.local/schemas/manifest.schema.json",
+  "title": "Desk Tray Module Manifest",
+  "description": "MSP-compliant module manifest schema for Desk Tray application",
+  "type": "object",
+  "required": ["name", "version", "modules"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Application name"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Semantic version"
+    },
+    "description": {
+      "type": "string",
+      "description": "Application description"
+    },
+    "type": {
+      "type": "string",
+      "enum": ["electron-application", "node-module", "cli-tool"],
+      "description": "Application type"
+    },
+    "entrypoint": {
+      "type": "string",
+      "description": "Main entry point path"
+    },
+    "modules": {
+      "type": "object",
+      "description": "Module definitions",
+      "additionalProperties": {
+        "$ref": "#/definitions/module"
+      }
+    },
+    "tests": {
+      "$ref": "#/definitions/testConfig"
+    },
+    "compliance": {
+      "type": "object",
+      "properties": {
+        "msp": {
+          "$ref": "#/definitions/complianceStatus"
+        },
+        "ticp": {
+          "$ref": "#/definitions/complianceStatus"
+        }
+      }
+    }
+  },
+  "definitions": {
+    "module": {
+      "type": "object",
+      "required": ["path", "description"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Module path relative to project root"
+        },
+        "description": {
+          "type": "string",
+          "description": "Module description"
+        },
+        "entrypoint": {
+          "type": "string",
+          "description": "Module entry point"
+        },
+        "dependencies": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Module dependencies"
+        },
+        "submodules": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/submodule"
+          }
+        }
+      }
+    },
+    "submodule": {
+      "type": "object",
+      "required": ["path", "description"],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "dependencies": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "testConfig": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string" },
+        "description": { "type": "string" },
+        "coverage": {
+          "type": "object",
+          "properties": {
+            "statements": { "type": "number", "minimum": 0, "maximum": 100 },
+            "branches": { "type": "number", "minimum": 0, "maximum": 100 },
+            "functions": { "type": "number", "minimum": 0, "maximum": 100 },
+            "lines": { "type": "number", "minimum": 0, "maximum": 100 }
+          }
+        },
+        "suites": {
+          "type": "object"
+        }
+      }
+    },
+    "complianceStatus": {
+      "type": "object",
+      "properties": {
+        "version": { "type": "string" },
+        "status": {
+          "type": "string",
+          "enum": ["compliant", "partial", "non-compliant"]
+        },
+        "lastVerified": {
+          "type": "string",
+          "format": "date"
+        }
+      }
+    }
+  }
+}

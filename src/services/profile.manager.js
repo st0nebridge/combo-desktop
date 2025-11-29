@@ -1,6 +1,22 @@
 /**
- * @file Profile management service that handles user profile storage,
+ * @module services/profile.manager
+ * @description Profile management service that handles user profile storage,
  * retrieval, and migration across different application providers.
+ * 
+ * @input {string} providerName - Name of the provider
+ * @input {string} profileName - Name of the profile
+ * @output {Object} profile - Profile data object
+ * @output {string} partitionName - Session partition name for isolation
+ * 
+ * @dependencies
+ * - electron-store - Persistent key-value storage
+ * - utils/error-recovery - Error handling utilities
+ * - utils/transaction - Transaction management
+ * 
+ * @example
+ * const profileManager = require('./services/profile.manager');
+ * const partition = profileManager.getPartitionName('WhatsApp', 'work');
+ * const profiles = profileManager.getProfilesForProvider('WhatsApp');
  */
 
 const Store = require('electron-store');

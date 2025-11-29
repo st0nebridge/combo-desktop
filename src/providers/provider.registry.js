@@ -1,6 +1,20 @@
 /**
- * @file Provider registry that manages registration, validation, and creation
+ * @module providers/registry
+ * @description Provider registry that manages registration, validation, and creation
  * of service providers across the application.
+ * 
+ * @input {Class} ProviderClass - Provider class extending BaseProvider
+ * @input {string} providerName - Provider command argument or name
+ * @output {BaseProvider} provider - Instantiated provider instance
+ * 
+ * @dependencies
+ * - providers/abstract/base.provider - Base provider interface
+ * - services/instance.manager - Instance management
+ * 
+ * @example
+ * const providerRegistry = require('./providers');
+ * const provider = providerRegistry.getProvider('--whatsapp');
+ * providerRegistry.register(MyCustomProvider);
  */
 
 const fs = require('fs');

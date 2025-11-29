@@ -1,13 +1,34 @@
 /**
- * @file Abstract base provider that defines the core interface and functionality
+ * @module providers/abstract/base.provider
+ * @description Abstract base provider that defines the core interface and functionality
  * for all application service providers. Handles window management, notifications,
  * and provider-specific configurations.
+ * 
+ * @input {string} profile - Profile name for session isolation
+ * @input {Object} options - Provider initialization options
+ * @output {BrowserWindow} window - Configured Electron browser window
+ * 
+ * @dependencies
+ * - services/window.service - Window lifecycle management
+ * - services/profile.manager - Profile storage and partition naming
+ * - services/tray.service - System tray icon management
+ * - config/user-agent.config - User agent configuration
+ * 
+ * @abstract
+ * @implements {IProvider}
  * 
  * Required implementations by child classes:
  * - getName(): Provider's display name
  * - getCommandArg(): CLI argument that activates this provider
  * - getUrl(): URL that this provider should load
  * - getBaseIconPath(): Base icon path for this provider
+ * 
+ * @example
+ * class MyProvider extends BaseProvider {
+ *   getName() { return 'MyApp'; }
+ *   getCommandArg() { return '--myapp'; }
+ *   getUrl() { return 'https://myapp.com'; }
+ * }
  */
 
 const log = require('electron-log');

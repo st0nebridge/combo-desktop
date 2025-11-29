@@ -1,6 +1,23 @@
 /**
- * @file Core application manager that handles lifecycle, initialization,
+ * @module services/app.manager
+ * @description Core application manager that handles lifecycle, initialization,
  * and coordination between various services and providers.
+ * 
+ * @input {Object} context - CLI execution context with sessions and options
+ * @output {void} - Manages application lifecycle
+ * 
+ * @dependencies
+ * - services/window.service - Window lifecycle management
+ * - services/tray.service - System tray management
+ * - services/profile.manager - Profile management
+ * - services/instance.manager - Instance and session management
+ * - providers/provider.registry - Provider registration
+ * - utils/error-recovery - Error handling utilities
+ * - utils/transaction - Transaction management
+ * 
+ * @example
+ * const appManager = require('./services/app.manager');
+ * await appManager.initializeApp(context);
  */
 
 const { app } = require('electron');
@@ -248,7 +265,8 @@ class AppManager {
                 }, {
                     errorMessage: 'Failed to initialize application',
                     category: ErrorCategory.INSTANCE_ERROR,
-                    context: { initContext: context }
+                    context: { initContext: context },
+                    throwOnError: true
                 });
             });
         } catch (error) {
@@ -295,12 +313,16 @@ class AppManager {
                     await withTransaction(sessionTransaction, async () => {
                         const { provider: providerName, profile = 'default' } = session;
                         
-                        // Find the provider instance
-                        const provider = providers.find(p => p.commandArg.replace(/^--/, '') === providerName);
+                        // Find the provider instance - match by command arg or provider name (case-insensitive)
+                        const normalizedName = providerName.toLowerCase();
+                        const provider = providers.find(p => 
+                            p.commandArg.replace(/^--/, '').toLowerCase() === normalizedName ||
+                            p.name.toLowerCase() === normalizedName
+                        );
                         if (!provider) {
                             throw createError(`Provider not found: ${providerName}`, {
                                 category: ErrorCategory.INSTANCE_ERROR,
-                                context: { providerName, availableProviders: providers.map(p => p.commandArg) }
+                                context: { providerName, availableProviders: providers.map(p => `${p.name} (${p.commandArg})`) }
                             });
                         }
 
@@ -330,7 +352,10 @@ class AppManager {
                             log.info(`Setting temp mode for ${providerName}:${profile}`);
                         }
                         
-                        const instance = await provider.spawn(profile, spawnOptions);
+                        const spawnArgs = Object.keys(spawnOptions).length > 0
+                            ? [profile, spawnOptions]
+                            : [profile];
+                        const instance = await provider.spawn(...spawnArgs);
                         
                         // Verify instance was created successfully
                         if (!instance) {
@@ -369,19 +394,22 @@ class AppManager {
      * Handle second instance arguments
      * @method handleSecondInstance
      * @param {Array<string>} args - Command line arguments from second instance
+     * @param {Object} cliInstance - Optional CLI module for testing
      * @returns {Promise<void>}
      */
-    async handleSecondInstance(args) {
+    async handleSecondInstance(args, cliInstance = null) {
         try {
             log.info('Handling second instance with args:', args);
             
             // Process the arguments through CLI first
-            const cli = require('../cli');
+            const cli = cliInstance || require('../cli');
             const cliResult = await cli.execute(args);
             
             // If it's not a CLI command, focus the main window
             if (!cliResult.isCliCommand) {
-                const mainWindow = windowService.getWindow('main');
+                const mainWindow = typeof windowService.getWindow === 'function'
+                    ? windowService.getWindow('main')
+                    : null;
                 if (mainWindow) {
                     if (mainWindow.isMinimized()) {
                         mainWindow.restore();
@@ -423,7 +451,9 @@ class AppManager {
                 availableProviders.map(p => p.name));
             
             // Get active profile
-            const activeProfile = await profileManager.getActiveProfile();
+            const activeProfile = typeof profileManager.getActiveProfile === 'function'
+                ? await profileManager.getActiveProfile()
+                : null;
             
             if (activeProfile) {
                 // Verify the active profile's provider is available
@@ -488,11 +518,16 @@ class AppManager {
             log.info('Initializing providers:', providers, context);
 
             // Convert providers array to sessions array with proper profile handling
-            const sessions = providers.map(provider => ({
-                provider,
-                profile: context.profile || 'default',
-                isTemp: context.isTemp || false  // Pass temp flag to sessions
-            }));
+            const sessions = providers.map(provider => {
+                const session = {
+                    provider,
+                    profile: context.profile || 'default'
+                };
+                if (context.isTemp) {
+                    session.isTemp = true;
+                }
+                return session;
+            });
 
             // Initialize sessions
             await this.initializeSessions(sessions, context);
@@ -553,6 +588,30 @@ class AppManager {
     }
 
     /**
+     * Register global keyboard shortcuts. In tests this safely no-ops.
+     */
+    setupGlobalShortcuts() {
+        try {
+            const { globalShortcut } = require('electron');
+            if (!globalShortcut || typeof globalShortcut.register !== 'function') {
+                log.warn('Global shortcuts not available');
+                return;
+            }
+
+            globalShortcut.register('CommandOrControl+R', () => {
+                const mainWindow = typeof windowService.getWindow === 'function'
+                    ? windowService.getWindow('main')
+                    : null;
+                if (mainWindow && typeof mainWindow.reload === 'function') {
+                    mainWindow.reload();
+                }
+            });
+        } catch (error) {
+            log.warn('Failed to register global shortcuts:', error);
+        }
+    }
+
+    /**
      * Quit the application
      * @method quit
      */
@@ -595,15 +654,15 @@ class AppManager {
                         }
                     }
 
-                    // Exit application with slight delay to ensure cleanup completes
+                    // Exit application after cleanup completes
                     log.info('Exiting application');
-                    setTimeout(() => {
-                        if (app && typeof app.quit === 'function') {
-                            app.quit();
-                        } else {
-                            process.exit(0);
-                        }
-                    }, 100);
+                    if (app && typeof app.exit === 'function') {
+                        app.exit(0);
+                    } else if (app && typeof app.quit === 'function') {
+                        app.quit();
+                    } else {
+                        process.exit(0);
+                    }
                 }, {
                     errorMessage: 'Failed during application shutdown',
                     category: ErrorCategory.INSTANCE_ERROR,
@@ -613,7 +672,11 @@ class AppManager {
         } catch (error) {
             logDiagnostics('app-shutdown-failed', { error });
             log.error('Error during quit:', error);
-            app.exit(1);
+            if (app && typeof app.exit === 'function') {
+                app.exit(1);
+            } else {
+                process.exit(1);
+            }
         }
     }
 }

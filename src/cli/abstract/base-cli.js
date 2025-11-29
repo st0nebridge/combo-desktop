@@ -1,13 +1,30 @@
 /**
- * @file Abstract base class that provides common functionality for CLI modules.
+ * @module cli/abstract/base-cli
+ * @description Abstract base class that provides common functionality for CLI modules.
  * Must remain abstract and not implement specific configuration.
  * 
+ * @input {Array<string>} args - Command line arguments
+ * @input {Object} context - Execution context from previous modules
+ * @output {Object} result - Execution result with success/continue flags
+ * 
+ * @dependencies
+ * - services/logging.service - Application logging
+ * 
+ * @abstract
+ * @implements {ICLIModule}
+ * 
  * Required implementations by child classes:
- * - canHandle(): Check if module can handle given args
- * - isCliCommand(): Check if command needs PID
+ * - canHandle(args): Check if module can handle given args
+ * - isCliCommand(args): Check if command needs PID
  * - execute(args, context): Execute module logic
  * - showUsage(): Show module usage
  * - showManual(): Show module manual
+ * 
+ * @example
+ * class MyCLI extends BaseCLI {
+ *   canHandle(args) { return args.includes('--mycommand'); }
+ *   async execute(args, context) { ... }
+ * }
  */
 
 const fs = require('fs');

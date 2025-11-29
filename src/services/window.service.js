@@ -1,6 +1,21 @@
 /**
- * @file Window management service that handles creation, lifecycle, and state
+ * @module services/window.service
+ * @description Window management service that handles creation, lifecycle, and state
  * of all application windows. Provides centralized window control and event handling.
+ * 
+ * @input {Object} windowConfig - Window configuration (width, height, webPreferences)
+ * @input {string} windowName - Unique identifier for the window
+ * @input {Object} metadata - Additional window metadata (provider, profile)
+ * @output {BrowserWindow} window - Created/managed Electron BrowserWindow instance
+ * 
+ * @dependencies
+ * - electron - BrowserWindow, app, session modules
+ * - electron-log - Application logging
+ * 
+ * @example
+ * const windowService = require('./services/window.service');
+ * const window = windowService.createWindow({ width: 1200, height: 800 }, 'WhatsApp:default');
+ * windowService.showWindow('WhatsApp:default');
  */
 
 // Import electron-related modules with fallbacks for robustness

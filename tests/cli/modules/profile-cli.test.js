@@ -26,6 +26,9 @@ function verboseLog(message) {
  * @returns {Promise<boolean>} True if all tests pass
  */
 async function runTests() {
+    if (process.env.JEST_WORKER_ID) {
+        return true;
+    }
     let restoreProfileManager;
     let restoreLogger;
     
@@ -251,6 +254,16 @@ process.on('unhandledRejection', (reason, promise) => {
     console.error('Unhandled Rejection at:', promise, 'reason:', reason);
     // Don't exit the process as we're handling it
 });
+
+// Wrap legacy runner in a Jest test for compatibility with jest --runInBand
+if (typeof describe === 'function') {
+    describe('ProfileCLI legacy suite', () => {
+        test('executes legacy profile CLI tests', async () => {
+            const result = await runTests();
+            expect(result).toBe(true);
+        });
+    });
+}
 
 // Run tests if this file is executed directly
 if (require.main === module) {

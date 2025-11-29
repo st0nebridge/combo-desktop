@@ -1,0 +1,197 @@
+{
+  "$schema": "./schemas/manifest.schema.json",
+  "name": "desk-tray",
+  "version": "1.1.4",
+  "description": "Run web apps seamlessly in the background with quick access from your system tray",
+  "type": "electron-application",
+  "entrypoint": "./src/main.js",
+  
+  "modules": {
+    "core": {
+      "path": "./src",
+      "description": "Core application functionality",
+      "submodules": {
+        "main": {
+          "path": "./src/main.js",
+          "description": "Application entry point and CLI orchestration",
+          "dependencies": ["services/app.manager", "services/instance.manager", "cli"]
+        },
+        "preload": {
+          "path": "./src/preload.js",
+          "description": "Electron preload script for context isolation"
+        }
+      }
+    },
+    
+    "cli": {
+      "path": "./src/cli",
+      "description": "Command-line interface modules for application control",
+      "entrypoint": "./src/cli/index.js",
+      "submodules": {
+        "registry": {
+          "path": "./src/cli/cli.registry.js",
+          "description": "CLI module registration and command dispatch"
+        },
+        "base": {
+          "path": "./src/cli/abstract/base-cli.js",
+          "description": "Abstract base class for CLI modules"
+        },
+        "help": {
+          "path": "./src/cli/modules/help-cli.js",
+          "description": "Help and usage information CLI module"
+        },
+        "instance": {
+          "path": "./src/cli/modules/instance-cli.js",
+          "description": "Instance management CLI module"
+        },
+        "profile": {
+          "path": "./src/cli/modules/profile-cli.js",
+          "description": "Profile management CLI module"
+        },
+        "provider": {
+          "path": "./src/cli/modules/provider-cli.js",
+          "description": "Provider activation CLI module"
+        }
+      }
+    },
+    
+    "providers": {
+      "path": "./src/providers",
+      "description": "Service provider modules for different web applications",
+      "entrypoint": "./src/providers/index.js",
+      "submodules": {
+        "registry": {
+          "path": "./src/providers/provider.registry.js",
+          "description": "Provider registration and factory"
+        },
+        "base": {
+          "path": "./src/providers/abstract/base.provider.js",
+          "description": "Abstract base class for providers"
+        },
+        "facebook": {
+          "path": "./src/providers/modules/facebook.provider.js",
+          "description": "Facebook Messenger provider"
+        },
+        "whatsapp": {
+          "path": "./src/providers/modules/whatsapp.provider.js",
+          "description": "WhatsApp Web provider"
+        }
+      }
+    },
+    
+    "services": {
+      "path": "./src/services",
+      "description": "Core application services",
+      "submodules": {
+        "app.manager": {
+          "path": "./src/services/app.manager.js",
+          "description": "Core application lifecycle and coordination manager"
+        },
+        "instance.manager": {
+          "path": "./src/services/instance.manager.js",
+          "description": "Multi-instance process and session management"
+        },
+        "window.service": {
+          "path": "./src/services/window.service.js",
+          "description": "Electron window lifecycle management"
+        },
+        "tray.service": {
+          "path": "./src/services/tray.service.js",
+          "description": "System tray icon and menu management"
+        },
+        "profile.manager": {
+          "path": "./src/services/profile.manager.js",
+          "description": "User profile storage and management"
+        },
+        "logging.service": {
+          "path": "./src/services/logging.service.js",
+          "description": "Application logging service"
+        }
+      }
+    },
+    
+    "shared": {
+      "path": "./src/utils",
+      "description": "Shared utility modules",
+      "submodules": {
+        "error-recovery": {
+          "path": "./src/utils/error-recovery.js",
+          "description": "Error handling and recovery utilities"
+        },
+        "transaction": {
+          "path": "./src/utils/transaction.js",
+          "description": "Transaction management for atomic operations"
+        },
+        "icons": {
+          "path": "./src/utils/icons.js",
+          "description": "Icon path resolution utilities"
+        }
+      }
+    },
+    
+    "config": {
+      "path": "./src/config",
+      "description": "Application configuration modules",
+      "submodules": {
+        "app.config": {
+          "path": "./src/config/app.config.js",
+          "description": "Core application configuration"
+        },
+        "user-agent.config": {
+          "path": "./src/config/user-agent.config.js",
+          "description": "User agent configuration for web requests"
+        }
+      }
+    }
+  },
+  
+  "tests": {
+    "path": "./tests",
+    "description": "Test suites organized by module",
+    "coverage": {
+      "statements": 85,
+      "branches": 70,
+      "functions": 85,
+      "lines": 85
+    },
+    "suites": {
+      "cli": {
+        "path": "./tests/cli",
+        "modules": ["cli-registry.test.js", "cli-index.test.js"],
+        "submodules": "./tests/cli/modules"
+      },
+      "services": {
+        "path": "./tests/services",
+        "modules": [
+          "app.manager.test.js",
+          "instance-manager.test.js",
+          "profile.manager.test.js",
+          "tray.service.test.js",
+          "window.service.test.js"
+        ]
+      },
+      "utils": {
+        "path": "./tests/utils",
+        "modules": ["error-recovery.test.js", "transaction.test.js"]
+      },
+      "integration": {
+        "path": "./tests/integration",
+        "modules": ["theme-integration.test.js", "window-show-behavior.test.js"]
+      }
+    }
+  },
+  
+  "compliance": {
+    "msp": {
+      "version": "1.0",
+      "status": "compliant",
+      "lastVerified": "2025-11-28"
+    },
+    "ticp": {
+      "version": "1.0",
+      "status": "compliant",
+      "coverageEnforced": true,
+      "lastVerified": "2025-11-28"
+    }
+  }
+}

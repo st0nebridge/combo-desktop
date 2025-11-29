@@ -1,6 +1,19 @@
 /**
- * Error recovery utilities for robust application behavior
- * @module utils/error-recovery
+ * @module shared/error-recovery
+ * @description Error recovery utilities for robust application behavior.
+ * Provides standardized error handling, categorization, and recovery mechanisms.
+ * 
+ * @input {Error} error - Original error to wrap/handle
+ * @input {Object} options - Error configuration options
+ * @output {RecoverableError} error - Enhanced error with recovery capabilities
+ * 
+ * @dependencies
+ * - electron-log - Application logging
+ * - electron - App paths for diagnostics
+ * 
+ * @example
+ * const { createError, safeExecute, ErrorCategory } = require('./utils/error-recovery');
+ * await safeExecute(async () => { ... }, { category: ErrorCategory.FILE_ERROR });
  */
 
 const log = require('electron-log');

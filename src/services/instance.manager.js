@@ -1,9 +1,27 @@
 /**
- * @file Instance management service that handles application instance lifecycle,
+ * @module services/instance.manager
+ * @description Instance management service that handles application instance lifecycle,
  * locking, and PID tracking to ensure proper multi-instance behavior.
- *
- * Restored from backup with enhanced transaction management, error recovery,
- * and IPC health monitoring while preserving working functionality.
+ * 
+ * @input {Array<Object>} sessions - Session configurations to process
+ * @input {boolean} forceNewInstance - Whether to force creation of new instance
+ * @input {boolean} oneInstance - Whether to restrict to one instance per provider
+ * @input {boolean} profileIsolation - Whether to isolate sessions by profile
+ * @output {Object} result - Instance registration and session processing results
+ * 
+ * @dependencies
+ * - utils/transaction - Transaction management for atomic operations
+ * - utils/error-recovery - Error handling and recovery utilities
+ * - services/logging.service - Application logging
+ * 
+ * @emits last-session-closed - When the last active session is closed
+ * @emits session-registered - When a new session is successfully registered
+ * @emits session-unregistered - When a session is unregistered
+ * 
+ * @example
+ * const instanceManager = require('./services/instance.manager');
+ * await instanceManager.initialize();
+ * await instanceManager.registerSession('whatsapp', 'default', provider);
  */
 
 const { app } = require('electron');
@@ -56,25 +74,22 @@ class InstanceManager extends EventEmitter {
         }
 
         /** @property {string} instanceLockFile - Path to instance lock file */
-        try {
-            this.instanceLockFile = path.join(app.getPath('userData'), 'instance.lock');
-        } catch (error) {
-            const tempPath = path.join(os.tmpdir(), 'desk-tray');
-            log.warn(`Could not get userData path, using temporary path: ${tempPath}`, error);
-            this.instanceLockFile = path.join(tempPath, 'instance.lock');
+        const userDataPath = app && typeof app.getPath === 'function'
+            ? app.getPath('userData')
+            : path.join(os.tmpdir(), 'desk-tray');
+        if (!app || typeof app.getPath !== 'function') {
+            log.warn(`Could not get userData path, using temporary path: ${userDataPath}`);
         }
+        this.instanceLockFile = path.join(userDataPath, 'instance.lock');
         
         /** @property {string} pidFile - Path to PID tracking file */
-        try {
-            const pidPath = app && typeof app.getPath === 'function' ? 
-                path.join(app.getPath('userData'), 'pids.json') : 
-                path.join(os.tmpdir(), 'desk-tray', 'pids.json');
-            this.pidFile = pidPath;
-        } catch (error) {
-            const tempPath = path.join(os.tmpdir(), 'desk-tray', 'pids.json');
-            log.warn(`Could not determine PID file path, using temporary path: ${tempPath}`, error);
-            this.pidFile = tempPath;
+        const pidPath = app && typeof app.getPath === 'function' ? 
+            path.join(app.getPath('userData'), 'pids.json') : 
+            path.join(os.tmpdir(), 'desk-tray', 'pids.json');
+        if (!app || typeof app.getPath !== 'function') {
+            log.warn(`Could not determine PID file path, using temporary path: ${pidPath}`);
         }
+        this.pidFile = pidPath;
         
         /** @property {string} ipcPipeName - Name of the IPC pipe */
         let appName = 'desk-tray';
@@ -257,9 +272,15 @@ class InstanceManager extends EventEmitter {
             }
             
             // Verify and recover data file integrity
+            // verifyDataFileIntegrity(filePath, validationFn, fallbackFn)
             await safeExecute(async () => {
-                await verifyDataFileIntegrity(this.getPidFilePath(), () => ({}));
-                await verifyDataFileIntegrity(this.getLockFilePath(), () => ({}));
+                // Validation: check if data is a valid object
+                const isValidObject = (data) => data !== null && typeof data === 'object';
+                // Fallback: return empty object
+                const emptyObjectFallback = () => ({});
+                
+                await verifyDataFileIntegrity(this.getPidFilePath(), isValidObject, emptyObjectFallback);
+                await verifyDataFileIntegrity(this.getLockFilePath(), isValidObject, emptyObjectFallback);
             }, {
                 context: 'Data file integrity check',
                 fallback: () => log.warn('Data file integrity check failed, continuing with caution')
@@ -303,7 +324,8 @@ class InstanceManager extends EventEmitter {
                 socket.on('data', (data) => {
                     safeExecute(async () => {
                         const message = JSON.parse(data.toString());
-                        log.debug('Received IPC message:', message);
+                        log.info('Received IPC message:', JSON.stringify(message));
+                        log.info(`IPC message check - targetPid: ${message.targetPid}, our PID: ${process.pid}, match: ${message.targetPid?.toString() === process.pid.toString()}`);
                         
                         // Handle ping command
                         if (message.command === 'ping') {
@@ -363,7 +385,7 @@ class InstanceManager extends EventEmitter {
                                         }
                                         
                                         // Convert command arg to provider name for consistency
-                                        const providerRegistry = require('../../providers');
+                                        const providerRegistry = require('../providers');
                                         const availableProviders = providerRegistry.getAvailableProviders();
                                         const providerInfo = availableProviders.find(p => 
                                             p.commandArg.replace(/^--/, '') === commandArg);
@@ -1954,7 +1976,8 @@ class InstanceManager extends EventEmitter {
                         args.push('--temp');
                     }
 
-                    const success = await this.delegateCommandToInstance(targetInstance.id, args);
+                    // Pass the full targetInstance to avoid re-validating
+                    const success = await this.delegateCommandToInstance(targetInstance, args);
                     if (!success) {
                         log.error(`Failed to delegate session ${session.provider}:${session.profile} to instance ${targetInstance.id}`);
                         return false;
@@ -1976,17 +1999,30 @@ class InstanceManager extends EventEmitter {
     /**
      * Delegate a command to a specific instance
      * @method delegateCommandToInstance
-     * @param {string} instanceId - Target instance ID
+     * @param {string|Object} instanceOrId - Target instance ID or instance object
      * @param {Array<string>} args - Command line arguments
      * @returns {Promise<boolean>} True if delegation was successful
      */
-    async delegateCommandToInstance(instanceId, args) {
+    async delegateCommandToInstance(instanceOrId, args) {
         return safeExecute(async () => {
-            log.info(`Delegating command to instance ${instanceId}:`, args);
+            // Support both instance object and instance ID
+            let targetInstance;
+            let instanceId;
             
-            // Get target instance details
-            const instances = await this.getInstances();
-            const targetInstance = instances.find(instance => instance.id === instanceId);
+            if (typeof instanceOrId === 'object' && instanceOrId !== null) {
+                // Instance object passed directly - use it without re-validating
+                targetInstance = instanceOrId;
+                instanceId = instanceOrId.id;
+                log.info(`Delegating command to instance ${instanceId} (using cached instance):`, args);
+            } else {
+                // Instance ID passed - need to look it up
+                instanceId = instanceOrId;
+                log.info(`Delegating command to instance ${instanceId}:`, args);
+                
+                // Get target instance details
+                const instances = await this.getInstances();
+                targetInstance = instances.find(instance => instance.id === instanceId);
+            }
             
             if (!targetInstance) {
                 log.error(`Instance ${instanceId} not found`);
@@ -1997,6 +2033,8 @@ class InstanceManager extends EventEmitter {
             const packageJson = require('../../package.json');
             const appName = packageJson.name || 'desk-tray';
             const pipeName = targetInstance.pipeName || `\\\\.\\pipe\\${appName}-${targetInstance.pid}`;
+            
+            log.info(`Connecting to pipe: ${pipeName} for instance ${instanceId} (PID: ${targetInstance.pid})`);
 
             // Create a unique request ID for tracking
             const requestId = `req-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -2052,9 +2090,12 @@ class InstanceManager extends EventEmitter {
                             args: args || []
                         };
                         
+                        log.info(`Sending delegation message: ${JSON.stringify(message)}`);
+                        
                         // Check if client is still writable before sending
                         if (client && !client.destroyed && client.writable) {
                             client.write(JSON.stringify(message));
+                            log.info('Delegation message sent successfully');
                         } else {
                             log.warn('Client connection not writable, cannot send delegation command');
                             if (!isResolved) {
@@ -2114,7 +2155,7 @@ class InstanceManager extends EventEmitter {
             });
         }, {
             category: ErrorCategory.IPC_ERROR,
-            context: { instanceId, argsCount: args?.length },
+            context: { instanceOrId: typeof instanceOrId === 'object' ? instanceOrId?.id : instanceOrId, argsCount: args?.length },
             recoverFn: (error) => {
                 log.error('Error in delegateCommandToInstance recovered:', error);
                 return false;
@@ -2193,9 +2234,9 @@ class InstanceManager extends EventEmitter {
                 return false;
             }
 
-            // Delegate command to target instance
+            // Delegate command to target instance - pass the full object to avoid re-validation
             log.info(`Delegating command to instance ${targetInstance.id} (PID: ${targetInstance.pid})`);
-            return await this.delegateCommandToInstance(targetInstance.id, args);
+            return await this.delegateCommandToInstance(targetInstance, args);
         } catch (error) {
             log.error('Error delegating command:', error);
             return false;

@@ -1,5 +1,19 @@
 /**
- * @file CLI Registry that manages CLI modules and command execution
+ * @module cli/registry
+ * @description CLI Registry that manages CLI modules and command execution.
+ * Handles module registration, validation, and command dispatch.
+ * 
+ * @input {Object} module - CLI module instance with required methods
+ * @input {Array<string>} args - Command line arguments
+ * @output {Object} result - Command execution result with success/continue flags
+ * 
+ * @dependencies
+ * - services/logging.service - Application logging
+ * 
+ * @example
+ * const cliRegistry = require('./cli/cli.registry');
+ * cliRegistry.register(new HelpCLI());
+ * const result = await cliRegistry.execute(['--help']);
  */
 
 const log = require('../services/logging.service');
@@ -59,7 +73,7 @@ class CLIRegistry {
             // Check if module is already registered
             if (this.modules.has(moduleName)) {
                 log.warn(`Module ${moduleName} is already registered`);
-                return false;
+                return true;
             }
 
             // Register module

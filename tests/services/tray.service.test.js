@@ -141,6 +141,7 @@ async function testTrayService() {
     for (const test of tests) {
         await runTest(test.name, test.fn);
     }
+    return true;
 }
 
 // Run tests if this file is executed directly
@@ -157,3 +158,12 @@ if (require.main === module) {
 }
 
 module.exports = { testTrayService };
+
+if (typeof describe === 'function') {
+    describe('TrayService legacy suite', () => {
+        test('executes tray service tests', async () => {
+            const result = await testTrayService();
+            expect(result).toBe(true);
+        });
+    });
+}

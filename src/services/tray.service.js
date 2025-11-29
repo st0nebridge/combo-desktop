@@ -1,6 +1,21 @@
 /**
- * @file System tray management service that handles creation, updates,
+ * @module services/tray.service
+ * @description System tray management service that handles creation, updates,
  * and notification states of tray icons for application providers.
+ * 
+ * @input {BaseProvider} provider - Provider instance with icon/menu configuration
+ * @input {string} windowName - Window name for tray association
+ * @output {Tray} tray - Created system tray icon instance
+ * 
+ * @dependencies
+ * - services/logging.service - Application logging
+ * - utils/error-recovery - Error handling utilities
+ * - utils/transaction - Transaction management
+ * 
+ * @example
+ * const trayService = require('./services/tray.service');
+ * await trayService.createTray(provider, 'WhatsApp:default');
+ * trayService.updateTrayIcon('WhatsApp:default', true);
  */
 
 const { Tray, Menu } = require('electron');

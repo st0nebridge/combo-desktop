@@ -160,6 +160,7 @@ async function testWindowService() {
     for (const test of tests) {
         await runTest(test.name, test.fn);
     }
+    return true;
 }
 
 // Run tests if this file is executed directly
@@ -176,3 +177,12 @@ if (require.main === module) {
 }
 
 module.exports = { testWindowService };
+
+if (typeof describe === 'function') {
+    describe('WindowService legacy suite', () => {
+        test('executes window service tests', async () => {
+            const result = await testWindowService();
+            expect(result).toBe(true);
+        });
+    });
+}

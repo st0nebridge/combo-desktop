@@ -151,7 +151,10 @@ async function testErrorRecovery() {
         {
             name: 'should verify data file integrity',
             fn: async () => {
-                await verifyDataFileIntegrity('/test/file.json', () => ({}));
+                // verifyDataFileIntegrity(filePath, validationFn, fallbackFn)
+                const validationFn = (data) => data !== null && typeof data === 'object';
+                const fallbackFn = () => ({});
+                await verifyDataFileIntegrity('/test/file.json', validationFn, fallbackFn);
                 // Test passes if no error thrown
             }
         },

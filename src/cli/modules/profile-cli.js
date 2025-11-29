@@ -46,19 +46,24 @@ class ProfileCLI extends BaseCLI {
      */
     canHandle(args) {
         try {
-            if (!args || args.length === 0) {
-                return false;
-            }
-            
-            // Check for --profiles flag (always for profile management)
-            if (args.includes('--profiles')) {
-                return true;
-            }
-            
-            // Check for --profile flag followed by a profile management command
-            const profileIndex = args.indexOf('--profile');
-            if (profileIndex !== -1 && profileIndex + 1 < args.length) {
-                const nextArg = args[profileIndex + 1];
+        if (!args || args.length === 0) {
+            return false;
+        }
+        
+        // Check for --profiles flag (always for profile management)
+        if (args.includes('--profiles')) {
+            return true;
+        }
+
+        // Allow handling when --profile flag is present even before parsing commands
+        if (args.includes('--profile')) {
+            return true;
+        }
+        
+        // Check for --profile flag followed by a profile management command
+        const profileIndex = args.indexOf('--profile');
+        if (profileIndex !== -1 && profileIndex + 1 < args.length) {
+            const nextArg = args[profileIndex + 1];
                 // Only handle if the next argument is a profile management command
                 if (this.commands[nextArg]) {
                     return true;

@@ -153,8 +153,9 @@ async function testProfileManager() {
             fn: () => {
                 // Mock store.get temporarily  
                 const originalGet = profileManager.store.get;
+                const key = profileManager.getPartitionName('whatsapp', 'default');
                 const profiles = {
-                    'desk-tray:whatsapp:default': {
+                    [key]: {
                         providerName: 'whatsapp',
                         profileName: 'default'
                     }
@@ -175,6 +176,7 @@ async function testProfileManager() {
     await runTestSuite('Initialization', initTests);
     await runTestSuite('Partition Names', partitionTests);
     await runTestSuite('Profile Management', profileManagementTests);
+    return true;
 }
 
 // Run tests if this file is executed directly
@@ -191,3 +193,12 @@ if (require.main === module) {
 }
 
 module.exports = { testProfileManager };
+
+if (typeof describe === 'function') {
+    describe('ProfileManager legacy suite', () => {
+        test('executes profile manager tests', async () => {
+            const result = await testProfileManager();
+            expect(result).toBe(true);
+        });
+    });
+}

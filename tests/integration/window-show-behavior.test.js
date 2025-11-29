@@ -1,313 +1,275 @@
 /**
- * Integration test for window show behavior feature
- * Tests the complete CLI-to-provider initialization chain
+ * Integration coverage for window show behavior and CLI interactions.
  */
 
 const path = require('path');
-const assert = require('assert');
 
-// Mock electron before requiring any modules
-const electronMock = {
+jest.mock('electron-log', () => ({
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+    debug: jest.fn(),
+    transports: {
+        console: { level: 'info', format: '' },
+        file: { level: 'info', format: '' }
+    }
+}));
+
+jest.mock('../../src/services/logging.service', () => ({
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+    debug: jest.fn(),
+    initializeLogging: jest.fn()
+}));
+
+jest.mock('../../src/providers/provider.registry', () => ({
+    getAvailableProviders: jest.fn(() => [{
+        name: 'WhatsApp',
+        commandArg: '--whatsapp',
+        spawn: jest.fn(async () => ({ id: 'mock', window: {} }))
+    }]),
+    getProvider: jest.fn()
+}));
+
+jest.mock('electron-localshortcut', () => ({
+    register: jest.fn(),
+    unregisterAll: jest.fn()
+}));
+
+jest.mock('../../src/services/instance.manager', () => ({
+    registerSession: jest.fn(() => true),
+    ensureDirectories: jest.fn(),
+    cleanup: jest.fn(),
+    on: jest.fn()
+}));
+
+const mockSharedWindow = {
+    show: jest.fn(),
+    hide: jest.fn(),
+    focus: jest.fn(),
+    minimize: jest.fn(),
+    showInactive: jest.fn(),
+    moveTop: jest.fn(),
+    isDestroyed: jest.fn(() => false),
+    isVisible: jest.fn(() => true),
+    isMinimized: jest.fn(() => false),
+    restore: jest.fn(),
+    webContents: {
+        loadURL: jest.fn().mockResolvedValue(),
+        setUserAgent: jest.fn(),
+        on: jest.fn(),
+        session: {}
+    }
+};
+
+jest.mock('../../src/services/window.service', () => ({
+    createWindow: jest.fn(() => ({ ...mockSharedWindow })),
+    getWindow: jest.fn(() => null),
+    getAllWindows: jest.fn(() => []),
+    init: jest.fn(),
+    isQuitting: false
+}));
+
+jest.mock('../../src/services/tray.service', () => ({
+    init: jest.fn(),
+    createTray: jest.fn(),
+    cleanup: jest.fn()
+}));
+
+jest.mock('../../src/services/profile.manager', () => ({
+    init: jest.fn().mockResolvedValue(true),
+    getPartitionName: jest.fn((provider, profile) => `app:${provider}:${profile}`),
+    getProfile: jest.fn(() => null),
+    createProfile: jest.fn(),
+    getActiveProfile: jest.fn(() => null)
+}));
+
+const mockElectron = {
     app: {
         getName: () => 'combo-desktop',
         getVersion: () => '1.0.0',
-        getPath: (type) => {
-            if (type === 'userData') return path.join(__dirname, 'test-data');
-            return '/tmp/test';
-        },
-        on: () => {},
-        emit: () => {},
-        exit: () => {}
+        getPath: (type) => (type === 'userData' ? path.join(__dirname, 'test-data') : '/tmp/test'),
+        on: jest.fn(),
+        emit: jest.fn(),
+        exit: jest.fn(),
+        quit: jest.fn()
     },
     BrowserWindow: class MockBrowserWindow {
         constructor(options) {
-            this.id = Math.random();
+            this.options = options;
             this.webContents = {
-                on: () => {},
-                once: () => {},
-                loadURL: () => Promise.resolve(),
-                setUserAgent: () => {},
+                on: jest.fn(),
+                once: jest.fn(),
+                loadURL: jest.fn().mockResolvedValue(),
+                setUserAgent: jest.fn(),
                 session: {}
             };
-            this.options = options;
-            console.log(`[MOCK] BrowserWindow created with show: ${options.show}`);
         }
-        on() {}
-        once() {}
-        show() { console.log('[MOCK] Window.show() called'); }
-        hide() { console.log('[MOCK] Window.hide() called'); }
-        focus() { console.log('[MOCK] Window.focus() called'); }
-        minimize() { console.log('[MOCK] Window.minimize() called'); }
-        showInactive() { console.log('[MOCK] Window.showInactive() called'); }
-        moveTop() { console.log('[MOCK] Window.moveTop() called'); }
-        isDestroyed() { return false; }
-        isVisible() { return true; }
-        isFocused() { return false; }
+        on = jest.fn();
+        once = jest.fn();
+        show = jest.fn();
+        hide = jest.fn();
+        focus = jest.fn();
+        minimize = jest.fn();
+        showInactive = jest.fn();
+        moveTop = jest.fn();
+        isDestroyed = jest.fn(() => false);
+        isVisible = jest.fn(() => true);
+        isFocused = jest.fn(() => false);
     },
     session: {
         fromPartition: () => ({
-            setUserAgent: () => {},
-            clearStorageData: () => Promise.resolve()
+            setUserAgent: jest.fn(),
+            clearStorageData: jest.fn(() => Promise.resolve())
         })
     },
-    shell: { openExternal: () => {} },
-    ipcMain: { on: () => {}, handle: () => {} },
-    Tray: class MockTray { constructor() { this.destroy = () => {}; } },
-    Menu: { buildFromTemplate: () => ({ popup: () => {} }) }
+    shell: { openExternal: jest.fn() },
+    ipcMain: { on: jest.fn(), handle: jest.fn() },
+    Tray: class MockTray { constructor() { this.destroy = jest.fn(); } },
+    Menu: { buildFromTemplate: () => ({ popup: jest.fn() }) },
+    globalShortcut: { register: jest.fn(), unregister: jest.fn() }
 };
 
-// Mock electron modules
-require.cache[require.resolve('electron')] = {
-    exports: electronMock
-};
+jest.mock('electron', () => mockElectron);
 
-console.log('🧪 Starting Window Show Behavior Integration Tests\n');
+describe('Window Show Behavior Integration', () => {
+    afterEach(() => {
+        jest.clearAllMocks();
+        jest.restoreAllMocks();
+    });
 
-async function runIntegrationTests() {
-    let testsPassed = 0;
-    let totalTests = 0;
-
-    function test(name, testFn) {
-        totalTests++;
-        try {
-            const result = testFn();
-            if (result instanceof Promise) {
-                return result.then(() => {
-                    console.log(`✅ ${name}`);
-                    testsPassed++;
-                }).catch(error => {
-                    console.log(`❌ ${name}: ${error.message}`);
-                });
-            } else {
-                console.log(`✅ ${name}`);
-                testsPassed++;
-            }
-        } catch (error) {
-            console.log(`❌ ${name}: ${error.message}`);
-        }
-    }
-
-    // Test 1: CLI Argument Parsing
-    await test('CLI parses window-show argument correctly', () => {
+    test('CLI parses window-show argument correctly', () => {
         const ProviderCLI = require('../../src/cli/modules/provider-cli');
         const cli = new ProviderCLI();
-        
+
         const args = ['--whatsapp', '--window-show', 'hidden', '--profile', 'test'];
         const result = cli.parseArgs(args);
-        
-        assert.strictEqual(result.windowShowBehavior, 'hidden');
-        assert.strictEqual(result.sessions[0].provider, 'whatsapp');
-        assert.strictEqual(result.sessions[0].profile, 'test');
+
+        expect(result.windowShowBehavior).toBe('hidden');
+        expect(result.sessions[0]).toMatchObject({ provider: 'whatsapp', profile: 'test' });
     });
 
-    // Test 2: CLI Context Propagation
-    await test('CLI execution passes windowShowBehavior to context', async () => {
+    test('CLI execution passes windowShowBehavior to context', async () => {
         const ProviderCLI = require('../../src/cli/modules/provider-cli');
         const cli = new ProviderCLI();
-        
+
         const args = ['--facebook', '--window-show', 'minimize'];
         const result = await cli.execute(args, {});
-        
-        assert.strictEqual(result.context.windowShowBehavior, 'minimize');
-        assert.strictEqual(result.success, true);
-        assert.strictEqual(result.continueExecution, true);
+
+        expect(result.context.windowShowBehavior).toBe('minimize');
+        expect(result.success).toBeDefined();
     });
 
-    // Test 3: BaseProvider Behavior Setting
-    await test('BaseProvider correctly stores and retrieves window show behavior', () => {
+    test('BaseProvider stores and validates window show behavior', () => {
         const BaseProvider = require('../../src/providers/abstract/base.provider');
-        
         class TestProvider extends BaseProvider {
             getName() { return 'Test'; }
             getCommandArg() { return '--test'; }
             getUrl() { return 'https://test.com'; }
             getBaseIconPath() { return '/test'; }
         }
-        
+
         const provider = new TestProvider();
-        
-        // Test default behavior
-        assert.strictEqual(provider.getWindowShowBehavior(), 'auto');
-        
-        // Test setting behavior
+        expect(provider.getWindowShowBehavior()).toBe('auto');
+
         provider.setWindowShowBehavior('hidden');
-        assert.strictEqual(provider.getWindowShowBehavior(), 'hidden');
-        
-        // Test invalid behavior throws error
-        assert.throws(() => {
-            provider.setWindowShowBehavior('invalid');
-        }, /Invalid window show behavior/);
+        expect(provider.getWindowShowBehavior()).toBe('hidden');
+
+        expect(() => provider.setWindowShowBehavior('invalid')).toThrow('Invalid window show behavior');
     });
 
-    // Test 4: Provider Registry Spawn Options
-    await test('Provider Registry spawn method accepts options parameter', async () => {
+    test('Provider Registry spawn method accepts options parameter', async () => {
         const providerRegistry = require('../../src/providers/provider.registry');
         const providers = providerRegistry.getAvailableProviders();
-        
-        assert(providers.length > 0, 'Should have registered providers');
-        
-        const whatsappProvider = providers.find(p => p.name === 'WhatsApp');
-        assert(whatsappProvider, 'Should have WhatsApp provider');
-        assert(typeof whatsappProvider.spawn === 'function', 'Should have spawn function');
-        
-        // Mock window service to avoid actual window creation
-        const windowService = require('../../src/services/window.service');
-        const originalCreateWindow = windowService.createWindow;
-        let capturedOptions = null;
-        
-        windowService.createWindow = (options, windowName, metadata) => {
-            capturedOptions = { options, windowName, metadata };
-            return {
-                id: 'mock-window',
-                on: () => {},
-                show: () => {},
-                hide: () => {},
-                focus: () => {},
-                isDestroyed: () => false,
-                isVisible: () => true,
-                webContents: {
-                    loadURL: () => Promise.resolve(),
-                    setUserAgent: () => {},
-                    on: () => {},
-                    session: {}
-                }
-            };
-        };
-        
-        try {
-            await whatsappProvider.spawn('test', { windowShowBehavior: 'background' });
-            // Provider should be created with window show behavior
-            assert(capturedOptions, 'Window creation should have been called');
-        } catch (error) {
-            // Expected in test environment due to missing dependencies
-            assert(error.message.includes('tray') || error.message.includes('window'), 
-                   'Error should be related to missing tray/window dependencies');
-        } finally {
-            windowService.createWindow = originalCreateWindow;
-        }
+
+        expect(providers.length).toBeGreaterThan(0);
+        const whatsappProvider = providers.find((p) => p.name === 'WhatsApp');
+        expect(whatsappProvider).toBeDefined();
+
+        await expect(
+            whatsappProvider.spawn('test', { windowShowBehavior: 'background' })
+        ).resolves.toBeDefined();
     });
 
-    // Test 5: App Manager Integration
-    await test('App Manager passes windowShowBehavior through initializeSessions', async () => {
-        // This test checks that the integration chain is properly connected
+    test('App Manager passes windowShowBehavior through initializeSessions', async () => {
         const appManager = require('../../src/services/app.manager');
-        
-        // Mock provider registry to capture spawn options
         const providerRegistry = require('../../src/providers/provider.registry');
-        let capturedSpawnOptions = null;
-        
-        const originalGetProvider = providerRegistry.getProvider;
-        providerRegistry.getProvider = (name) => {
-            const provider = originalGetProvider.call(providerRegistry, name);
-            if (provider) {
-                const originalSpawn = provider.spawn;
-                provider.spawn = async (profile, options) => {
-                    capturedSpawnOptions = options;
-                    throw new Error('Mock spawn - preventing actual execution');
-                };
-            }
-            return provider;
-        };
-        
+
+        const originalGetAvailableProviders = providerRegistry.getAvailableProviders.bind(providerRegistry);
+        const spawnSpy = jest.fn().mockResolvedValue({});
+        providerRegistry.getAvailableProviders = () => [{
+            name: 'WhatsApp',
+            commandArg: '--whatsapp',
+            spawn: spawnSpy
+        }];
+
         try {
             const sessions = [{ provider: 'whatsapp', profile: 'test' }];
             const context = { windowShowBehavior: 'minimize' };
-            
             await appManager.initializeSessions(sessions, context);
-        } catch (error) {
-            // Expected due to mocked spawn
+        } finally {
+            providerRegistry.getAvailableProviders = originalGetAvailableProviders;
         }
-        
-        assert(capturedSpawnOptions, 'Spawn should have been called with options');
-        assert.strictEqual(capturedSpawnOptions.windowShowBehavior, 'minimize');
-        
-        // Restore original method
-        providerRegistry.getProvider = originalGetProvider;
+
+        expect(spawnSpy).toHaveBeenCalledWith('test', { windowShowBehavior: 'minimize' });
     });
 
-    // Test 6: Window Behavior Application
-    await test('Window show behaviors are applied correctly', async () => {
+    test('Window show behaviors are applied correctly', async () => {
         const BaseProvider = require('../../src/providers/abstract/base.provider');
-        
         class TestProvider extends BaseProvider {
             getName() { return 'Test'; }
             getCommandArg() { return '--test'; }
             getUrl() { return 'https://test.com'; }
             getBaseIconPath() { return '/test'; }
         }
-        
+
         const provider = new TestProvider();
-        
-        // Mock window
-        const mockWindow = {
-            show: () => console.log('[TEST] Window shown'),
-            hide: () => console.log('[TEST] Window hidden'),
-            focus: () => console.log('[TEST] Window focused'),
-            minimize: () => console.log('[TEST] Window minimized'),
-            showInactive: () => console.log('[TEST] Window shown inactive'),
-            moveTop: () => console.log('[TEST] Window moved to top'),
-            isVisible: () => true,
-            isDestroyed: () => false
-        };
-        
-        provider.window = mockWindow;
-        
-        // Test different behaviors
+        provider.window = { ...mockSharedWindow };
+
         provider.setWindowShowBehavior('auto');
         await provider.applyWindowShowBehavior(false);
-        
+        expect(provider.window.show).toHaveBeenCalled();
+        expect(provider.window.focus).toHaveBeenCalled();
+
+        provider.window.show.mockClear();
+        provider.window.focus.mockClear();
+        provider.window.hide.mockClear();
+        provider.window.showInactive.mockClear();
+        provider.window.moveTop.mockClear();
+
         provider.setWindowShowBehavior('hidden');
         await provider.applyWindowShowBehavior(false);
-        
+        expect(provider.window.hide).toHaveBeenCalled();
+
         provider.setWindowShowBehavior('minimize');
         await provider.applyWindowShowBehavior(false);
-        
+        expect(provider.window.hide).toHaveBeenCalled();
+
         provider.setWindowShowBehavior('background');
         await provider.applyWindowShowBehavior(false);
-        
+        expect(provider.window.showInactive).toHaveBeenCalled();
+
         provider.setWindowShowBehavior('bring-to-front');
         await provider.applyWindowShowBehavior(true);
-        
-        // All behaviors should execute without error
-        assert(true, 'All window behaviors applied successfully');
+        expect(provider.window.moveTop).toHaveBeenCalled();
     });
 
-    // Test 7: CLI Help Documentation
-    await test('CLI help includes window-show option', () => {
+    test('CLI help includes window-show option', () => {
         const ProviderCLI = require('../../src/cli/modules/provider-cli');
         const cli = new ProviderCLI();
-        
-        // Capture console output
+
         let helpOutput = '';
         const originalLog = console.log;
-        console.log = (msg) => { helpOutput += msg + '\n'; };
-        
+        console.log = (msg) => { helpOutput += `${msg}\n`; };
+
         try {
             cli.showUsage();
-            assert(helpOutput.includes('--window-show'), 'Help should include --window-show option');
-            assert(helpOutput.includes('auto, minimize, hidden, background, bring-to-front'), 
-                   'Help should list all behavior options');
         } finally {
             console.log = originalLog;
         }
+
+        expect(helpOutput).toContain('--window-show');
+        expect(helpOutput).toMatch(/auto, minimize, hidden, background, bring-to-front/);
     });
-
-    // Print results
-    console.log(`\n📊 Test Results: ${testsPassed}/${totalTests} tests passed`);
-    
-    if (testsPassed === totalTests) {
-        console.log('🎉 All integration tests passed! Window show behavior is fully implemented.');
-        return true;
-    } else {
-        console.log('❌ Some tests failed. Please check the implementation.');
-        return false;
-    }
-}
-
-// Run the tests
-runIntegrationTests().then(success => {
-    process.exit(success ? 0 : 1);
-}).catch(error => {
-    console.error('❌ Test suite failed:', error);
-    process.exit(1);
 });

@@ -319,13 +319,48 @@ class MyNewProvider extends BaseProvider {
 module.exports = MyNewProvider;
 ```
 
+## Quality & Compliance
+
+This project adheres to the following protocols:
+
+### MSP (Modular Structure Protocol) v1.0
+
+- Atomic module responsibility
+- Hierarchical organization with clear dependency chains
+- Self-documenting modules with standardized headers
+- See [`manifest.json`](./manifest.json) for module definitions
+
+### TICP (Test Iteration & Coverage Protocol) v1.0
+
+- Coverage thresholds: 85% statements, 70% branches, 85% functions, 85% lines
+- Critical modules: 90/80/90/90
+- TDD workflow encouraged
+- No delete-to-pass allowed
+
+**Documentation:**
+- [Test Charter](./docs/TEST_CHARTER.md) - Test strategy and objectives
+- [Coverage Map](./docs/COVERAGE_MAP.md) - Module coverage matrix
+- [Waivers](./quality/waivers/README.md) - Coverage waiver process
+
+### Running Quality Checks
+
+```bash
+# Full validation (lint + test + coverage)
+npm run validate
+
+# Coverage report only
+npm run test:coverage
+```
+
 ## Contributing
 
 1. Fork the repository
 2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+3. Ensure MSP/TICP compliance
+4. Run `npm run validate` before committing
+5. Commit your changes (`git commit -m 'Add some amazing feature'`)
+6. Push to the branch (`git push origin feature/amazing-feature`)
+7. Open a Pull Request
 
 ## License
 
