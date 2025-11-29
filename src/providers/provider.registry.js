@@ -215,7 +215,9 @@ class ProviderRegistry {
                             }
                             
                             // Register the session with the instance manager
-                            const sessionRegistered = instanceManager.registerSession(provider.getName(), profile);
+                            // Use lowercase command arg for session name consistency with getSessionName()
+                            const sessionName = provider.getCommandArg().replace(/^--/, '');
+                            const sessionRegistered = instanceManager.registerSession(sessionName, profile);
                             if (!sessionRegistered) {
                                 log.warn(`Failed to register session for ${provider.getName()}:${profile}`);
                             } else {

@@ -365,8 +365,9 @@ class AppManager {
                             });
                         }
 
-                        // Register the session with the instance manager using provider name, not command arg
-                        await instanceManager.registerSession(provider.name, profile);
+                        // Register the session with the instance manager using lowercase session name for consistency
+                        const sessionName = provider.commandArg.replace(/^--/, '');
+                        await instanceManager.registerSession(sessionName, profile);
 
                         output.push(instance);
                         log.info(`Initialized ${providerName} with profile: ${profile}`);
